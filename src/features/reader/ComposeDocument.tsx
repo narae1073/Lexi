@@ -29,7 +29,7 @@ export function ComposeDocument() {
       return
     }
     setError(null)
-    await create({ title, languageCode, rawText })
+    await create({ title, languageCode, rawText, fallbackTitle: t('compose.titlePlaceholder') })
     setTitle('')
     setRawText('')
   }

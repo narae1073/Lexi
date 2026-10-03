@@ -12,6 +12,8 @@ type DocumentsState = {
     title: string
     languageCode: LanguageCode
     rawText: string
+    /** 제목이 비었을 때 쓸 표기 — 스토어는 i18n 을 모르므로 호출부가 넘긴다 */
+    fallbackTitle: string
   }) => Promise<Document>
   remove: (id: string) => Promise<void>
 }
@@ -37,11 +39,11 @@ export const useDocumentsStore = create<DocumentsState>((set) => ({
     set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
   },
 
-  create: async ({ title, languageCode, rawText }) => {
+  create: async ({ title, languageCode, rawText, fallbackTitle }) => {
     const timestamp = now()
     const doc: Document = {
       id: crypto.randomUUID(),
-      title: title.trim() || '제목 없음',
+      title: title.trim() || fallbackTitle,
       languageCode,
       rawText,
       createdAt: timestamp,

@@ -9,7 +9,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node e2e/run-all.mjs",
+    "test:unit": "vitest run"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
