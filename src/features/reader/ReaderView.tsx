@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
 import { statusClass } from '../../lib/color'
@@ -7,7 +8,8 @@ import { DEFINITION_LANGUAGE } from '../../lib/languages'
 import type { Document, Segment, Sentence } from '../../types'
 import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
-import { segmentAt, tokenize } from './tokenizer'
+import { resolveLemmasFromWords } from './surfaceLemma'
+import { isSentenceInitial, segmentAt, tokenize } from './tokenizer'
 import { WordPopover } from './WordPopover'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
@@ -32,13 +34,47 @@ export function ReaderView({ doc }: { doc: Document }) {
   )
 
   const byKey = useWordStatesStore((s) => s.byKey)
-  const loadLanguage = useWordStatesStore((s) => s.loadLanguage)
+  const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
+  const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
   const [selection, setSelection] = useState<Selection | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  /**
+   * 표기 → lemma 매핑.
+   * 소문자만 접으면 us(대명사) 와 US(국가) 가 한 상태로 합쳐지므로,
+   * 문서 안에서 실제 쓰인 표기를 보고 결정한다 (surfaceLemma.ts).
+   */
+  const lemmaOf = useMemo(() => {
+    const words = segments.filter((s) => s.type === 'word')
+    return resolveLemmasFromWords(
+      words.map((w) => ({
+        text: w.text,
+        sentenceInitial: isSentenceInitial(doc.rawText, sentences, w.start, w.sentenceIndex),
+      })),
+    )
+  }, [segments, sentences, doc.rawText])
+
+  /** 세그먼트의 대표 lemma */
+  const lemmaFor = useCallback(
+    (segment: WordSegment) => lemmaOf.get(segment.text) ?? segment.lemma,
+    [lemmaOf],
+  )
+
   useEffect(() => {
-    void loadLanguage(doc.languageCode)
-  }, [doc.languageCode, loadLanguage])
+    void loadWordStates(doc.languageCode)
+  }, [doc.languageCode, loadWordStates])
+
+  // 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
+  useEffect(() => {
+    const run = () => void recordOccurrences(doc)
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 200))
+    const handle = idle(run)
+    return () => {
+      if (typeof window.cancelIdleCallback === 'function' && typeof handle === 'number') {
+        window.cancelIdleCallback(handle)
+      }
+    }
+  }, [doc, recordOccurrences])
 
   const wordCount = useMemo(
     () => segments.reduce((n, s) => (s.type === 'word' ? n + 1 : n), 0),
@@ -138,7 +174,9 @@ export function ReaderView({ doc }: { doc: Document }) {
             <span
               key={segment.start}
               data-start={segment.start}
-              className={`cursor-pointer rounded-sm ${statusClass(byKey[`${doc.languageCode}::${segment.lemma}`]?.status)}`}
+              className={`cursor-pointer rounded-sm ${statusClass(
+                byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.status,
+              )}`}
             >
               {segment.text}
             </span>
@@ -151,6 +189,7 @@ export function ReaderView({ doc }: { doc: Document }) {
       {selection?.kind === 'word' && (
         <WordPopover
           segment={selection.segment}
+          lemma={lemmaFor(selection.segment)}
           languageCode={doc.languageCode}
           anchor={selection.anchor}
           onClose={() => setSelection(null)}

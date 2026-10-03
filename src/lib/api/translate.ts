@@ -15,7 +15,6 @@ type TranslateState = {
   /** `${source}:${target}:${hash-ish}` — 같은 문장은 한 번만 요청한다 */
   inFlight: Map<string, Promise<TranslateResult>>
   translate: (text: string, source: AppLanguage | string, target: string) => Promise<TranslateResult>
-  clear: () => void
 }
 
 export class TranslateError extends Error {
@@ -37,8 +36,6 @@ const MAX_CHARS = 5000
 
 export const useTranslateStore = create<TranslateState>((set, get) => ({
   inFlight: new Map(),
-
-  clear: () => set({ inFlight: new Map() }),
 
   translate: async (text, source, target) => {
     const trimmed = text.trim()

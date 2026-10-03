@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { sentenceAt, sentencesInRange, joinSentences } from './selection'
-import { computeSentences } from './tokenizer'
+import { computeSentences, isSentenceInitial, tokenize } from './tokenizer'
 
 const TEXT = 'First one. Second one! Third one? Tail without end'
 const sentences = computeSentences(TEXT)
@@ -57,5 +57,46 @@ describe('드래그 선택 → 문장', () => {
     const list = computeSentences(cjk)
     expect(list).toHaveLength(2)
     expect(joinSentences(list, { start: 0, end: cjk.length }).trim()).toBe(cjk)
+  })
+})
+describe('문장 인덱스 연속성 (빈 줄 뒤 조회가 어긋나지 않게)', () => {
+  it('빈 줄이 있어도 index 가 배열 위치와 일치한다', () => {
+    const text = 'One two.\n\nThree four.\n\nFive.'
+    const sentences = computeSentences(text)
+    sentences.forEach((sentence, position) => {
+      expect(sentence.index).toBe(position)
+      expect(sentences[sentence.index]).toBe(sentence)
+    })
+  })
+
+  it('모든 단어가 실제 문장 텍스트로 연결된다', () => {
+    // 회귀 사례: 빈 줄이 있으면 sentences[word.sentenceIndex] 가 undefined 가 됐다
+    const text = 'The US grew. The us differs.\nMay is warm. I may go.'
+    const { segments, sentences } = tokenize(text, 'en')
+    const words = segments.filter((s) => s.type === 'word')
+    for (const word of words) {
+      if (word.type !== 'word') continue
+      const sentence = sentences[word.sentenceIndex]
+      expect(sentence, `${word.text} 의 문장을 찾지 못함`).toBeDefined()
+      expect(sentence.text.trim().length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('isSentenceInitial', () => {
+  it('문장 첫 단어를 recognizes 한다 (앞 공백이 있어도)', () => {
+    const text = 'One two. Three four.'
+    const { segments, sentences } = tokenize(text, 'en')
+    const words = segments.filter((s) => s.type === 'word')
+    const initial = words.filter((w) => w.type === 'word' && isSentenceInitial(text, sentences, w.start, w.sentenceIndex))
+    expect(initial.map((w) => (w.type === 'word' ? w.text : ''))).toEqual(['One', 'Three'])
+  })
+
+  it('문장 중간 단어는 첫 단어가 아니다', () => {
+    const text = 'One two. Three four.'
+    const { segments, sentences } = tokenize(text, 'en')
+    const two = segments.find((s) => s.type === 'word' && s.text === 'two')
+    if (two?.type !== 'word') throw new Error('없음')
+    expect(isSentenceInitial(text, sentences, two.start, two.sentenceIndex)).toBe(false)
   })
 })

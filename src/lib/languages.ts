@@ -6,20 +6,19 @@
  * types/index.ts 가 여기서 유니온을 가져가므로 순환이 없도록 이 파일은 types 를 import 하지 않는다.
  */
 export const SUPPORTED_LANGUAGES = [
-  { code: 'en', nativeLabel: 'English', dictionary: 'free-en', cjk: false },
-  { code: 'ja', nativeLabel: '日本語', dictionary: 'google', cjk: true },
-  { code: 'ko', nativeLabel: '한국어', dictionary: 'google', cjk: false },
-  { code: 'es', nativeLabel: 'Español', dictionary: 'google', cjk: false },
-  { code: 'fr', nativeLabel: 'Français', dictionary: 'google', cjk: false },
-  { code: 'de', nativeLabel: 'Deutsch', dictionary: 'google', cjk: false },
-  { code: 'pt', nativeLabel: 'Português', dictionary: 'google', cjk: false },
-  { code: 'zh', nativeLabel: '中文', dictionary: 'google', cjk: true },
+  { code: 'en', nativeLabel: 'English', cjk: false },
+  { code: 'ja', nativeLabel: '日本語', cjk: true },
+  { code: 'ko', nativeLabel: '한국어', cjk: false },
+  { code: 'es', nativeLabel: 'Español', cjk: false },
+  { code: 'fr', nativeLabel: 'Français', cjk: false },
+  { code: 'de', nativeLabel: 'Deutsch', cjk: false },
+  { code: 'pt', nativeLabel: 'Português', cjk: false },
+  { code: 'zh', nativeLabel: '中文', cjk: true },
 ] as const satisfies readonly SupportedLanguageShape[]
 
 type SupportedLanguageShape = {
   code: string
   nativeLabel: string
-  dictionary: 'free-en' | 'google' | 'none'
   /** 공백 없는 언어 — 토크나이저가 Intl.Segmenter 분절을 우선해야 함 (PLAN.md §5.1) */
   cjk: boolean
 }

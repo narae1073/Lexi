@@ -15,17 +15,20 @@ const WORD_POPOVER_WIDTH = 300
  */
 export function WordPopover({
   segment,
+  lemma,
   languageCode,
   anchor,
   onClose,
 }: {
   segment: Extract<Segment, { type: 'word' }>
+  /** 문서 문맥으로 정규화한 대표 형태. 상태·사전 조회는 전부 이 값을 쓴다. */
+  lemma: string
   languageCode: LanguageCode
   anchor: HTMLElement | null
   onClose: () => void
 }) {
   const t = useTranslation()
-  const current = useWordStatesStore((s) => s.byKey[`${languageCode}::${segment.lemma}`]?.status)
+  const current = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.status)
   const setStatus = useWordStatesStore((s) => s.setStatus)
   const [showDictionary, setShowDictionary] = useState(false)
 
@@ -47,7 +50,7 @@ export function WordPopover({
             <button
               key={status}
               type="button"
-              onClick={() => setStatus(languageCode, segment.lemma, status, segment.text)}
+              onClick={() => setStatus(languageCode, lemma, status, segment.text)}
               aria-pressed={active}
               aria-label={t(`status.${status}`)}
               title={t(`status.${status}`)}
@@ -68,7 +71,7 @@ export function WordPopover({
         <div className="mt-1 border-line border-t pt-1.5">
           <DictionaryPanel
             languageCode={languageCode}
-            lemma={segment.lemma}
+            lemma={lemma}
             surface={segment.text}
           />
           <button

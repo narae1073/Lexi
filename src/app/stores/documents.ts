@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
-import { STORES, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { useOccurrencesStore } from './occurrences'
 import type { Document, LanguageCode } from '../../types'
 
 type DocumentsState = {
@@ -12,6 +13,7 @@ type DocumentsState = {
     languageCode: LanguageCode
     rawText: string
   }) => Promise<Document>
+  remove: (id: string) => Promise<void>
 }
 
 function now(): string {
@@ -27,6 +29,12 @@ export const useDocumentsStore = create<DocumentsState>((set) => ({
     const docs = await idbGetAll<Document>(STORES.documents)
     docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     set({ documents: docs, loading: false })
+  },
+
+  remove: async (id) => {
+    await idbDelete(STORES.documents, id)
+    await useOccurrencesStore.getState().forgetDocument(id)
+    set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
   },
 
   create: async ({ title, languageCode, rawText }) => {

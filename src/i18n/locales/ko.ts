@@ -38,7 +38,6 @@ export const ko: Dictionary = {
 
   reader: {
     stats: '단어 {words}개 · 문장 {sentences}개',
-    sentenceToggle: '문장 번역',
   },
 
   status: {
@@ -59,20 +58,15 @@ export const ko: Dictionary = {
     failedStatus: '사전 오류 ({status}).',
     source: '위키낱말 · {license}',
     hide: '접기',
-    foundAs: '{form} 항목으로 찾음',
-    inflectedForm: '활용형',
     baseForm: '기본형',
-    sensesCount: '뜻 {count}개',
   },
 
   sentence: {
-    original: '원문',
     translating: '번역 중…',
     retry: '다시 시도',
     identity: '원문이 이미 영어라 번역할 것이 없습니다.',
     failed: '번역에 실패했습니다. 다시 시도해 주세요.',
     failedStatus: '번역 서비스 오류 ({status}).',
-    bulkMark: '이 문장의 단어 일괄 표시',
   },
 
   settings: {

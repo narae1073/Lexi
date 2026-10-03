@@ -16,14 +16,3 @@ export function statusClass(status: WordStatus | undefined): string {
   if (!status) return ''
   return STATUS_CLASS[status]
 }
-
-const DOT_CLASS: Record<WordStatus, string> = {
-  known: 'text-status-known',
-  unsure: 'text-status-unsure',
-  unknown: 'text-status-unknown',
-}
-
-export function statusDotClass(status: WordStatus | undefined): string {
-  if (!status) return 'text-zinc-400'
-  return DOT_CLASS[status]
-}

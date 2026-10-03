@@ -39,7 +39,6 @@ export const en = {
 
   reader: {
     stats: '{words} words · {sentences} sentences',
-    sentenceToggle: 'Translate sentence',
   },
 
   status: {
@@ -60,20 +59,15 @@ export const en = {
     failedStatus: 'Dictionary error ({status}).',
     source: 'Wiktionary · {license}',
     hide: 'Hide',
-    foundAs: 'Found as: {form}',
-    inflectedForm: 'Inflected form',
     baseForm: 'Base form',
-    sensesCount: '{count} meanings',
   },
 
   sentence: {
-    original: 'Original',
     translating: 'Translating…',
     retry: 'Try again',
     identity: 'This text is already in English, so there is nothing to translate.',
     failed: 'Translation failed. Please try again.',
     failedStatus: 'Translation service error ({status}).',
-    bulkMark: 'Set all words in this sentence',
   },
 
   settings: {

@@ -49,8 +49,30 @@ export function computeSentences(text: string): Sentence[] {
   }
   push(cursor, text.length)
 
-  // 앞뒤 공백만 있는 조각은 버린다
-  return sentences.filter((s) => s.text.trim().length > 0)
+  // 앞뒤 공백만 있는 조각은 버린다.
+  // 이때 index 를 다시 매겨야 한다 — 빈 줄 때문에 밀린 index 를 그대로 두면
+  // 나중에 sentences[word.sentenceIndex] 조회가 엉뚱한 문장을 가리킨다.
+  return sentences
+    .filter((s) => s.text.trim().length > 0)
+    .map((s, index) => ({ ...s, index }))
+}
+
+/**
+ * 이 단어가 문장의 첫 단어인가.
+ *
+ * 문장 경계는 앞쪽 공백을 포함하므로 (예: " The us in …") 단순히 시작 오프셋을
+ * 비교하면 안 된다 — 그 사이에 공백만 있는지 확인해야 한다.
+ */
+export function isSentenceInitial(
+  text: string,
+  sentences: Sentence[],
+  wordStart: number,
+  sentenceIndex: number,
+): boolean {
+  const sentence = sentences.find((s) => s.index === sentenceIndex)
+  if (!sentence) return false
+  if (wordStart <= sentence.start) return wordStart === sentence.start
+  return text.slice(sentence.start, wordStart).trim().length === 0
 }
 
 function findSentenceEnd(text: string, from: number): number {

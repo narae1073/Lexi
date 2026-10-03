@@ -14,12 +14,6 @@ export const STATUS_GLYPH: Record<WordStatus, string> = {
   unknown: '●',
 }
 
-export const STATUS_LABEL: Record<WordStatus, string> = {
-  known: '아는 단어',
-  unsure: '잘 모르는 단어',
-  unknown: '모르는 단어',
-}
-
 /** 원문을 단어/일반 텍스트로 분절한 조각. 오프셋은 항상 원문 기준 문자 인덱스. */
 export type Segment =
   | {
