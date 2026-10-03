@@ -1,0 +1,210 @@
+@import 'tailwindcss';
+
+/*
+ * 테마 시스템 (Phase 4 추가분)
+ *
+ * 컴포넌트는 zinc-200 같은 값을 쓰지 않고 아래 의미 토큰만 쓴다.
+ * 새 테마를 추가하려면 [data-theme] 블록 하나만 더 만들면 되고,
+ * 사전(dictionary_entries)과 무관하게 색은 전부 여기서 온다.
+ *
+ * 알은(known)은 plan.txt 4줄에 따라 색을 칠하지 않는다 — 어떤 테마에서도 본문색 그대로.
+ */
+
+@theme {
+  --color-bg: var(--t-bg);
+  --color-surface: var(--t-surface);
+  --color-surface-hover: var(--t-surface-hover);
+  --color-ink: var(--t-ink);
+  --color-ink-muted: var(--t-ink-muted);
+  --color-line: var(--t-line);
+  --color-accent: var(--t-accent);
+  --color-accent-ink: var(--t-accent-ink);
+
+  --color-status-unsure: var(--t-status-unsure);
+  --color-status-unknown: var(--t-status-unknown);
+  --color-status-unsure-bg: var(--t-status-unsure-bg);
+  --color-status-unknown-bg: var(--t-status-unknown-bg);
+}
+
+/* ── 밝은 테마 ────────────────────────────────────────────────────────── */
+
+[data-theme='white'] {
+  color-scheme: light;
+  --t-bg: #f7f8fa;
+  --t-surface: #ffffff;
+  --t-surface-hover: #f1f3f5;
+  --t-ink: #16181d;
+  --t-ink-muted: #6b7280;
+  --t-line: #e2e5ea;
+  --t-accent: #2563eb;
+  --t-accent-ink: #ffffff;
+  --t-status-unsure: #b45309;
+  --t-status-unknown: #dc2626;
+  --t-status-unsure-bg: rgb(180 83 9 / 0.09);
+  --t-status-unknown-bg: rgb(220 38 38 / 0.09);
+}
+
+[data-theme='sepia'] {
+  color-scheme: light;
+  --t-bg: #f2e8d5;
+  --t-surface: #fbf5e9;
+  --t-surface-hover: #ece0c8;
+  --t-ink: #4a382a;
+  --t-ink-muted: #8a7660;
+  --t-line: #ddceb2;
+  --t-accent: #a5622a;
+  --t-accent-ink: #fdfaf4;
+  --t-status-unsure: #96590f;
+  --t-status-unknown: #b23c2b;
+  --t-status-unsure-bg: rgb(150 89 15 / 0.1);
+  --t-status-unknown-bg: rgb(178 60 43 / 0.1);
+}
+
+[data-theme='matcha'] {
+  color-scheme: light;
+  --t-bg: #eaf2e2;
+  --t-surface: #f7fbf3;
+  --t-surface-hover: #dde9d2;
+  --t-ink: #35402f;
+  --t-ink-muted: #74806a;
+  --t-line: #cfdcc4;
+  --t-accent: #4f8a3d;
+  --t-accent-ink: #f7fbf3;
+  --t-status-unsure: #8a6116;
+  --t-status-unknown: #b5432f;
+  --t-status-unsure-bg: rgb(138 97 22 / 0.1);
+  --t-status-unknown-bg: rgb(181 67 47 / 0.1);
+}
+
+[data-theme='latte'] {
+  color-scheme: light;
+  --t-bg: #efeef9;
+  --t-surface: #f9f8ff;
+  --t-surface-hover: #e3e0f2;
+  --t-ink: #3f3a52;
+  --t-ink-muted: #7e7a93;
+  --t-line: #d8d4ea;
+  --t-accent: #7c5cd6;
+  --t-accent-ink: #f9f8ff;
+  --t-status-unsure: #96601d;
+  --t-status-unknown: #c0392f;
+  --t-status-unsure-bg: rgb(150 96 29 / 0.1);
+  --t-status-unknown-bg: rgb(192 57 47 / 0.1);
+}
+
+/* ── 어두운 테마 ──────────────────────────────────────────────────────── */
+
+[data-theme='black'] {
+  color-scheme: dark;
+  --t-bg: #0d0d0f;
+  --t-surface: #17171a;
+  --t-surface-hover: #232327;
+  --t-ink: #f2f2f3;
+  --t-ink-muted: #9a9aa2;
+  --t-line: #2a2a30;
+  --t-accent: #22d3ee;
+  --t-accent-ink: #04222a;
+  --t-status-unsure: #fbbf24;
+  --t-status-unknown: #f87171;
+  --t-status-unsure-bg: rgb(251 191 36 / 0.14);
+  --t-status-unknown-bg: rgb(248 113 113 / 0.14);
+}
+
+[data-theme='monaspace'] {
+  color-scheme: dark;
+  --t-bg: #121213;
+  --t-surface: #1b1b1e;
+  --t-surface-hover: #26262b;
+  --t-ink: #f4f4f5;
+  --t-ink-muted: #a1a1aa;
+  --t-line: #2e2e34;
+  --t-accent: #4ec9b0;
+  --t-accent-ink: #06231d;
+  --t-status-unsure: #fbbf24;
+  --t-status-unknown: #f87171;
+  --t-status-unsure-bg: rgb(251 191 36 / 0.14);
+  --t-status-unknown-bg: rgb(248 113 113 / 0.14);
+}
+
+[data-theme='dracula'] {
+  color-scheme: dark;
+  --t-bg: #282a36;
+  --t-surface: #343746;
+  --t-surface-hover: #44475a;
+  --t-ink: #f8f8f2;
+  --t-ink-muted: #a5abc4;
+  --t-line: #44475a;
+  --t-accent: #bd93f9;
+  --t-accent-ink: #282a36;
+  --t-status-unsure: #ffb86c;
+  --t-status-unknown: #ff79c6;
+  --t-status-unsure-bg: rgb(255 184 108 / 0.15);
+  --t-status-unknown-bg: rgb(255 121 198 / 0.15);
+}
+
+[data-theme='monokai'] {
+  color-scheme: dark;
+  --t-bg: #272822;
+  --t-surface: #33342b;
+  --t-surface-hover: #414236;
+  --t-ink: #f8f8f2;
+  --t-ink-muted: #b0b39a;
+  --t-line: #494a3e;
+  --t-accent: #a6e22e;
+  --t-accent-ink: #1e1f1a;
+  --t-status-unsure: #e6db74;
+  --t-status-unknown: #ff7a9c;
+  --t-status-unsure-bg: rgb(230 219 116 / 0.14);
+  --t-status-unknown-bg: rgb(255 122 156 / 0.16);
+}
+
+[data-theme='tokyo-night'] {
+  color-scheme: dark;
+  --t-bg: #1a1b26;
+  --t-surface: #24283b;
+  --t-surface-hover: #2f344c;
+  --t-ink: #c0caf5;
+  --t-ink-muted: #8b93c0;
+  --t-line: #2f344c;
+  --t-accent: #7aa2f7;
+  --t-accent-ink: #1a1b26;
+  --t-status-unsure: #e0af68;
+  --t-status-unknown: #f7768e;
+  --t-status-unsure-bg: rgb(224 175 104 / 0.15);
+  --t-status-unknown-bg: rgb(247 118 142 / 0.15);
+}
+
+[data-theme='nord'] {
+  color-scheme: dark;
+  --t-bg: #2e3440;
+  --t-surface: #3b4252;
+  --t-surface-hover: #434c5e;
+  --t-ink: #eceff4;
+  --t-ink-muted: #b6bdcb;
+  --t-line: #4c566a;
+  --t-accent: #88c0d0;
+  --t-accent-ink: #2e3440;
+  --t-status-unsure: #ebcb8b;
+  --t-status-unknown: #e29a9e;
+  --t-status-unsure-bg: rgb(235 203 139 / 0.15);
+  --t-status-unknown-bg: rgb(226 154 158 / 0.15);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  overscroll-behavior-y: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 스크롤바도 테마를 따라간다 */
+* {
+  scrollbar-color: var(--t-line) transparent;
+}
