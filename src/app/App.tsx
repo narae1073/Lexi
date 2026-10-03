@@ -8,8 +8,10 @@ import { ReaderView } from '../features/reader/ReaderView'
 import { LanguagePicker } from '../features/languages/LanguagePicker'
 import { AppLanguageSwitcher } from '../features/settings/AppLanguageSwitcher'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
+import { Wordbook } from '../features/wordbook/Wordbook'
 import { useDocumentsStore } from './stores/documents'
 import { useLanguagesStore } from './stores/languages'
+import { useOccurrencesStore } from './stores/occurrences'
 import { useApplyTheme, useTranslation } from './stores/settings'
 
 function DocumentReader({ id }: { id: string }) {
@@ -37,6 +39,9 @@ function Nav() {
         <Link to="/compose" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
           {t('nav.compose')}
         </Link>
+        <Link to="/wordbook" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
+          {t('nav.wordbook')}
+        </Link>
         <Link to="/settings" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
           {t('nav.settings')}
         </Link>
@@ -58,9 +63,16 @@ export default function App() {
     updateServiceWorker,
   } = useRegisterSW()
 
+  const loadOccurrences = useOccurrencesStore((s) => s.loadLanguage)
+  const enrolled = useLanguagesStore((s) => s.enrolled)
+
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    for (const language of enrolled) void loadOccurrences(language)
+  }, [enrolled, loadOccurrences])
 
   // 온보딩 완료 전에는 언어 선택 화면으로 보낸다 (plan.txt 5줄)
   if (!ready) return <LanguagePicker />
@@ -72,6 +84,7 @@ export default function App() {
         <Route path="/" element={documents.length === 0 ? <ComposeDocument /> : <DocumentList />} />
         <Route path="/languages" element={<LanguagePicker onDone={() => history.back()} />} />
         <Route path="/compose" element={<ComposeDocument />} />
+        <Route path="/wordbook" element={<Wordbook />} />
         <Route path="/settings" element={<SettingsPanel />} />
         <Route path="/read/:id" element={<DocumentRoute />} />
         <Route path="*" element={<Navigate to="/" replace />} />

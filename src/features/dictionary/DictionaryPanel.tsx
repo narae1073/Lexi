@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from '../../app/stores/settings'
 import {
   DictionaryError,
+  dictionaryKey,
   useDictionaryStore,
   type DictionaryEntry,
   type DictionarySection,
@@ -28,7 +29,7 @@ export function DictionaryPanel({
   surface: string
 }) {
   const t = useTranslation()
-  const requestKey = `${languageCode}::${lemma}`
+  const requestKey = dictionaryKey(languageCode, lemma)
   const cachedEntry = useDictionaryStore((s) => s.entries[requestKey])
   const lookup = useDictionaryStore((s) => s.lookup)
 

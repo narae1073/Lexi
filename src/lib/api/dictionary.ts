@@ -54,7 +54,16 @@ type DictionaryState = {
   lookup: (languageCode: LanguageCode, lemma: string, surface?: string) => Promise<DictionaryEntry>
 }
 
-const keyOf = (languageCode: LanguageCode, lemma: string) => `${languageCode}::${lemma}`
+/**
+ * 캐시·중복 요청 키.
+ *
+ * 반드시 한 곳에서 계산해야 한다. 패널이 원본 lemma 으로 키를 만들고 스토어가
+ * 소문자로 키를 만들면, 표 대문자 단어(독일어 명사 등)는 결과가 도착해도
+ * 패널이 캐시를 못 찾아 "찾는 중" 에서 멈춘다.
+ */
+export function dictionaryKey(languageCode: LanguageCode, lemma: string): string {
+  return `${languageCode}::${lemma.trim().toLowerCase()}`
+}
 
 export const useDictionaryStore = create<DictionaryState>((set, get) => ({
   entries: {},
@@ -62,7 +71,12 @@ export const useDictionaryStore = create<DictionaryState>((set, get) => ({
 
   lookup: (languageCode, lemma, surface) => {
     const word = lemma.trim().toLowerCase()
-    const key = keyOf(languageCode, word)
+    const key = dictionaryKey(languageCode, word)
+
+    // 이미 있으면 다시 물어보지 않는다 — 표 대문자 표기와 소문자 표기가
+    // 같은 단어로 수렴하므로 캐시 적중률을 떨어뜨리면 안 된다
+    const cached = get().entries[key]
+    if (cached) return Promise.resolve(cached)
 
     const existing = get().inFlight.get(key)
     if (existing) return existing

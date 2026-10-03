@@ -1,0 +1,138 @@
+import { describe, expect, it } from 'vitest'
+
+import type { WordOccurrence } from '../../app/stores/occurrences'
+import type { WordState, WordStatus } from '../../types'
+import { buildWordbook, groupByStatus } from './buildWordbook'
+
+const occurrence = (over: Partial<WordOccurrence> & { lemma: string }): WordOccurrence => ({
+  documentId: 'doc-1',
+  languageCode: 'en',
+  surfaces: [over.lemma],
+  count: 1,
+  recordedAt: 1000,
+  charStart: 0,
+  charEnd: over.lemma.length,
+  sentence: 'A sentence.',
+  documentTitle: 'Doc 1',
+  ...over,
+})
+
+const state = (lemma: string, status: WordStatus): WordState => ({
+  lemma,
+  languageCode: 'en',
+  status,
+  seenCount: 1,
+  firstSeenAt: '2026-01-01',
+  lastSeenAt: '2026-01-01',
+})
+
+describe('buildWordbook', () => {
+  it('등장 기록이 없으면 빈 목록', () => {
+    expect(buildWordbook({ languageCode: 'en', occurrences: [] })).toEqual([])
+  })
+
+  it('상태가 없는 단어는 미표시 그룹이다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [occurrence({ lemma: 'cat' })],
+    })
+    expect(entries).toHaveLength(1)
+    expect(entries[0].status).toBe('unmarked')
+  })
+
+  it('상태를 붙여 그룹을 나눈다', () => {
+    const byKey = {
+      'en::cat': state('cat', 'known'),
+      'en::dog': state('dog', 'unsure'),
+      'en::fox': state('fox', 'unknown'),
+    }
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'cat' }),
+        occurrence({ lemma: 'dog' }),
+        occurrence({ lemma: 'fox' }),
+      ],
+      byKey,
+    })
+    const grouped = groupByStatus(entries)
+    expect(grouped.known.map((e) => e.lemma)).toEqual(['cat'])
+    expect(grouped.unsure.map((e) => e.lemma)).toEqual(['dog'])
+    expect(grouped.unknown.map((e) => e.lemma)).toEqual(['fox'])
+    expect(grouped.unmarked).toHaveLength(0)
+  })
+
+  it('같은 lemma 의 여러 문서 기록을 하나로 합친다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'cat', documentId: 'd1', count: 3, recordedAt: 1000 }),
+        occurrence({ lemma: 'cat', documentId: 'd2', count: 2, recordedAt: 2000, documentTitle: 'Doc 2' }),
+      ],
+    })
+    expect(entries).toHaveLength(1)
+    expect(entries[0].count).toBe(5)
+    expect(entries[0].documentCount).toBe(2)
+  })
+
+  it('예문은 가장 최근 기록의 것을 쓴다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'cat', documentId: 'old', sentence: 'Old sentence.', recordedAt: 1000 }),
+        occurrence({ lemma: 'cat', documentId: 'new', sentence: 'New sentence.', recordedAt: 5000 }),
+      ],
+    })
+    expect(entries[0].sentence).toBe('New sentence.')
+    expect(entries[0].documentId).toBe('new')
+  })
+
+  it('표기를 여러 개 합쳐 담는다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'apple', surfaces: ['apple'] }),
+        occurrence({ lemma: 'apple', documentId: 'd2', surfaces: ['Apple'] }),
+      ],
+    })
+    expect(entries[0].surfaces.sort()).toEqual(['Apple', 'apple'])
+  })
+
+  it('문서 필터가 있으면 그 문서의 단어만 남는다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'cat', documentId: 'd1' }),
+        occurrence({ lemma: 'dog', documentId: 'd2' }),
+      ],
+      documentId: 'd2',
+    })
+    expect(entries.map((e) => e.lemma)).toEqual(['dog'])
+  })
+
+  it('검색이 표기와 원형 모두를 본다', () => {
+    const occurrences = [occurrence({ lemma: 'Apple', surfaces: ['Apple', 'apple'] })]
+    expect(buildWordbook({ languageCode: 'en', occurrences, query: 'app' })).toHaveLength(1)
+    expect(buildWordbook({ languageCode: 'en', occurrences, query: 'zzz' })).toHaveLength(0)
+  })
+
+  it('US 와 us 는 별개 항목으로 남는다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'US' }),
+        occurrence({ lemma: 'us' }),
+      ],
+    })
+    expect(entries.map((e) => e.lemma).sort()).toEqual(['US', 'us'])
+  })
+
+  it('statusOf 로 조회 함수를 넘길 수 있다', () => {
+    const entries = buildWordbook({
+      languageCode: 'ko',
+      occurrences: [occurrence({ lemma: '고양이', languageCode: 'ko' })],
+      statusOf: (lang, lemma) => (lang === 'ko' && lemma === '고양이' ? state('고양이', 'known') : undefined),
+    })
+    expect(entries[0].status).toBe('known')
+  })
+})

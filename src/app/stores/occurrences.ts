@@ -23,6 +23,8 @@ export type WordOccurrence = {
   surfaces: string[]
   /** 등장 횟수 */
   count: number
+  /** 언제 기록됐는지 — 예문으로 가장 최근 문서를 고를 때 쓴다 */
+  recordedAt: number
   /** 단어장의 문맥 예문 */
   charStart: number
   charEnd: number
@@ -75,7 +77,9 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       })),
     )
 
-    const byLemma = new Map<string, WordOccurrence>()
+    /** recordedAt 은 아래에서 한꺼번에 붙인다 */
+    type Draft = Omit<WordOccurrence, 'recordedAt'>
+    const byLemma = new Map<string, Draft>()
     for (const word of words) {
       const lemma = lemmaOf.get(word.text) ?? word.lemma
       const existing = byLemma.get(lemma)
@@ -97,7 +101,10 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       })
     }
 
-    const records = [...byLemma.values()].sort(sortByPosition)
+    const recordedAt = Date.now()
+    const records = [...byLemma.values()]
+      .map((record) => ({ ...record, recordedAt }))
+      .sort(sortByPosition)
     await replaceOccurrences(doc.id, records)
 
     set((s) => ({

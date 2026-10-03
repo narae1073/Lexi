@@ -8,6 +8,7 @@ export const ko: Dictionary = {
     languages: '언어',
     compose: '붙여넣기',
     settings: '설정',
+    wordbook: '단어장',
   },
 
   onboarding: {
@@ -38,6 +39,7 @@ export const ko: Dictionary = {
 
   reader: {
     stats: '단어 {words}개 · 문장 {sentences}개',
+    toWordbook: '이 문서의 단어',
   },
 
   status: {
@@ -48,6 +50,28 @@ export const ko: Dictionary = {
     shortKnown: '앎',
     shortUnsure: '헷갈림',
     shortUnknown: '모름',
+  },
+
+  wordbook: {
+    title: '단어장',
+    pickLanguage: '보고 싶은 언어를 선택하세요.',
+    summary: '단어 {count}개',
+    scoped: '‘{title}’ 의 단어',
+    search: '단어 검색',
+    legend: '상태 버튼을 눌러 표시하세요.',
+    noContext: '기록된 문맥이 없습니다.',
+    group: {
+      unmarked: '미표시',
+      known: '아는 단어',
+      unsure: '잘 모름',
+      unknown: '모름',
+    },
+    empty: {
+      unmarked: '아직 표시하지 않은 단어가 없습니다. 문서를 열어 단어를 모으세요.',
+      known: '아는 단어로 표시한 단어가 없습니다.',
+      unsure: '잘 모름으로 표시한 단어가 없습니다.',
+      unknown: '모름으로 표시한 단어가 없습니다.',
+    },
   },
 
   dictionary: {

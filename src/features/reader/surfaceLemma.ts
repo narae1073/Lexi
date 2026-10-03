@@ -89,7 +89,14 @@ export function resolveSurfaceLemmas(usages: SurfaceUsage[]): Map<string, string
     const lowercase = group.find((u) => !hasUpper(u.surface))
 
     for (const usage of group) {
-      // ① 문장 첫머리에만 나오는 대문자 표기 = 철자 규칙일 뿐 → 소문자와 합친다
+      // ① 문장 중간에도 나온 대문자 표기 = 문장 첫머리 규칙의 산물이 아니므로 대소문자를 지킨다.
+      //    US(국가) 와 Apple 같은 고유명사가 여기 걸린다.
+      if (hasUpper(usage.surface) && usage.nonInitialCount > 0) {
+        mapping.set(usage.surface, normalizeKeepingCase(usage.surface))
+        continue
+      }
+
+      // ② 문장 첫머리에만 나오는 대문자 = 철자 규칙일 가능성이 높다 → 소문자와 합친다
       const isOrthographicVariant =
         hasUpper(usage.surface) && usage.nonInitialCount === 0 && Boolean(lowercase)
       if (isOrthographicVariant) {
@@ -97,15 +104,10 @@ export function resolveSurfaceLemmas(usages: SurfaceUsage[]): Map<string, string
         continue
       }
 
-      // ② 문서 안에서 구별이 증명된 경우에만 대소문자를 지킨다.
-      //    증명 없이는 접는 쪽이 안전하다 — 문서를 넘나들며 학습 상태가 쪼개지는 것보다
-      //    사전 조회는 surface 를 따로 보내므로 대소문자가 없어도 정확히 동작한다.
-      const provenDistinct =
-        group.length > 1 && hasUpper(usage.surface) && usage.nonInitialCount > 0
-      mapping.set(
-        usage.surface,
-        provenDistinct ? normalizeKeepingCase(usage.surface) : normalizeLemma(usage.surface),
-      )
+      // ③ 구별을 증명할 수 없으면 접는다.
+      //    문서를 넘나들며 학습 상태가 쪼개지는 것보다 나쁘지 않은 선택이고,
+      //    사전 조회는 표기(surface)를 따로 보내므로 대소문자가 없어도 정확히 동작한다.
+      mapping.set(usage.surface, normalizeLemma(usage.surface))
     }
   }
 

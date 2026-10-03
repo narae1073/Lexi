@@ -5,9 +5,14 @@ import { collectSurfaceUsages, resolveLemmasFromWords, resolveSurfaceLemmas } fr
 const word = (text: string, sentenceInitial = false) => ({ text, sentenceInitial })
 
 describe('표기 → lemma 매핑', () => {
-  it('한 표기만 쓰이면 그대로 정규화한다', () => {
+  it('소문자 표기만 쓰이면 그대로 정규화한다', () => {
+    const m = resolveLemmasFromWords([word('houses'), word('houses', true)])
+    expect(m.get('houses')).toBe('houses')
+  })
+
+  it('문장 중간에 나온 대문자 단독 표기는 대소문자를 지킨다', () => {
     const m = resolveLemmasFromWords([word('Houses'), word('Houses', true)])
-    expect(m.get('Houses')).toBe('houses')
+    expect(m.get('Houses')).toBe('Houses')
   })
 
   it('문장 첫머리 전용 대문자는 소문자 표기로 합쳐진다', () => {
@@ -43,9 +48,17 @@ describe('표기 → lemma 매핑', () => {
     expect(both.get('apple')).toBe('apple')
   })
 
-  it('증명이 없으면 접는다 — 문서를 넘나들며 상태가 쪼개지지 않도록', () => {
-    const alone = resolveLemmasFromWords([word('Apple'), word('Apple', true)])
+  it('문장 첫머리에만 나오면 접는다 — 문서를 넘나들며 상태가 쪼개지지 않도록', () => {
+    const alone = resolveLemmasFromWords([word('Apple', true), word('Apple', true)])
     expect(alone.get('Apple')).toBe('apple')
+  })
+
+  it('문장 중간에 나온 대문자 표기는 소문자 짝이 없어도 대소문자를 지킨다', () => {
+    // "The US economy grew." 에서는 US 만 있고 소문자 us 가 없다.
+    // 문장 중간에 나온 대문자는 문장 첫머리 규칙의 산물이 아니므로 US 로 남아야 한다.
+    const m = resolveLemmasFromWords([word('The', true), word('US'), word('economy')])
+    expect(m.get('US')).toBe('US')
+    expect(m.get('The')).toBe('the')
   })
 
   it('서로 다른 단어면 대소문자를 접지 않는다 (판정이 무의미해지지 않게)', () => {

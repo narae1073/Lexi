@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
@@ -161,6 +162,13 @@ export function ReaderView({ doc }: { doc: Document }) {
           {languageName(doc.languageCode)} ·{' '}
           {t('reader.stats', { words: wordCount, sentences: sentences.length })}
         </p>
+        {/* 문서 안에서도 단어장으로 갈 수 있다 — 이 문서의 단어만 (plan.txt 9줄) */}
+        <Link
+          to={`/wordbook?doc=${doc.id}&lang=${doc.languageCode}`}
+          className="border-line text-ink-muted hover:text-ink hover:border-accent mt-2 inline-block rounded-lg border px-2.5 py-1 text-xs transition"
+        >
+          {t('reader.toWordbook')}
+        </Link>
       </header>
 
       <div

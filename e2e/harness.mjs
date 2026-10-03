@@ -350,25 +350,49 @@ class Ctx {
     await sleep(300)
   }
 
-  async openDictionary() {
-    const ok = await this.#eval(`(() => {
-      const b = [...document.querySelectorAll('[role="dialog"] button')].find(x => x.innerText.trim() === 'Dictionary');
-      if (!b) return false;
-      b.click();
-      return true;
-    })()`)
-    if (!ok) throw new Error('사전 버튼을 찾지 못함')
-    await this.waitFor(
-      `(() => { const d = document.querySelector('[role="dialog"]');
-         if (!d) return false;
-         const t = d.innerText;
-         return !t.includes('Looking up') && (t.includes('Wiktionary') || t.includes('No entry') || t.includes('Could not'));
-       })()`,
-      '사전 결과',
-      25_000,
-    )
-    await sleep(300)
-    return this.popover()
+  /**
+   * 사전 버튼을 눌러 결과를 기다린다.
+   * freedictionaryapi 가 가끔 응답이 없으므로 한 번 재시도한다 — 일시적 장애와
+   * 실제 회귀를 구분하기 위해 스펙이 아니라 하네스에서 흡수한다.
+   */
+  async openDictionary({ retries = 1 } = {}) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const ok = await this.#eval(`(() => {
+        const d = document.querySelector('[role="dialog"]');
+        if (!d) return false;
+        const b = [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Dictionary');
+        if (b) { b.click(); return true; }
+        const hide = [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Hide');
+        if (hide) hide.click();
+        return false;
+      })()`)
+      if (ok) {
+        // Edge Function 이 후보를 순차 조회해 upstream 지연이 누적되므로 generous 한 창이 필요하다
+        const settled = await this.#waitDictionary(25_000)
+        if (settled) {
+          await sleep(300)
+          return this.popover()
+        }
+      }
+    }
+    throw new Error('사전 결과가 도착하지 않음')
+  }
+
+  async #waitDictionary(timeoutMs) {
+    try {
+      await this.waitFor(
+        `(() => { const d = document.querySelector('[role="dialog"]');
+           if (!d) return false;
+           const t = d.innerText;
+           return !t.includes('Looking up') && (t.includes('Wiktionary') || t.includes('No entry') || t.includes('Could not'));
+         })()`,
+        '사전 결과',
+        timeoutMs,
+      )
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** 문서를 만든 뒤 읽기 화면까지 연다 */

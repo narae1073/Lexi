@@ -9,6 +9,7 @@ export const en = {
     languages: 'Languages',
     compose: 'Add text',
     settings: 'Settings',
+    wordbook: 'Wordbook',
   },
 
   onboarding: {
@@ -39,6 +40,7 @@ export const en = {
 
   reader: {
     stats: '{words} words · {sentences} sentences',
+    toWordbook: 'Words in this document',
   },
 
   status: {
@@ -49,6 +51,28 @@ export const en = {
     shortKnown: 'Know',
     shortUnsure: 'Unsure',
     shortUnknown: 'New',
+  },
+
+  wordbook: {
+    title: 'Wordbook',
+    pickLanguage: 'Choose a language to see your words.',
+    summary: '{count} words',
+    scoped: 'From “{title}”',
+    search: 'Search words',
+    legend: 'Tap a status to mark the word.',
+    noContext: 'No context recorded.',
+    group: {
+      unmarked: 'Not marked',
+      known: 'Know it',
+      unsure: 'Unsure',
+      unknown: 'Do not know',
+    },
+    empty: {
+      unmarked: 'No unmarked words. Open a document to collect words.',
+      known: 'Nothing marked as known yet.',
+      unsure: 'Nothing marked as unsure yet.',
+      unknown: 'Nothing marked as unknown yet.',
+    },
   },
 
   dictionary: {
