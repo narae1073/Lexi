@@ -8,36 +8,37 @@ import { useSyncStore } from '../../app/stores/sync'
  * 예전엔 설정 화면을 열어야만 알 수 있었다. 그래서 '창을 닫았는데 진도가 사라졌다'
  * 는 걸 알 방법이 없었다 — 잃었다는 사실조차, 언제인지도 몰랐다.
  *
- * 아무 문제가 없으면 아무것도 말하지 않는다. 늘 보이면 늘 보이지 않게 된다 —
- * 그때 이 자리가 없는 것처럼 느껴져서, 정말 멈춘 때에야 눈에 띈다.
+ * **단어 상태가 바뀐 때만 말한다.**
+ *
+ * 저장은 문서를 열어도, 등장 기록을 계산해도, 제목을 바꿔도 생긴다. 그것까지
+ * 알리면 읽는 내내 깜빡인다 — 있다는 사실이 곧 무시하게 된다. 사람들이 잃어버렸다고
+ * 느낀 것은 진도, 즉 단어 상태였다. 그때만 말한다.
+ *
+ * 아무 문제가 없으면 아무것도 말하지 않는다 — 늘 보이면 늘 보이지 않게 된다.
  */
 export function SyncIndicator() {
   const t = useTranslation()
   const signedIn = useAuthStore((s) => s.user !== null)
   const status = useSyncStore((s) => s.status)
-  const dirty = useSyncStore((s) => s.dirty)
+  const wordStatesPending = useSyncStore((s) => s.pendingByStore.wordStates ?? 0)
 
   if (!signedIn) return null
 
   const failed = status === 'error'
-  const syncing = status === 'syncing'
+  // 진도가 아니라 다른 저장은 여기서 말하지 않는다
+  const pending = wordStatesPending > 0
 
-  // 저장은 끝났는데 아직 서버로 못 보냈다 — 이게 바로 잃을 수 있는 구간이다
-  if (!failed && !syncing && !dirty) return null
+  if (!failed && !pending) return null
 
   return (
     <span
       role="status"
       aria-live="polite"
       className={`shrink-0 text-[10px] ${
-        failed ? 'text-status-unknown' : syncing ? 'text-ink-muted' : 'text-status-unsure'
+        failed ? 'text-status-unknown' : 'text-status-unsure'
       }`}
     >
-      {failed
-        ? t('sync.failed')
-        : syncing
-          ? t('sync.syncing')
-          : t('sync.pending')}
+      {failed ? t('sync.failed') : t('sync.pending')}
     </span>
   )
 }

@@ -24,7 +24,7 @@ const SYNC_DEBOUNCE_MS = 1_200
 /** 아무리 자주 눌러도 이만큼 지나면 한 번은 보낸다 — 미루기만 하다가 끝내지 않게 */
 const SYNC_MAX_WAIT_MS = 10_000
 
-type SyncState = {
+export type SyncState = {
   status: SyncStatus
   lastSyncedAt: string | null
   error: string | null
@@ -39,8 +39,18 @@ type SyncState = {
    * 알리지 않았다. 창을 X 로 닫으면 다시 열 때까지 그 상태가 유지된다.
    */
   dirty: boolean
-  /** 저장은 끝났지만 아직 서버에 반영되지 않은 changes 수 — 화면에 보여줄 수 있게 */
-  pendingWrites: number
+  /**
+   * 저장은 끝났지만 아직 서버에 반영되지 않은 변화 — 저장소별 개수.
+   *
+   * 개수로 두는 이유: 보내는 중에 새로 쌓인 것과, 이번에 보낸 것을 구분해야 한다.
+   * 성공했을 때 '보낸 것'만큼만 빼야 남은 것이 정확히 남는다.
+   */
+  pendingByStore: Record<string, number>
+}
+
+/** 합쳐진 밀린 개수 */
+export function pendingCount(byStore: Record<string, number>): number {
+  return Object.values(byStore).reduce((sum, n) => sum + n, 0)
 }
 
 /**
@@ -54,7 +64,7 @@ export const useSyncStore = create<SyncState>((set) => ({
   lastSyncedAt: null,
   error: null,
   dirty: false,
-  pendingWrites: 0,
+  pendingByStore: {},
 
   syncNow: async () => {
     if (!useAuthStore.getState().user) return
@@ -72,11 +82,15 @@ export const useSyncStore = create<SyncState>((set) => ({
   },
 }))
 
-type Setter = (partial: Partial<SyncState>) => void
+type Setter = (partial: Partial<SyncState> | ((s: SyncState) => Partial<SyncState>)) => void
 
 async function run(set: Setter) {
   const user = useAuthStore.getState().user
   if (!user) return
+
+  // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
+  // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다
+  const batch = { ...useSyncStore.getState().pendingByStore }
 
   set({ status: 'syncing', error: null })
 
@@ -101,23 +115,35 @@ async function run(set: Setter) {
     const local = await readLocal()
     await pushOccurrences(user.id, local.occurrences)
 
-    set({
-      status: 'synced',
-      lastSyncedAt: new Date().toISOString(),
-      error: null,
-      // 다 밀었다 — 이제 서버와 같다
-      dirty: false,
-      pendingWrites: 0,
+    set((s) => {
+      const pendingByStore: Record<string, number> = { ...s.pendingByStore }
+      for (const [store, count] of Object.entries(batch)) {
+        const left = (pendingByStore[store] ?? 0) - count
+        if (left > 0) pendingByStore[store] = left
+        else delete pendingByStore[store]
+      }
+      return {
+        status: 'synced' as SyncStatus,
+        lastSyncedAt: new Date().toISOString(),
+        error: null,
+        // 다 밀었다 — 이제 서버와 같다
+        dirty: pendingCount(pendingByStore) > 0,
+        pendingByStore,
+      }
     })
   } catch (error) {
     // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
     if (error instanceof SyncUnavailable) {
-      set({ status: 'local', error: null })
+      // 서버를 쓰지 않는 상태다 — '밀렸다'고 하지 않는다. 오류도 아닌 정상이다
+      set({ status: 'local', error: null, dirty: false, pendingByStore: {} })
       return
     }
     set({
       status: 'error',
       error: error instanceof Error ? error.message : String(error),
+      // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다
+      dirty: true,
+      pendingByStore: batch,
     })
   }
 }
@@ -154,9 +180,12 @@ export function useCloudSync() {
       maxWaitMs: SYNC_MAX_WAIT_MS,
     })
 
-    const unsubscribe = onLocalWrite(() => {
+    const unsubscribe = onLocalWrite((store) => {
       // 저장은 끝났는데 서버는 아직 모른다 — 이 순간이 바로 '진도가 사라진' 상태다
-      useSyncStore.setState((s) => ({ dirty: true, pendingWrites: s.pendingWrites + 1 }))
+      useSyncStore.setState((s) => ({
+        dirty: true,
+        pendingByStore: { ...s.pendingByStore, [store]: (s.pendingByStore[store] ?? 0) + 1 },
+      }))
       scheduler.notify()
     })
 
@@ -199,6 +228,18 @@ export function useCloudSync() {
     window.addEventListener('online', online)
     return () => window.removeEventListener('online', online)
   }, [user, syncQuietly])
+}
+
+/**
+ * 설정 화면용 — 무엇이 얼마��� 밀렸는지 정확히 말해야 하므로 전부 센다.
+ *
+ * 읽는 동안의 표시와 다르다. 거긴 사용자가 일부러 확인하러 오지 않으니 조용해야 하고,
+ * 여기는 온 사람이 '지금 무엇이 밀렸나' 를 묻는 곳이다.
+ */
+export function usePendingSummary(): { dirty: boolean; count: number } {
+  const dirty = useSyncStore((s) => s.dirty)
+  const byStore = useSyncStore((s) => s.pendingByStore)
+  return { dirty, count: pendingCount(byStore) }
 }
 
 /** 로그인 화면·설정에서 쓰는 편의 훅 */
