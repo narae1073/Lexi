@@ -5,11 +5,17 @@ import { useDocumentsStore } from '../../app/stores/documents'
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import type { WordOccurrence } from '../../app/stores/occurrences'
-import { useLanguageName, useTranslation } from '../../app/stores/settings'
+import {
+  useLanguageName,
+  useSettingsStore,
+  useTranslation,
+} from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
+import { paginate, PAGE_SIZES } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
 import type { WordbookGroup } from './buildWordbook'
+import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
 
 type GroupKey = WordbookGroup
@@ -38,6 +44,10 @@ export function Wordbook() {
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(initial)
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState<GroupKey>('unmarked')
+  const [pageNumber, setPageNumber] = useState(1)
+
+  const pageSize = useSettingsStore((s) => s.wordbookPageSize)
+  const setPageSize = useSettingsStore((s) => s.setWordbookPageSize)
 
   const occurrences = useOccurrencesStore((s) => s.byLanguage[languageCode ?? ''] ?? EMPTY)
   const byKey = useWordStatesStore((s) => s.byKey)
@@ -51,6 +61,18 @@ export function Wordbook() {
   )
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
+  /**
+   * 언어나 상태 탭, 검색어, 쪽 수를 바꾸면 항상 첫 쪽으로 돌려보낸다.
+   *
+   * 목록이 줄어 마지막 쪽이 사라지는 경우까지 paginate 가 계산에서 당겨준다 —
+   * 화면에 빈 쪽을 보여주지 않기 위해서다.
+   */
+  const resetPage = () => setPageNumber(1)
+  const current = useMemo(
+    () => paginate(grouped[group], pageNumber, pageSize),
+    [grouped, group, pageNumber, pageSize],
+  )
+
   if (!languageCode) {
     return (
       <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -59,8 +81,6 @@ export function Wordbook() {
       </section>
     )
   }
-
-  const list = grouped[group]
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -79,7 +99,10 @@ export function Wordbook() {
             <button
               key={code}
               type="button"
-              onClick={() => setLanguageCode(code)}
+              onClick={() => {
+                setLanguageCode(code)
+                resetPage()
+              }}
               aria-pressed={code === languageCode}
               className={
                 code === languageCode
@@ -95,7 +118,10 @@ export function Wordbook() {
 
       <input
         value={query}
-        onChange={(event) => setQuery(event.target.value)}
+        onChange={(event) => {
+          setQuery(event.target.value)
+          resetPage()
+        }}
         placeholder={t('wordbook.search')}
         className="border-line focus:border-accent mb-4 w-full rounded-lg border px-3 py-2 text-sm outline-none"
       />
@@ -106,7 +132,10 @@ export function Wordbook() {
           <button
             key={key}
             type="button"
-            onClick={() => setGroup(key)}
+            onClick={() => {
+              setGroup(key)
+              resetPage()
+            }}
             aria-pressed={key === group}
             className={
               key === group
@@ -122,15 +151,25 @@ export function Wordbook() {
 
       <p className="text-ink-muted mb-3 text-xs">{t('wordbook.legend')}</p>
 
-      {list.length === 0 ? (
+      {current.items.length === 0 ? (
         <p className="text-ink-muted py-8 text-sm">{t(`wordbook.empty.${group}`)}</p>
       ) : (
         <ul className="divide-line divide-y">
-          {list.map((entry) => (
+          {current.items.map((entry) => (
             <WordbookItem key={entry.lemma} entry={entry} languageCode={languageCode} />
           ))}
         </ul>
       )}
+
+      <Pagination
+        page={current}
+        onPageChange={setPageNumber}
+        pageSizes={PAGE_SIZES}
+        onPageSizeChange={(size) => {
+          setPageSize(size)
+          resetPage()
+        }}
+      />
     </section>
   )
 }

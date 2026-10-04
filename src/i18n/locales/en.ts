@@ -53,6 +53,13 @@ export const en = {
     shortUnknown: 'New',
   },
 
+  pagination: {
+    label: 'Pagination',
+    prev: 'Previous page',
+    next: 'Next page',
+    range: 'Showing {from}–{to} of {total}',
+    size: 'Per page',
+  },
   wordbook: {
     title: 'Wordbook',
     pickLanguage: 'Choose a language to see your words.',

@@ -52,6 +52,13 @@ export const ko: Dictionary = {
     shortUnknown: '모름',
   },
 
+  pagination: {
+    label: '페이지 이동',
+    prev: '이전 쪽',
+    next: '다음 쪽',
+    range: '{total}개 중 {from}–{to}',
+    size: '한 쪽에',
+  },
   wordbook: {
     title: '단어장',
     pickLanguage: '보고 싶은 언어를 선택하세요.',

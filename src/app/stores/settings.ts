@@ -5,6 +5,7 @@ import { persist } from 'zustand/middleware'
 import { createTranslator, DEFAULT_APP_LANGUAGE, type AppLanguage, type Translator } from '../../i18n'
 import type { SupportedLanguageCode } from '../../lib/languages'
 import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features/settings/themes'
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from '../../lib/paginate'
 
 /** 표시 안 한 단어의 옅은 정도 (%) — 0 이면 본문색 그대로, 클수록 옅다 */
 export const UNMARKED_DIM_MIN = 0
@@ -30,6 +31,11 @@ export const TEXT_SCALE_STEP = 5
 export const TEXT_SCALE_DEFAULT = 100
 
 /** 저장된 값이 슬라이더 눈금에 없는 값이어도 눈금 위로 올려 snaps — 손잡이가 어긋나지 않게 */
+/** 고를 수 있는 단어장 페이지 크기만 받아들인다 — 깨진 저장을 스스로 고쳐야 한다 */
+export function pageSizeOrDefault(value: number): number {
+  return (PAGE_SIZES as readonly number[]).includes(value) ? value : DEFAULT_PAGE_SIZE
+}
+
 export function clampTextScale(value: number): number {
   if (!Number.isFinite(value)) return TEXT_SCALE_DEFAULT
   const clamped = Math.min(TEXT_SCALE_MAX, Math.max(TEXT_SCALE_MIN, value))
@@ -45,10 +51,13 @@ type SettingsState = {
   unmarkedDim: number
   /** 화면 전체 글자 크기 배율 (%) */
   textScale: number
+  /** 단어장 한 페이지에 보여줄 단어 수 */
+  wordbookPageSize: number
   setAppLanguage: (language: AppLanguage | null) => void
   setTheme: (theme: ThemeId | null) => void
   setUnmarkedDim: (value: number) => void
   setTextScale: (value: number) => void
+  setWordbookPageSize: (value: number) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
 }
@@ -71,10 +80,13 @@ export const useSettingsStore = create<SettingsState>()(
       theme: null,
       unmarkedDim: UNMARKED_DIM_DEFAULT,
       textScale: TEXT_SCALE_DEFAULT,
+      wordbookPageSize: DEFAULT_PAGE_SIZE,
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
       setUnmarkedDim: (value) => set({ unmarkedDim: clampUnmarkedDim(value) }),
       setTextScale: (value) => set({ textScale: clampTextScale(value) }),
+      // 매번 고를 필요는 없지만, 지정한 뒤에 다음번에도 남아 있어야 한다
+      setWordbookPageSize: (value) => set({ wordbookPageSize: pageSizeOrDefault(value) }),
       resolvedAppLanguage: () => get().appLanguage ?? detectDeviceLanguage(),
       resolvedTheme: () => get().theme ?? detectPreferredTheme(),
     }),
