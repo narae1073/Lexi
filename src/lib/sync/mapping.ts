@@ -24,6 +24,8 @@ type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Row']
 type WordStateInsert = Database['public']['Tables']['word_states']['Insert']
 type OccurrenceInsert = Database['public']['Tables']['word_occurrences']['Insert']
 
+export type OccurrenceGroup = { documentId: string; lemma: string; rows: OccurrenceKey[] }
+
 /** 읽을 때 필요한 열만 — Row 와 Insert 를 모두 받으려면 이만큼이면 된다 */
 type OccurrenceKey = Pick<
   OccurrenceRow,
@@ -129,14 +131,24 @@ export function occurrenceFromRows(rows: OccurrenceKey[], document: Document): W
   }
 }
 
-export function groupOccurrencesByDocument(rows: OccurrenceKey[]): Map<string, OccurrenceKey[]> {
-  const grouped = new Map<string, OccurrenceKey[]>()
+/**
+ * 등장 기록을 (문서, 단어) 단위로 묶는다.
+ *
+ * **문서만으로 묶으면 안 된다.** 로컬 기록은 (documentId, lemma) 이 한 행이지만
+ * 서버는 표기 하나당 한 줄이라 같은 단어의 표기가 여러 줄로 흩어진다.
+ * 문서 단위로만 묶으면 문서 안의 모든 단어가 한 레코드로 뭉개진다 —
+ * 첫 줄의 lemma 을representative 로 삼고 나머지 단어는 전부 surfaces 가 된다.
+ * 실제로 그렇게 되어, 새 기기에서 단어장이 "1 words" 로 보이던 않았다.
+ */
+export function groupOccurrences(rows: OccurrenceKey[]): OccurrenceGroup[] {
+  const grouped = new Map<string, { documentId: string; lemma: string; rows: OccurrenceKey[] }>()
   for (const row of rows) {
-    const list = grouped.get(row.document_id)
-    if (list) list.push(row)
-    else grouped.set(row.document_id, [row])
+    const key = `${row.document_id}::${row.lemma}`
+    const bucket = grouped.get(key)
+    if (bucket) bucket.rows.push(row)
+    else grouped.set(key, { documentId: row.document_id, lemma: row.lemma, rows: [row] })
   }
-  return grouped
+  return [...grouped.values()]
 }
 
 export type { DocumentRow, OccurrenceInsert, OccurrenceKey, WordStateInsert, WordStateRow }

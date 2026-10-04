@@ -5,7 +5,7 @@ import type { Document } from '../../types'
 import {
   documentFromRow,
   documentToRow,
-  groupOccurrencesByDocument,
+  groupOccurrences,
   occurrenceFromRows,
   occurrenceToRows,
   wordStateFromRow,
@@ -132,11 +132,46 @@ describe('word_occurrences 매핑', () => {
     expect(occurrenceFromRows(rows, doc).charStart).toBe(10)
   })
 
-  it('문서 id 로 묶는다', () => {
-    const other = occurrenceToRows(USER, { ...record, documentId: 'doc-2' })
-    const grouped = groupOccurrencesByDocument([...occurrenceToRows(USER, record), ...other])
-    expect(grouped.get('doc-1')).toHaveLength(2)
-    expect(grouped.get('doc-2')).toHaveLength(2)
+  /**
+   * 회귀: 문서만으로 묶으면 문서 안의 모든 단어가 한 레코드로 뭉개진다.
+   * 실제로 새 기기에서 단어장이 "1 words" 로 보이던 원인이었다.
+   */
+  it('문서만으로 묶지 않는다 — 같은 문서의 다른 단어가 합쳐지면 안 된다', () => {
+    const rows = [
+      ...occurrenceToRows(USER, record),
+      ...occurrenceToRows(USER, { ...record, lemma: ' luna', surfaces: ['luna'] }),
+      ...occurrenceToRows(USER, { ...record, lemma: ' tejado', surfaces: ['tejado'] }),
+    ]
+    const grouped = groupOccurrences(rows)
+    expect(grouped).toHaveLength(3)
+    expect(grouped.map((g) => g.lemma).sort()).toEqual([' luna', ' tejado', 'us'])
+  })
+
+  it('같은 단어의 여러 표기는 한 그룹으로 묶인다', () => {
+    const grouped = groupOccurrences(occurrenceToRows(USER, record))
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0].rows).toHaveLength(2)
+    expect(grouped[0].rows.map((r) => r.surface)).toEqual(['US', 'us'])
+  })
+
+  it('문서가 다르면 같은 단어도 따로 묶인다', () => {
+    const rows = [
+      ...occurrenceToRows(USER, record),
+      ...occurrenceToRows(USER, { ...record, documentId: 'doc-2' }),
+    ]
+    const grouped = groupOccurrences(rows)
+    expect(grouped).toHaveLength(2)
+    expect(grouped.map((g) => g.documentId).sort()).toEqual(['doc-1', 'doc-2'])
+  })
+
+  it('라운드트립 후에도 단어마다 한 건씩 남는다', () => {
+    // 문서에 단어 3개가 있다고 하자
+    const words = ['gato', 'luna', 'tejado'].map((lemma) => ({ ...record, lemma, surfaces: [lemma] }))
+    const rows = words.flatMap((w) => occurrenceToRows(USER, w))
+    const pulled = groupOccurrences(rows).map((g) => occurrenceFromRows(g.rows, doc))
+    expect(pulled).toHaveLength(3)
+    expect(pulled.map((o) => o.lemma).sort()).toEqual(['gato', 'luna', 'tejado'])
+    expect(pulled.map((o) => o.surfaces[0]).sort()).toEqual(['gato', 'luna', 'tejado'])
   })
 
   it('표기가 하나뿐이면 한 줄이다', () => {

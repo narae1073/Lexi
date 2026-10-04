@@ -9,7 +9,7 @@ import { mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } fro
 import {
   documentFromRow,
   documentToRow,
-  groupOccurrencesByDocument,
+  groupOccurrences,
   occurrenceFromRows,
   occurrenceToRows,
   wordStateFromRow,
@@ -146,10 +146,11 @@ export async function syncOnce({
   // 등장 기록은 다른 기기에서 만든 문서가 섞이므로, 문서별로 붙인다
   const localDocs = new Map(local.documents.map((d) => [d.id, d]))
   const pulledOccurrences: WordOccurrence[] = []
-  for (const [documentId, rows] of groupOccurrencesByDocument(remote.occurrences)) {
-    const doc = remote.documents.find((d) => d.id === documentId) ?? localDocs.get(documentId)
+  for (const group of groupOccurrences(remote.occurrences)) {
+    const doc =
+      remote.documents.find((d) => d.id === group.documentId) ?? localDocs.get(group.documentId)
     // 문서를 모르면 예문을 붙일 곳이 없다 — 본문이 없는 기록은 쓸 필요가 없다
-    if (doc) pulledOccurrences.push(occurrenceFromRows(rows, doc))
+    if (doc) pulledOccurrences.push(occurrenceFromRows(group.rows, doc))
   }
 
   // 이 기기에만 있는 등장 기록 (문서를 아직 안 열어 기록이 덜 된 경우)
