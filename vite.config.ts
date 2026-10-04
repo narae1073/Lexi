@@ -37,6 +37,21 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/functions\//],
         runtimeCaching: [
           {
+            /*
+             * 화면 이동(HTML)은 네트워크를 먼저 본다.
+             *
+             * precache 는 기본이 캐시 우선이라, 한 번 받아 둔 index.html 이
+             * 서버에 새 판이 생겨도 계속 옛것을 준다. 사용자는 새 버전이
+             * 나왔다는 사실조차 모른다 — 실제로 그랬다. 데스크톱 브라우저에
+             * 수정이 이미 반영돼 있는데도 옛 판으로 떠 있는 상황이 생겼다.
+             *
+             * 3초 안에 못 받으면 캐시로 물러난다. 오프라인에서도 열려야 한다.
+             */
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: { cacheName: 'lexi-shell', networkTimeoutSeconds: 3 },
+          },
+          {
             // 번역/사전 Edge Function 응답은 캐시 가능한 GET만, POST는 캐시하지 않음
             urlPattern: /\/functions\/v1\//,
             handler: 'NetworkOnly',
