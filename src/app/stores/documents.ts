@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 
 import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { deleteDocumentRemote } from '../../lib/sync/sync'
+import { useAuthStore } from './auth'
 import { useOccurrencesStore } from './occurrences'
 import type { Document, LanguageCode } from '../../types'
 
@@ -34,9 +36,21 @@ export const useDocumentsStore = create<DocumentsState>((set) => ({
   },
 
   remove: async (id) => {
+    // 서버에도 알려야 한다 — 안 하면 다음 동기화 때 다른 기기에 다시 나타난다.
+    // 로컬 삭제를 먼저 끝내는 것이 맞다: 동기화가 안 되면 사용자는 문서를 지웠는데
+    // 다른 기기에 남는 것이, 지웠는데 여기에도 남는 것보다 낫다.
     await idbDelete(STORES.documents, id)
     await useOccurrencesStore.getState().forgetDocument(id)
     set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
+
+    const user = useAuthStore.getState().user
+    if (user) {
+      try {
+        await deleteDocumentRemote(user.id, id)
+      } catch (error) {
+        console.error('서버 문서 삭제 실패 — 다음 동기화 때 다시 지운다', error)
+      }
+    }
   },
 
   create: async ({ title, languageCode, rawText, fallbackTitle }) => {

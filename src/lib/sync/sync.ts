@@ -1,0 +1,267 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+import { STORES, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { supabase } from '../supabase/client'
+import type { Database } from '../supabase/database.types'
+import type { Document, WordStatus } from '../../types'
+import type { WordOccurrence } from '../../app/stores/occurrences'
+import { mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
+import {
+  documentFromRow,
+  documentToRow,
+  groupOccurrencesByDocument,
+  occurrenceFromRows,
+  occurrenceToRows,
+  wordStateFromRow,
+  wordStateToRow,
+} from './mapping'
+
+export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
+
+export type SyncReport = {
+  pushed: number
+  pulled: number
+  documents: number
+}
+
+/**
+ * 로컬 ↔ 서버 동기화 (plan.txt 1줄: 기기가 바뀌어도 학습이 이어진다).
+ *
+ * 순서는 pull → merge → push 다. push 를 먼저 하면 이 기기의 옛 상태로 서버를
+ * 덮어써서 다른 기기에서 방금 한 작업을 잃는다.
+ *
+ * 읽기 실패를 throw 하지 않는다. 동기화는 언제든 실패할 수 있고(오프라인,
+ * 세션 만료), 앱은 로컬 데이터만으로 계속 동작해야 한다. 실패는 상태로 알린다.
+ */
+
+export class SyncUnavailable extends Error {
+  constructor() {
+    super('Supabase 미설정')
+    this.name = 'SyncUnavailable'
+  }
+}
+
+function client(): SupabaseClient<Database> {
+  if (!supabase) throw new SyncUnavailable()
+  return supabase
+}
+
+/**
+ * 로컬 IndexedDB 를 읽는다.
+ *
+ * 배울 언어는 localStorage 를 쓰는 스토어에 있어 호출부가 넘긴다 —
+ * 여기서 다시 들면 같은 사실이 두 곳에 생긴다.
+ */
+export async function readLocal(): Promise<{
+  documents: Document[]
+  wordStates: (WordStateRecord & { status: WordStatus })[]
+  occurrences: WordOccurrence[]
+}> {
+  const [documents, wordStates, occurrences] = await Promise.all([
+    idbGetAll<Document>(STORES.documents),
+    idbGetAll<WordStateRecord & { surface?: string; status: WordStatus }>(STORES.wordStates),
+    idbGetAll<WordOccurrence>(STORES.wordOccurrences),
+  ])
+
+  return {
+    documents,
+    wordStates: wordStates.map((r) => ({
+      languageCode: r.languageCode,
+      lemma: r.lemma,
+      status: r.status,
+      seenCount: r.seenCount,
+      firstSeenAt: r.firstSeenAt,
+      lastSeenAt: r.lastSeenAt,
+    })),
+    occurrences,
+  }
+}
+
+/** 병합 결과를 로컬에 쓴다 */
+export async function writeLocal(
+  documents: Document[],
+  wordStates: (WordStateRecord & { status: WordStatus })[],
+  occurrences: WordOccurrence[],
+): Promise<void> {
+  await Promise.all([
+    ...documents.map((doc) => idbPut(STORES.documents, doc)),
+    ...wordStates.map((state) => idbPut(STORES.wordStates, state)),
+  ])
+
+  // 등장 기록은 문서 단위로 갈아끼운다 — 일부만 덮으면 옛 표기가 남는다
+  const byDocument = new Map<string, WordOccurrence[]>()
+  for (const record of occurrences) {
+    const list = byDocument.get(record.documentId)
+    if (list) list.push(record)
+    else byDocument.set(record.documentId, [record])
+  }
+  for (const [documentId, rows] of byDocument) {
+    await replaceOccurrences(documentId, rows)
+  }
+}
+
+export async function pull(userId: string, db: SupabaseClient<Database> = client()) {
+  const [languages, documents, wordStates, occurrences] = await Promise.all([
+    db.from('user_languages').select('language_code').eq('user_id', userId),
+    db.from('documents').select('*').eq('user_id', userId),
+    db.from('word_states').select('*').eq('user_id', userId),
+    db.from('word_occurrences').select('*').eq('user_id', userId),
+  ])
+
+  for (const result of [languages, documents, wordStates, occurrences]) {
+    if (result.error) throw result.error
+  }
+
+  return {
+    languages: (languages.data ?? []).map((r) => r.language_code),
+    documents: (documents.data ?? []).map(documentFromRow),
+    wordStates: (wordStates.data ?? []).map(wordStateFromRow),
+    occurrences: occurrences.data ?? [],
+  }
+}
+
+/**
+ * 동기화 한 사이클.
+ *
+ * 1. 서버를 읽는다
+ * 2. 로컬과 병합한다
+ * 3. 병합 결과를 로컬에 쓴다
+ * 4. 서버에 없는 것만 서버에 쓴다
+ */
+export async function syncOnce({
+  userId,
+  languages: localLanguages,
+  db = client(),
+}: {
+  userId: string
+  /** 이 기기에서 배운 언어 */
+  languages: string[]
+  db?: SupabaseClient<Database>
+}): Promise<SyncReport> {
+  const [remote, local] = await Promise.all([pull(userId, db), readLocal()])
+
+  const words = mergeWordStates(local.wordStates, remote.wordStates)
+  const languages = mergeLanguages(localLanguages, remote.languages)
+
+  // 등장 기록은 다른 기기에서 만든 문서가 섞이므로, 문서별로 붙인다
+  const localDocs = new Map(local.documents.map((d) => [d.id, d]))
+  const pulledOccurrences: WordOccurrence[] = []
+  for (const [documentId, rows] of groupOccurrencesByDocument(remote.occurrences)) {
+    const doc = remote.documents.find((d) => d.id === documentId) ?? localDocs.get(documentId)
+    // 문서를 모르면 예문을 붙일 곳이 없다 — 본문이 없는 기록은 쓸 필요가 없다
+    if (doc) pulledOccurrences.push(occurrenceFromRows(rows, doc))
+  }
+
+  // 이 기기에만 있는 등장 기록 (문서를 아직 안 열어 기록이 덜 된 경우)
+  const pulledIds = new Set(pulledOccurrences.map((o) => `${o.documentId}::${o.lemma}`))
+  const mergedOccurrences = [
+    ...pulledOccurrences,
+    ...local.occurrences.filter((o) => !pulledIds.has(`${o.documentId}::${o.lemma}`)),
+  ]
+
+  const mergedDocuments = mergeDocuments(local.documents, remote.documents)
+
+  const mergedWords = words.merged.map((record) => withStatus(record))
+
+  await writeLocal(mergedDocuments, mergedWords, mergedOccurrences)
+
+  // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
+  await push({ userId, db, languages, documents: mergedDocuments, words: words.pushOnly })
+
+  return {
+    pushed: words.pushOnly.length,
+    pulled: words.pullOnly.length,
+    documents: mergedDocuments.length,
+  }
+}
+
+/** 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다 */
+export function mergeDocuments(local: Document[], remote: Document[]): Document[] {
+  const byId = new Map(remote.map((d) => [d.id, d]))
+  for (const doc of local) {
+    const theirs = byId.get(doc.id)
+    if (!theirs || doc.updatedAt > theirs.updatedAt) byId.set(doc.id, doc)
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+/**
+ * 서버에 없는 것만 보낸다.
+ *
+ * 전부 다시 보내면 RLS 통과는 하지만 다른 기기의 변경과 부딪힐 수 있고,
+ * 불필요한 쓰기로更新时间가 어긋난다.
+ */
+export async function push({
+  userId,
+  db,
+  languages,
+  documents,
+  words,
+}: {
+  userId: string
+  db: SupabaseClient<Database>
+  languages: string[]
+  documents: Document[]
+  words: WordStateRecord[]
+}): Promise<void> {
+  if (languages.length > 0) {
+    const { error } = await db
+      .from('user_languages')
+      .upsert(
+        languages.map((language_code) => ({ user_id: userId, language_code })),
+        { onConflict: 'user_id,language_code', ignoreDuplicates: true },
+      )
+    if (error) throw error
+  }
+
+  if (documents.length > 0) {
+    const { error } = await db
+      .from('documents')
+      .upsert(documents.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' })
+    if (error) throw error
+  }
+
+  if (words.length > 0) {
+    const { error } = await db
+      .from('word_states')
+      .upsert(words.map((w) => wordStateToRow(userId, withStatus(w))), {
+        onConflict: 'user_id,language_code,lemma',
+      })
+    if (error) throw error
+  }
+}
+
+/** 등장 기록은 문서를 통째로 다시 보낸다 — 일부만 갱신하면 옛 표기가 남는다 */
+export async function pushOccurrences(
+  userId: string,
+  records: WordOccurrence[],
+  db: SupabaseClient<Database> = client(),
+): Promise<void> {
+  if (records.length === 0) return
+
+  const documentIds = [...new Set(records.map((r) => r.documentId))]
+  const { error: deleteError } = await db
+    .from('word_occurrences')
+    .delete()
+    .eq('user_id', userId)
+    .in('document_id', documentIds)
+  if (deleteError) throw deleteError
+
+  const rows = records.flatMap((record) => occurrenceToRows(userId, record))
+  // 서버는 표기 하나당 한 줄이라 묶음 제한을 넘지 않도록 잘라 보낸다
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await db.from('word_occurrences').insert(rows.slice(i, i + 500))
+    if (error) throw error
+  }
+}
+
+/** 문서를 지웠을 때 서버에서도 지운다 — 안 지우면 다른 기기에 다시 나타난다 */
+export async function deleteDocumentRemote(
+  userId: string,
+  documentId: string,
+  db: SupabaseClient<Database> = client(),
+): Promise<void> {
+  // word_occurrences 는 documents 의 on delete cascade 로 함께 사라진다
+  const { error } = await db.from('documents').delete().eq('user_id', userId).eq('id', documentId)
+  if (error) throw error
+}

@@ -12,6 +12,7 @@ import { Wordbook } from '../features/wordbook/Wordbook'
 import { useDocumentsStore } from './stores/documents'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
+import { useCloudSync } from './stores/sync'
 import { useWordStatesStore } from './stores/wordStates'
 import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/settings'
 
@@ -57,6 +58,7 @@ function Nav() {
 export default function App() {
   useApplyTheme()
   useApplyTextScale()
+  useCloudSync()
   const t = useTranslation()
   const ready = useLanguagesStore((s) => s.ready)
   const load = useDocumentsStore((s) => s.load)

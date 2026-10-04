@@ -1,4 +1,5 @@
 import { useSettingsStore, useTranslation } from '../../app/stores/settings'
+import { AccountPanel } from './AccountPanel'
 import { AppLanguageSwitcher } from './AppLanguageSwitcher'
 import { ThemePicker } from './ThemePicker'
 import { TextScaleControl } from './TextScaleControl'
@@ -24,6 +25,8 @@ export function SettingsPanel() {
           <AppLanguageSwitcher />
         </div>
       </div>
+
+      <AccountPanel />
 
       <TextScaleControl />
 
