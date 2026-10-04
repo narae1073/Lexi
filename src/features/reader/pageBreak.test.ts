@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Segment, Sentence } from '../../types'
+import type { LanguageCode, Segment, Sentence } from '../../types'
 import {
   DEFAULT_READER_PAGE_WORDS,
   isOnPage,
@@ -220,7 +220,7 @@ describe('pageWordsOrDefault', () => {
  * 어느 쪽에도 렌더되지 않았다. 사용자에게는 "마침표가 안 보인다" 로 보였다.
  */
 describe('실제 토크나이저와 함께 — 글자가 하나도 사라지지 않아야 한다', () => {
-  const CASES: [string, string][] = [
+  const CASES: [LanguageCode, string][] = [
     ['en', 'First one two. Second one two. Third one two. Fourth one two.'],
     ['en', 'Reading is the quiet habit. The Apple store is busy today. Small daily minutes beat one long weekend.'],
     ['ko', '나는 매일 글을 읽습니다. 읽는 습관이 중요합니다. Honesty is the best policy.'],
@@ -238,7 +238,7 @@ Line three with   spaces.
 Line four!`],
   ]
 
-  function pagesOf(languageCode: string, text: string, wordsPerPage: number) {
+  function pagesOf(languageCode: LanguageCode, text: string, wordsPerPage: number) {
     const { segments, sentences } = tokenize(text, languageCode)
     const counts = sentences.map((sentence) =>
       segments.reduce(

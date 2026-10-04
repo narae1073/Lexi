@@ -192,6 +192,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
         // 문장의 첫 단어여도 문서 중간에 다시 나오면 구분 단서가 된다
         sentenceInitial: isSentenceInitial(doc.rawText, sentences, w.start, w.sentenceIndex),
       })),
+      doc.languageCode,
     )
 
     /** recordedAt 은 아래에서 한꺼번에 붙인다 */

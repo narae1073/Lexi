@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import type { LanguageCode } from '../../types'
 import { normalizeLemma, segmentAt, tokenize } from './tokenizer'
 
-const words = (lang: string, text: string) =>
+const words = (lang: LanguageCode, text: string) =>
   tokenize(text, lang)
     .segments.filter((s) => s.type === 'word')
     .map((s) => s.text)

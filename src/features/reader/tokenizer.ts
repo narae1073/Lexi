@@ -1,4 +1,5 @@
-import type { Segment, Sentence } from '../../types'
+import type { LanguageCode, Segment, Sentence } from '../../types'
+import { stripElision } from './elision'
 import { getLanguage } from '../../lib/languages'
 
 /**
@@ -216,8 +217,17 @@ function mergeJoined(ranges: Array<[number, number]>, text: string): Array<[numb
  * 언어 빈도 목록 없이는 오탐이 생긴다(예: was → wa). 학습 상태가 단어별로
  * 어긋나면 그때 사전 연동으로 교체한다 (PLAN.md §8-5).
  */
-export function normalizeLemma(word: string): string {
-  let w = word.toLowerCase()
+export function normalizeLemma(word: string, languageCode?: LanguageCode): string {
+  /**
+   * 축약을 **소문자로 내리기 전에** 푼다.
+   *
+   * 고유명사 판정은 아포스트로피 뒤의 대문자를 본다 — d'Artagnan 과 d'été 의 갈림길이
+   * 그것이다. 먼저 소문자로 내리면 대문자가 사라져 이름까지 축약으로 접힌다.
+   * 순서를 바꾸면 그 신호가 살아 있다.
+   */
+  let w = stripElision(word, languageCode) ?? word
+  w = w.toLowerCase()
+
   const possessive = w.match(/^(.+?)['’]s$/)
   if (possessive && !/^(it|he|she|that's|what's|who's|let's)$/.test(possessive[1])) {
     w = possessive[1]
@@ -227,7 +237,7 @@ export function normalizeLemma(word: string): string {
 
 export type TokenizeResult = { segments: Segment[]; sentences: Sentence[] }
 
-export function tokenize(text: string, languageCode: string): TokenizeResult {
+export function tokenize(text: string, languageCode: LanguageCode): TokenizeResult {
   const sentences = computeSentences(text)
   const ranges = wordRanges(text, languageCode)
 
@@ -249,7 +259,7 @@ export function tokenize(text: string, languageCode: string): TokenizeResult {
       start,
       end,
       text: surface,
-      lemma: normalizeLemma(surface),
+      lemma: normalizeLemma(surface, languageCode),
       sentenceIndex: sentenceIndexAt(start),
     })
     cursor = end

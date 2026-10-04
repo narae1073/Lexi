@@ -116,8 +116,9 @@ export function ReaderView({ doc }: { doc: Document }) {
         text: w.text,
         sentenceInitial: isSentenceInitial(doc.rawText, sentences, w.start, w.sentenceIndex),
       })),
+      doc.languageCode,
     )
-  }, [segments, sentences, doc.rawText])
+  }, [segments, sentences, doc.rawText, doc.languageCode])
 
   /** 세그먼트의 대표 lemma */
   const lemmaFor = useCallback(

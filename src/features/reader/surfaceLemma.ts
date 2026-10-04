@@ -1,3 +1,4 @@
+import type { LanguageCode } from '../../types'
 import { normalizeLemma } from './tokenizer'
 
 /**
@@ -29,7 +30,7 @@ import { normalizeLemma } from './tokenizer'
  *
  * 규칙을 바꿀 때마다 올린다 (PLAN.md — 표기 규칙 변경 시).
  */
-export const LEMMA_VERSION = 2
+export const LEMMA_VERSION = 3
 
 export type SurfaceUsage = {
   surface: string
@@ -84,11 +85,14 @@ export function collectSurfaceUsages(
  * 표기 → 대표 lemma 매핑을 만든다.
  * 같은 표기가 여러 번 나와도 한 번만 계산한다.
  */
-export function resolveSurfaceLemmas(usages: SurfaceUsage[]): Map<string, string> {
+export function resolveSurfaceLemmas(
+  usages: SurfaceUsage[],
+  languageCode?: LanguageCode,
+): Map<string, string> {
   // 접힌 키(소문자)로 묶는다 — 소유격 처리는 normalizeLemma 과 같은 규칙을 쓴다
   const groups = new Map<string, SurfaceUsage[]>()
   for (const usage of usages) {
-    const key = normalizeLemma(usage.surface)
+    const key = normalizeLemma(usage.surface, languageCode)
     const group = groups.get(key)
     if (group) group.push(usage)
     else groups.set(key, [usage])
@@ -111,14 +115,14 @@ export function resolveSurfaceLemmas(usages: SurfaceUsage[]): Map<string, string
       const isOrthographicVariant =
         hasUpper(usage.surface) && usage.nonInitialCount === 0 && Boolean(lowercase)
       if (isOrthographicVariant) {
-        mapping.set(usage.surface, normalizeLemma(lowercase!.surface))
+        mapping.set(usage.surface, normalizeLemma(lowercase!.surface, languageCode))
         continue
       }
 
       // ③ 구별을 증명할 수 없으면 접는다.
       //    문서를 넘나들며 학습 상태가 쪼개지는 것보다 나쁘지 않은 선택이고,
       //    사전 조회는 표기(surface)를 따로 보내므로 대소문자가 없어도 정확히 동작한다.
-      mapping.set(usage.surface, normalizeLemma(usage.surface))
+      mapping.set(usage.surface, normalizeLemma(usage.surface, languageCode))
     }
   }
 
@@ -126,6 +130,9 @@ export function resolveSurfaceLemmas(usages: SurfaceUsage[]): Map<string, string
 }
 
 /** 편의 함수: 표기 목록만 받아 곧바로 매핑을 만든다 */
-export function resolveLemmasFromWords(words: { text: string; sentenceInitial: boolean }[]) {
-  return resolveSurfaceLemmas(collectSurfaceUsages(words))
+export function resolveLemmasFromWords(
+  words: { text: string; sentenceInitial: boolean }[],
+  languageCode?: LanguageCode,
+) {
+  return resolveSurfaceLemmas(collectSurfaceUsages(words), languageCode)
 }
