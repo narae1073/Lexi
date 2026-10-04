@@ -40,7 +40,9 @@ export async function run(ctx) {
   ctx.check('계정 영역이 보인다', state !== null, 'Account & sync')
   ctx.check('메일 입력칸이 있다', state?.email === true, `input[type=email] ${state?.email}`)
   ctx.check('링크 받기 버튼이 있다', state?.send === true, `Send link ${state?.send}`)
-  ctx.check('Google 로그인 버튼이 있다', state?.google === true, `Google ${state?.google}`)
+  // Google provider 는 아직 안 켰으므로 버튼을 숨긴다. 켜기 전 배포하면
+  // 누가 눌렀을 때 실패한다 — 설정이 안 된 기능을 미리 보여주지 않는다.
+  ctx.check('Google 로그인 버튼은 설정 전이라 숨겨져 있다', state?.google === false, `Google ${state?.google}`)
   ctx.check('로그인하지 않아도 된다고 알려준다', state?.hint === true, '안내 문구')
 
   const disabledWhenEmpty = await inAccount(

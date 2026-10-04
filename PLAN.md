@@ -411,3 +411,69 @@ plan.txt 4줄 "아는 단어는 기본 색(검은색)" 유지. 다크모드 대�
 3. **한국어 학습 지원**: 한국어 Service(한국어 성분/어미) 여부. v1은 번역+사전만, v2 고려. -> 일단 v1으로.
 4. **오프라인 동작 범위**: 캐시된 번역/사전만 오프라인 읽기 가능한지, 완전히 오프라인 번역이 필요한지. -> 캐시된 번역/사전만
 5. **앱스토어 목표**: Capacitor(iOS/Android) 제출까지 포함할지, PWA만으로 충분한지. -> 일단 pwa 만으로.
+
+---
+
+## 10. 로그인 수단 설정 (배포 전에 반드시)
+
+코드는 다 들어 있다. 남은 것은 **Supabase 콘솔과 외부 서비스의 설정**뿐이고,
+이건 계정 주인이 직접 해야 하는 일이다.
+
+### 10.1 매직링크 (커스텀 SMTP) — 먼저 이것부터
+
+Supabase 기본 메일 서버는 시간당 발송 횟수 제한이 크고 팀 멤버 주소로만 나간다.
+실제 사용자 주소로는 메일이 가지 않으므로 그대로 두면 로그인이 영영 안 된다.
+
+1. **Resend 계정** (resend.com) — 무료 티어 월 3,000통. 초기 사용자 전부 충분.
+2. Resend → Domains → 새 도메인 추가. 예: `mail.lexi.app`
+   - DNS TXT·MX 레코드가 나온다. 도메인 DNS에 그대로 넣는다.
+   - 레코드 추가 후 상태가 `Verified` 가 될 때까지 몇 분~몇십 분 걸린다.
+3. Resend → API Keys → `re_...` 키 생성.
+4. **Supabase** → Project Settings → Authentication → **Email**
+   - Enable Email Provider: 켬
+   - SMTP Host: `smtp.resend.com`
+   - SMTP Port: `465`
+   - SMTP User: `resend`
+   - SMTP Password: 위의 `re_...` 키
+   - (포트 587을 쓰는 경우 Enable TLS 를 켠다)
+5. **Supabase** → Authentication → URL Configuration
+   - Site URL: 배포 주소 (예: `https://lexi.app`)
+   - Redirect URLs: 로컬 주소와 배포 주소 `/settings`
+6. 다시 로그인 화면에서 링크 받기를 눌러 메일이 오는지 확인한다.
+
+로그인 링크가 열리면 `/settings` 로 돌아온다 (`auth.ts` 의 `emailRedirectTo`).
+
+### 10.2 Google 로그인 — 필요할 때만
+
+1. **Google Cloud Console** → 프로젝트 생성 또는 선택 → APIs & Services → Credentials
+2. OAuth consent screen 설정
+   - 앱 이름·사용자 지원 이메일·개발자 연락처 이메일을 채운다.
+   - 범위는 기본값(`email`, `profile`)이면 충분하다. 민감한 권한은 쓰지 않는다.
+3. Credentials → OAuth client ID → **Web application**
+   - Authorized redirect URIs 에 Supabase 의 콜백을 넣는다:
+     `https://<project-ref>.supabase.co/auth/v1/callback`
+4. 생성된 **Client ID / Client secret** 을 Supabase → Authentication → Providers → Google 에 붙인다.
+5. 앱 배포 후 `.env.local` / 배포 환경에 `VITE_SHOW_GOOGLE_LOGIN=1` 을 넣는다.
+
+**주의 — consent screen 이 "테스트" 상태인 동안에는 테스트 사용자로 등록한
+계정만 로그인된다.** 실제 사용자를 받으려면 동의 화면을 게시 상태로 올려야 하고
+검수 대기 시간이 붙는다. 그래서 매직링크를 먼저 켜는 쪽이 빠르다.
+
+`VITE_SHOW_GOOGLE_LOGIN` 을 1 로 두기 전까지 버튼은 화면에 나타나지 않는다
+(`src/lib/flags.ts`). 설정 전 배포에서 누가 눌렀을 때 실패하는 것을 막기 위함이다.
+
+### 10.3 확인해 볼 것
+
+```bash
+npm run verify:rls   # anon 으로 다른 사용자 데이터가 안 보이는지
+npm run e2e          # 로그인 없이도 앱이 전부 도는지
+```
+
+실제 동기화 경로는 자동 검증하지 않는다. 메일함과 계정이 있어야 하기 때문이다.
+브라우저 프로필 2개(또는 PC + 폰)로 같은 계정 로그인 후 아래를 직접 확인한다.
+
+- [ ] 기기 A 에서 문서와 단어 상태를 만들고 동기화
+- [ ] 기기 B 에서 동기화 → A 의 문서와 상태가 모두 보이는가
+- [ ] 기기 B 에서 상태를 바꾸고 동기화 → 기기 A 에 반영되는가
+- [ ] 양쪽 시간을 바꿔 최근 조작이 이기는가 (`last_seen_at` 규칙)
+- [ ] 기기 A 에서 문서를 지우고 동기화 → 기기 B 에서 사라지는가

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { useAuthStore } from '../../app/stores/auth'
 import { useSyncStore } from '../../app/stores/sync'
@@ -122,17 +123,23 @@ export function AccountPanel() {
         </button>
       </div>
 
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true)
-          void signInWithGoogle().finally(() => setBusy(false))
-        }}
-        className="border-line hover:border-accent mt-2 w-full rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
-      >
-        {t('account.google')}
-      </button>
+      {/*
+        Google provider 를 Supabase 콘솔에서 켜기 전에 배포하면 누가 눌렀을 때
+        실패한다. 설정이 안 된 기능을 미리 보여주는 쪽이 나쁘므로 기본은 숨긴다.
+      */}
+      {showGoogleLogin() && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true)
+            void signInWithGoogle().finally(() => setBusy(false))
+          }}
+          className="border-line hover:border-accent mt-2 w-full rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
+        >
+          {t('account.google')}
+        </button>
+      )}
 
       {linkSent && <p className="text-status-unsure mt-3 text-xs">{t('account.linkSent')}</p>}
       {authError && <p className="text-status-unknown mt-3 text-xs">{authError}</p>}
