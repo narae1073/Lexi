@@ -62,6 +62,7 @@ export function ReaderView({ doc }: { doc: Document }) {
   const pageWords = useSettingsStore((s) => s.readerPageWords)
   const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
   const [pageIndex, setPageIndex] = useState(0)
+  const retryTimer = useRef(0)
 
   /**
    * 표기 → lemma 매핑.
@@ -217,16 +218,21 @@ export function ReaderView({ doc }: { doc: Document }) {
   /**
    * 드래그로 문장을 고르는 경로 (plan.txt 6줄).
    * 선택이 안 된(단순 클릭) 상태면 단어 팝오버를 그대로 둔다.
+   *
+   *
+   * 무엇이 됐는지를 돌려준다 — 호출한 쪽이 재시도를 정한다.
+   * 'pending' 은 "선택은 있는데 앵커를 못 잡았다", 즉 브라우저가 아직 선택을
+   * 확정하지 않은 상태다. 이때만 한 번 더 확인한다.
    */
-  const handleMouseUp = useCallback(() => {
+  const readSelection = useCallback((): 'opened' | 'pending' | 'none' => {
     const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return 'none'
 
     const container = containerRef.current
-    if (!container) return
+    if (!container) return 'none'
 
     const range = sel.getRangeAt(0)
-    if (!container.contains(range.commonAncestorContainer)) return
+    if (!container.contains(range.commonAncestorContainer)) return 'none'
 
     // 컨테이너의 텍스트는 원문과 문자 단위로 같으므로,
     // 시작점까지의 Range 길이가 곧 원문 문자 오프셋이다.
@@ -238,22 +244,43 @@ export function ReaderView({ doc }: { doc: Document }) {
     // 원문 기준으로 되돌려야 문장 번역이 맞는 문장을 찾는다.
     const start = page.start + prefix.toString().length
     const end = start + range.toString().length
-    if (end <= start) return
+    if (end <= start) return 'none'
 
     const indexes = sentencesInRange(sentences, { start, end })
-    if (indexes.length === 0) return
+    if (indexes.length === 0) return 'none'
 
     // 롱프레스는 선택이 요소 경계에서 시작하게 만든다. 앵커를 못 잡으면
     // 아무 일도 일어나지 않으므로, 오프셋을 보고 가장 가까운 단어까지 찾는다.
     const anchor = anchorForRange(range, start)
-    if (!anchor) return
+    if (!anchor) return 'pending'
 
+    retryTimer.current = 0
     setSelection({
       kind: 'sentence',
       sentences: sentences.filter((s) => indexes.includes(s.index)),
       anchor,
     })
+    return 'opened'
   }, [sentences, page.start])
+
+  /**
+   * 손을 떼는 순간에 문장을 연다.
+   *
+   * ① 손을 떼는 것은 touchend 다 — mouseup 보다 먼저 온다.
+   * ② 곧장 스크롤로 넘어가면 touchend 대신 touchcancel 이 온다. 둘 다 같은 경로로 받는다.
+   * ③ 이 시점의 선택은 아직 확정되지 않았을 수 있다. 앵커를 못 잡았다면 한 번 더 본다.
+   *    빈손 탭이 오해되지 않도록, 실제로 선택이 있는 경우에만 다시 확인한다.
+   */
+  const handleSelectionEnd = useCallback(() => {
+    if (readSelection() !== 'pending') return
+    retryTimer.current = window.setTimeout(() => readSelection(), 80)
+  }, [readSelection])
+
+  useEffect(() => {
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current)
+    }
+  }, [])
 
 
   /**
@@ -318,10 +345,11 @@ export function ReaderView({ doc }: { doc: Document }) {
       <div
         ref={containerRef}
         onClick={handleClick}
-        onMouseUp={handleMouseUp}
-        // 터치 기기에서 글자를 고른 뒤 손을 떼면 touchend 가 먼저 온다.
-        // mouseup 만 listening 하고 있으면 여기에 반응하지 않는다.
-        onTouchEnd={handleMouseUp}
+        onMouseUp={handleSelectionEnd}
+        // 터치 기기에서 손을 떼는 것은 touchend 지만, 스크롤로 넘어가면
+        // touchcancel 이 온다. 둘 다 같은 경로로 받는다.
+        onTouchEnd={handleSelectionEnd}
+        onTouchCancel={handleSelectionEnd}
         className="text-[1.05rem] leading-[2.1] break-words whitespace-pre-wrap"
       >
         {pageItems.map((segment) =>

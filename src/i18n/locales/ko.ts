@@ -26,7 +26,7 @@ export const ko: Dictionary = {
     body: '본문',
     bodyPlaceholder: '학습할 언어로 된 글을 붙여넣으세요.',
     counter: '{count}자 · {language}',
-    tooShort: '{min}자 이상 입력하세요 (현재 {count}자).',
+    tooShort: '아직 본문이 비어 있습니다. paste 한 텍스트를 넣어 주세요.',
     create: '문서 만들기',
     pickLanguageFirst: '먼저 배울 언어를 선택하세요.',
   },

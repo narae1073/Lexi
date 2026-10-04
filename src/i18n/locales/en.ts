@@ -27,7 +27,7 @@ export const en = {
     body: 'Text',
     bodyPlaceholder: 'Paste something written in the language you are learning.',
     counter: '{count} chars · {language}',
-    tooShort: 'Enter at least {min} characters (currently {count}).',
+    tooShort: 'The text is still empty. Paste the text you want to read.',
     create: 'Create document',
     pickLanguageFirst: 'Choose a language first.',
   },

@@ -4,14 +4,38 @@ export async function run(ctx) {
   await ctx.enrollLanguage('Korean')
   ctx.check('언어 선택 후 메인 화면으로 넘어간다', (await ctx.bodyText()).includes('Paste a text'))
 
-  // 최소 길이보다 짧은 본문은 막힌다
+  /**
+   * 버튼을 조용히 끄지 않는다.
+   *
+   * 예전엔 20자 미만이면 버튼이 꺼졌다. 30% 투명도의 꺼진 버튼은 휴대전화에서
+   * 손대지 않은 화면처럼 보여서 "안 먹는다" 고 오해하기 쉬웠고, 짧은 문장 하나가
+   * 학습 대상으로 흔한데도 막혔다. 이제는 언제나 눌리고, 비었을 때 이유를 말한다.
+   */
   await ctx.typeIntoTextarea('짧음')
   await sleep()
-  const disabledShort = await ctx.page.evaluate(`(() => {
-    return [...document.querySelectorAll('button')]
-      .some(b => b.innerText.includes('Create document') && b.disabled);
+  const notDisabled = await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button[type="submit"]')][0];
+    return b ? !b.disabled : null;
   })()`)
-  ctx.check('짧은 본문으로는 만들 수 없다', disabledShort === true)
+  ctx.check('버튼이 꺼지지 않는다', notDisabled === true, String(notDisabled))
+
+  await ctx.page.evaluate(`(() => {
+    const t = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(t, '');
+    t.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(300)
+  await ctx.page.evaluate(`document.querySelector('button[type="submit"]').click(); true`)
+  await sleep(400)
+  const emptyReason = await ctx.page.evaluate(`(() => {
+    const el = document.querySelector('[role="alert"]');
+    return el ? el.innerText.trim() : null;
+  })()`)
+  ctx.check('빈 본문이면 이유를 말한다', Boolean(emptyReason && emptyReason.length > 5), String(emptyReason))
+  ctx.check('빈 상태로 넘어가지 않는다', (await ctx.bodyText()).includes('Create document'),
+    (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
 
   const TEXT = `나는 매일 글을 읽습니다.
 Ubiquitous smartphones changed communication everywhere.`

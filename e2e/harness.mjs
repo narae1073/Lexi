@@ -346,6 +346,17 @@ class Ctx {
     })()`)
   }
 
+  /** 손을 뗐다가 스크롤로 넘어가서 touchcancel 이 오는 경우 */
+  async touchCancel(selector) {
+    return this.#eval(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const touch = new Touch({ identifier: 1, target: el, clientX: 12, clientY: 12 });
+      el.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, changedTouches: [touch], touches: [] }));
+      return true;
+    })()`)
+  }
+
   async pressEscape() {
     await this.#eval(
       `document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); true`,

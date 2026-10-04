@@ -64,6 +64,18 @@ export async function run(ctx) {
     `문장 ${byTouch?.width}px vs 단어 ${wordBox?.width}px`)
   await ctx.pressEscape()
 
+  // ── 1b. 스크롤로 넘어가면 touchend 대신 touchcancel 이 온다 ──
+  await ctx.pressEscape()
+  await ctx.page.evaluate(`getSelection()?.removeAllRanges(); true`)
+  await sleep(300)
+  await selectFirstSentence(ctx)
+  await ctx.touchCancel('[data-start]')
+  await ctx.waitFor(
+    `(() => { const d = document.querySelector('[role="dialog"]'); return !!d })()`,
+    '문장 팝오버 (touchcancel)', 15_000,
+  )
+  ctx.check('스크롤로 넘어가 touchcancel 이 와도 열린다', Boolean(await ctx.popover()), '열림')
+
   // ── 2. 드래그 없이 하는 길 ──
   await ctx.page.evaluate(`getSelection()?.removeAllRanges(); true`)
   await sleep(300)
