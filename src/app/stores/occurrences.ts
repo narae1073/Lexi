@@ -69,6 +69,27 @@ function flatten(byLanguage: Record<string, WordOccurrence[]>): WordOccurrence[]
   return Object.values(byLanguage).flat()
 }
 
+/**
+ * 한 문서의 기록을 그 언어의 목록에 합친다 — 이 문서 것만 남겨서는 안 된다.
+ *
+ * 언어를 열 때마다 갈아끼우면, 방금 연 문서의 단어만 보인다. 같은 언어로 된 다른
+ * 문서들이 말짱 사라지는 셈이고, 사용자는 '단어장이 그 문서만 기억하나' 로 오해한다.
+ * German 문서를 하나 열었다 닫았다 하며 German 단어장에 그 문서 단어만 뜨는 것이
+ * 이 버그였다.
+ *
+ * 이 문서의 것만 갈아끼운다 — 같은 (문서, lemma) 가 기록끼리 겹치는 유일한 경우다.
+ * charStart 는 문서 안의 위치라 문서끼리 비교할 수 없다.
+ */
+export function mergeByLanguage(
+  byLanguage: Record<string, WordOccurrence[]>,
+  languageCode: string,
+  documentId: string,
+  records: WordOccurrence[],
+): Record<string, WordOccurrence[]> {
+  const others = (byLanguage[languageCode] ?? []).filter((r) => r.documentId !== documentId)
+  return { ...byLanguage, [languageCode]: [...others, ...records].sort(sortByPosition) }
+}
+
 export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   byLanguage: {},
   occurrences: [],
@@ -170,7 +191,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     await replaceOccurrences(doc.id, records)
 
     set((s) => {
-      const byLanguage = { ...s.byLanguage, [doc.languageCode]: records }
+      const byLanguage = mergeByLanguage(s.byLanguage, doc.languageCode, doc.id, records)
       return {
         recorded: { ...s.recorded, [doc.id]: true },
         byLanguage,

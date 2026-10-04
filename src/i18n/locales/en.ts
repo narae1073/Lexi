@@ -140,6 +140,8 @@ export const en = {
     title: 'Wordbook',
     pickLanguage: 'Choose a language to see your words.',
     summary: '{count} words',
+    documentLabel: 'Document',
+    allDocuments: 'All documents',
     scoped: 'From “{title}”',
     search: 'Search words',
     legend: 'Tap a status to mark the word.',

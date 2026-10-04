@@ -110,6 +110,22 @@ export async function run(ctx) {
   const markedBefore = await readMarked(ctx)
   ctx.check('새로고침 전에는 상태가 보인다', markedBefore >= 1, `${markedBefore}개 표시됨`)
 
+  /**
+   * 언어를 바꾸면 주소도 그 언어를 가리켜야 한다.
+   *
+   * 회귀: 새로 고른 언어 대신 이전 언어를 주소에 썼다. 새로고침하면 엉뚱한 언어의
+   * 단어장이 열리고, 기록이 없는 언어라 아무 말도 없는 화면이 된다 — 무엇이 잘못됐는지
+   * 알 길이 없다.
+   */
+  const langInUrl = await ctx.page.evaluate(`(() => {
+    const a = [...document.querySelectorAll('button[aria-pressed]')].find(b => /^(English|Korean)$/.test(b.innerText.trim()));
+    const pressed = a?.innerText.trim();
+    return { pressed, url: location.href };
+  })()`)
+  ctx.check('언어를 바꾸면 주소도 그 언어를 가리킨다',
+    langInUrl.pressed === 'English' && /lang=en/.test(langInUrl.url), JSON.stringify(langInUrl))
+
+
   await ctx.reload()
   await ctx.waitFor(`!!document.querySelector('a[href="/wordbook"]')`, '앱 재시작')
   await sleep(600)

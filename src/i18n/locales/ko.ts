@@ -139,6 +139,8 @@ export const ko: Dictionary = {
     title: '단어장',
     pickLanguage: '보고 싶은 언어를 선택하세요.',
     summary: '단어 {count}개',
+    documentLabel: '문서',
+    allDocuments: '전체 문서',
     scoped: '‘{title}’ 의 단어',
     search: '단어 검색',
     legend: '상태 버튼을 눌러 표시하세요.',

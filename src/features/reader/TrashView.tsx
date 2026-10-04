@@ -40,7 +40,7 @@ export function TrashView() {
                   <span className="truncate text-sm font-medium">{doc.title}</span>
                   <span className="text-ink-muted text-xs">
                     {t('trash.deletedAt', {
-                      date: new Date(doc.deletedAt ?? Date.now()).toLocaleString(),
+                      date: doc.deletedAt ? new Date(doc.deletedAt).toLocaleString() : '',
                     })}
                   </span>
                 </span>

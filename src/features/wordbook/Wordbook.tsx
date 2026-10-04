@@ -15,6 +15,7 @@ import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
 import type { WordbookGroup } from './buildWordbook'
+import { DocumentScopeSelect } from './DocumentScopeSelect'
 import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
@@ -30,15 +31,11 @@ const EMPTY: WordOccurrence[] = []
 export function Wordbook() {
   const t = useTranslation()
   const languageName = useLanguageName()
-  const [params] = useSearchParams()
+  const [params, setSearchParams] = useSearchParams()
   const enrolled = useLanguagesStore((s) => s.enrolled)
 
   const documentId = params.get('doc') ?? undefined
-  const documents = useDocumentsStore((s) => s.documents)
-  // 버려진 문서를 가리키는 링크면 범위가 없는 것으로 본다 — 기록은 남지만 대상은 없다
-  const scopedDocument = documentId
-    ? documents.find((d) => d.id === documentId && !d.deletedAt)
-    : undefined
+  const allDocuments = useDocumentsStore((s) => s.documents)
 
   const requested = params.get('lang')
   const initial: LanguageCode | null = enrolled.includes(requested as LanguageCode)
@@ -46,6 +43,24 @@ export function Wordbook() {
     : (enrolled[0] ?? null)
 
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(initial)
+
+  /**
+   * 이 언어의 문서만 고른다 — 다른 언어 문서를 고르면 빈 목록만 나온다.
+   *
+   * 단어장은 언어를 바꿀 때 선택을 함께 버린다. German 문서로 좁힌 채 언어를 바꾸면
+   * 아무 말도 없는 화면이 되는데, 그건 범위가 잘못된 것이지 데이터가 없는 것이 아니다.
+   */
+  const documents = useMemo(
+    () => allDocuments.filter((d) => !d.deletedAt && d.languageCode === languageCode),
+    [allDocuments, languageCode],
+  )
+  // 버려진 문서를 가리키는 링크면 범위가 없는 것으로 본다 — 기록은 남지만 대상은 없다
+  const scopedDocument = documentId
+    ? documents.find((d) => d.id === documentId)
+    : undefined
+  // 문서가 없거나 다른 언어의 문서면 범위를 푼다 — 빈 화면 대신 전체를 보여 준다
+  const effectiveDocumentId = scopedDocument?.id
+
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState<GroupKey>('unmarked')
   const [pageNumber, setPageNumber] = useState(1)
@@ -56,13 +71,12 @@ export function Wordbook() {
   const occurrences = useOccurrencesStore((s) => s.byLanguage[languageCode ?? ''] ?? EMPTY)
   const byKey = useWordStatesStore((s) => s.byKey)
 
-  const entries = useMemo(
-    () =>
-      languageCode
-        ? buildWordbook({ languageCode, occurrences, byKey, documentId, query })
-        : [],
-    [languageCode, occurrences, byKey, documentId, query],
-  )
+  const entries = useMemo(() => {
+    if (!languageCode) return []
+    // 범위는 목록 안에서 다시 확인한다 — deps 에 파생값을 넣지 않으려면 어쩔 수 없다
+    const scoped = documents.find((d) => d.id === documentId)?.id
+    return buildWordbook({ languageCode, occurrences, byKey, documentId: scoped, query })
+  }, [languageCode, occurrences, byKey, documents, documentId, query])
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
   /**
@@ -72,6 +86,18 @@ export function Wordbook() {
    * 화면에 빈 쪽을 보여주지 않기 위해서다.
    */
   const resetPage = () => setPageNumber(1)
+
+  /**
+   * 범위를 푼다 — 언어 버튼에서 언어를 바꿀 때 부른다.
+   *
+   * 바꾸려는 언어를 넘겨 받는다. 상태를 그대로 쓰면 아직 갱신되기 전의 이전 언어가
+   * 주소에 들어간다 — '영어' 를 눌렀는데 주소는 한국어, 새로고침하면 한국어 단어장이
+   * 열린다. 아무 말도 없는 화면을 마주한 사람은 무엇이 잘못됐는지 알 길이 없다.
+   */
+  const clearScope = (next: LanguageCode) => {
+    setSearchParams({ lang: next }, { replace: true })
+  }
+
   const current = useMemo(
     () => paginate(grouped[group], pageNumber, pageSize),
     [grouped, group, pageNumber, pageSize],
@@ -106,6 +132,8 @@ export function Wordbook() {
               onClick={() => {
                 setLanguageCode(code)
                 resetPage()
+                // 다른 언어 문서로 좁힌 채 이동하면 빈 목록만 보인다
+                clearScope(code)
               }}
               aria-pressed={code === languageCode}
               className={
@@ -119,6 +147,16 @@ export function Wordbook() {
           ))}
         </div>
       )}
+
+      <DocumentScopeSelect
+        value={effectiveDocumentId ?? ''}
+        documents={documents}
+        onChange={(id) => {
+          resetPage()
+          if (id) setSearchParams({ lang: languageCode, doc: id }, { replace: true })
+          else setSearchParams({ lang: languageCode }, { replace: true })
+        }}
+      />
 
       <input
         value={query}
