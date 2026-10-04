@@ -41,6 +41,13 @@ export type Document = {
   rawText: string
   createdAt: string
   updatedAt: string
+  /**
+   * 휴지통에 버린 시각. 없으면 살아 있는 문서.
+   *
+   * 바로 지우지 않는 이유: 실수로 지운 것을 되살릴 방법이 없다. 이 앱에서는
+   * 문서를 열어 단어를 기록해 둔 것이 학습 상태의 근거라, 지우면 어디에도 안 남는다.
+   */
+  deletedAt?: string | null
 }
 
 /** 언어별 단어 상태. 같은 단어는 문서와 무관하게 전역 공유 (PLAN.md §4). */

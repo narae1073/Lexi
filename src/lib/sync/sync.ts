@@ -183,6 +183,8 @@ export async function syncOnce({
     if (theirs.title !== doc.title) return true
     if (theirs.rawText !== doc.rawText) return true
     if (theirs.languageCode !== doc.languageCode) return true
+    // 휴지통 상태가 달라졌다 — 버리거나 되살린 것을 서버도 알아야 한다
+    if ((theirs.deletedAt ?? null) !== (doc.deletedAt ?? null)) return true
     // 이 기기에서 더 늦게 열었다
     return doc.updatedAt > theirs.updatedAt
   })

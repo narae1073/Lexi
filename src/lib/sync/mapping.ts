@@ -76,6 +76,7 @@ export function documentToRow(userId: string, doc: Document): DocumentRow {
     raw_text: doc.rawText,
     created_at: doc.createdAt,
     updated_at: doc.updatedAt,
+    deleted_at: doc.deletedAt ?? null,
   }
 }
 
@@ -87,6 +88,7 @@ export function documentFromRow(row: DocumentRow): Document {
     rawText: row.raw_text,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? null,
   }
 }
 

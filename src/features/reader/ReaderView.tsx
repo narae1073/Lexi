@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
@@ -89,7 +89,12 @@ export function ReaderView({ doc }: { doc: Document }) {
   const byKey = useWordStatesStore((s) => s.byKey)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
+  const navigate = useNavigate()
   const touchDocument = useDocumentsStore((s) => s.touch)
+  const renameDocument = useDocumentsStore((s) => s.rename)
+  const trashDocument = useDocumentsStore((s) => s.trash)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(doc.title)
   const [selection, setSelection] = useState<Selection | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -402,6 +407,17 @@ export function ReaderView({ doc }: { doc: Document }) {
    * 단어를 눌러 팝오버를 띄운 뒤 '이 문장 번역' 을 누르면 그 문장이 정확히
    * 어느 문장인지 알 필요도 없이 그 자리에서 시작한다.
    */
+  /**
+   * 제목을 저장한다.
+   *
+   * 빈 제목은 받지 않는다 — 목록에서 구분할 수단이 없어진다. 원래대로 되돌린다.
+   */
+  const commitTitle = useCallback(async () => {
+    setEditingTitle(false)
+    const changed = await renameDocument(doc.id, titleDraft)
+    if (!changed) setTitleDraft(doc.title)
+  }, [doc.id, doc.title, renameDocument, titleDraft])
+
   const translateSentenceOf = useCallback(
     (segment: WordSegment, anchor: HTMLElement) => {
       const target = sentences.filter((sentence) => sentence.index === segment.sentenceIndex)
@@ -420,18 +436,60 @@ export function ReaderView({ doc }: { doc: Document }) {
     // 하단 상태 바가 본문을 가리지 않도록 여유를 둔다
     <article className="mx-auto w-full max-w-2xl px-5 pt-8 pb-32">
       <header className="mb-6">
-        <h1 className="text-lg font-semibold">{doc.title}</h1>
+        {editingTitle ? (
+          <input
+            autoFocus
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.target.value)}
+            onBlur={() => void commitTitle()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void commitTitle()
+              if (event.key === 'Escape') {
+                // 버린 제목으로 되돌린다
+                setTitleDraft(doc.title)
+                setEditingTitle(false)
+              }
+            }}
+            aria-label={t('reader.titleLabel')}
+            className="border-line focus:border-accent w-full rounded-lg border px-2 py-1 text-lg font-semibold outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setTitleDraft(doc.title)
+              setEditingTitle(true)
+            }}
+            title={t('reader.titleHint')}
+            className="text-left font-semibold"
+          >
+            {doc.title}
+          </button>
+        )}
         <p className="text-ink-muted mt-1 text-xs">
           {languageName(doc.languageCode)} ·{' '}
           {t('reader.stats', { words: wordCount, sentences: sentences.length })}
         </p>
         {/* 문서 안에서도 단어장으로 갈 수 있다 — 이 문서의 단어만 (plan.txt 9줄) */}
-        <Link
-          to={`/wordbook?doc=${doc.id}&lang=${doc.languageCode}`}
-          className="border-line text-ink-muted hover:text-ink hover:border-accent mt-2 inline-block rounded-lg border px-2.5 py-1 text-xs transition"
-        >
-          {t('reader.toWordbook')}
-        </Link>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Link
+            to={`/wordbook?doc=${doc.id}&lang=${doc.languageCode}`}
+            className="border-line text-ink-muted hover:text-ink hover:border-accent inline-block rounded-lg border px-2.5 py-1 text-xs transition"
+          >
+            {t('reader.toWordbook')}
+          </Link>
+          {/* 휴지통으로 보낸다 — 바로 지우지 않는다. 되살릴 곳이 있어야 한다 */}
+          <button
+            type="button"
+            onClick={() => {
+              void trashDocument(doc.id)
+              navigate('/')
+            }}
+            className="border-line text-ink-muted hover:text-status-unknown hover:border-status-unknown inline-block rounded-lg border px-2.5 py-1 text-xs transition"
+          >
+            {t('reader.trash')}
+          </button>
+        </div>
       </header>
 
       {/* 한 쪽에 몇 단어까지 담을지 — 몇 단어가 한 화면을 차지하는지 보고 고른다 */}

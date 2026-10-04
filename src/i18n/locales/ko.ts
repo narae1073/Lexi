@@ -36,6 +36,7 @@ export const ko: Dictionary = {
     markedLabel: '표시한 단어 비율',
     sortBy: '정렬',
     sortHint: '날짜는 마지막으로 열어 본 시각입니다',
+    trashCount: '휴지통 {count}개',
     lastOpened: '최근 본 시각',
     directionArrow: {
       asc: '오름차순',
@@ -58,6 +59,9 @@ export const ko: Dictionary = {
 
   reader: {
     stats: '단어 {words}개 · 문장 {sentences}개',
+    trash: '휴지통으로',
+    titleLabel: '문서 제목',
+    titleHint: '클릭해 제목을 바꿉니다',
     toWordbook: '이 문서의 단어',
   },
 
@@ -75,6 +79,15 @@ export const ko: Dictionary = {
     ready: '새 버전이 있습니다 — 누르면 적용합니다',
   },
 
+  trash: {
+    title: '휴지통',
+    close: '닫기',
+    empty: '휴지통이 비어 있습니다.',
+    hint: '되살리면 목록으로 돌아갑니다. 완전히 지우면 이 문서의 단어 기록도 함께 사라집니다.',
+    deletedAt: '버린 시각 {date}',
+    restore: '되살리기',
+    purge: '완전 삭제',
+  },
   pagination: {
     label: '페이지 이동',
     prev: '이전 쪽',

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 
@@ -6,6 +6,8 @@ import { pruneCache } from '../lib/api/offlineCache'
 import { ComposeDocument } from '../features/reader/ComposeDocument'
 import { DocumentList } from '../features/reader/DocumentList'
 import { ReaderView } from '../features/reader/ReaderView'
+import { activeDocuments } from '../features/reader/documentSort'
+import { TrashView } from '../features/reader/TrashView'
 import { LanguagePicker } from '../features/languages/LanguagePicker'
 import { AppLanguageSwitcher } from '../features/settings/AppLanguageSwitcher'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
@@ -67,7 +69,10 @@ export default function App() {
   const t = useTranslation()
   const ready = useLanguagesStore((s) => s.ready)
   const load = useDocumentsStore((s) => s.load)
-  const documents = useDocumentsStore((s) => s.documents)
+  const allDocuments = useDocumentsStore((s) => s.documents)
+  // 휴지통에 있는 문서는 목록에도 없으니 진도 계산도 필요 없다
+  const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
+  const trashedCount = allDocuments.length - documents.length
   const {
     needRefresh: [needRefresh],
     updateServiceWorker,
@@ -122,11 +127,17 @@ export default function App() {
     <div className="min-h-full">
       <Nav />
       <Routes>
-        <Route path="/" element={documents.length === 0 ? <ComposeDocument /> : <DocumentList />} />
+        {/* 첫 화면에서만 작성 화면을 내민다. 마지막 문서를 버린 뒤에는 목록을 보여야 한다 —
+            빈 작성 화면만 남으면 버린 문서를 되돌릴 곳이 사라진다 */}
+        <Route
+          path="/"
+          element={documents.length === 0 && trashedCount === 0 ? <ComposeDocument /> : <DocumentList />}
+        />
         <Route path="/languages" element={<LanguagePicker onDone={() => history.back()} />} />
         <Route path="/compose" element={<ComposeDocument />} />
         <Route path="/wordbook" element={<Wordbook />} />
-        <Route path="/settings" element={<SettingsPanel />} />
+        <Route path="/trash" element={<TrashView />} />
+      <Route path="/settings" element={<SettingsPanel />} />
         <Route path="/read/:id" element={<DocumentRoute />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

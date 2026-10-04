@@ -35,7 +35,10 @@ export function Wordbook() {
 
   const documentId = params.get('doc') ?? undefined
   const documents = useDocumentsStore((s) => s.documents)
-  const scopedDocument = documentId ? documents.find((d) => d.id === documentId) : undefined
+  // 버려진 문서를 가리키는 링크면 범위가 없는 것으로 본다 — 기록은 남지만 대상은 없다
+  const scopedDocument = documentId
+    ? documents.find((d) => d.id === documentId && !d.deletedAt)
+    : undefined
 
   const requested = params.get('lang')
   const initial: LanguageCode | null = enrolled.includes(requested as LanguageCode)

@@ -92,3 +92,12 @@ export function sortDocuments(
         (a: Document, b: Document) => -primary(a, b) || tieBreak(a, b)
   return [...documents].sort(ordered)
 }
+/** 살아 있는 문서 — 휴지통에 있는 것은 제외한다 */
+export function activeDocuments(documents: Document[]): Document[] {
+  return documents.filter((doc) => !doc.deletedAt)
+}
+
+/** 휴지통에 있는 문서 */
+export function trashedDocuments(documents: Document[]): Document[] {
+  return documents.filter((doc) => Boolean(doc.deletedAt))
+}

@@ -24,6 +24,7 @@ const doc: Document = {
   rawText: 'Hello world',
   createdAt: T0,
   updatedAt: T1,
+  deletedAt: null,
 }
 
 describe('word_state 매핑', () => {
@@ -85,6 +86,21 @@ describe('documents 매핑', () => {
 
   it('사용자 id 를 함께 싣는다', () => {
     expect(documentToRow(USER, doc).user_id).toBe(USER)
+  })
+
+  /**
+   * 살아 있는 문서와 버려진 문서가 모두 왕복을 보존해야 한다.
+   *
+   * 버린 시각이 왕복에서 사라지면 다른 기기에서 되살린 문서가 살아 있는 것으로 보인다.
+   */
+  it('버려진 문서도 버린 시각을 보존한다', () => {
+    const trashed = { ...doc, deletedAt: '2026-03-01T00:00:00.000Z' }
+    expect(documentToRow(USER, trashed).deleted_at).toBe('2026-03-01T00:00:00.000Z')
+    expect(documentFromRow(documentToRow(USER, trashed))).toEqual(trashed)
+  })
+
+  it('살아 있는 문서는 deleted_at 이 NULL 이다', () => {
+    expect(documentToRow(USER, { ...doc, deletedAt: undefined }).deleted_at).toBeNull()
   })
 })
 

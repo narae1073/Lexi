@@ -6,12 +6,12 @@ import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
-import { DOCUMENT_SORTS, sortDocuments } from './documentSort'
+import { activeDocuments, DOCUMENT_SORTS, sortDocuments } from './documentSort'
 
 export function DocumentList() {
   const t = useTranslation()
   const languageName = useLanguageName()
-  const documents = useDocumentsStore((s) => s.documents)
+  const allDocuments = useDocumentsStore((s) => s.documents)
   const loading = useDocumentsStore((s) => s.loading)
   const occurrences = useOccurrencesStore((s) => s.occurrences)
   const byKey = useWordStatesStore((s) => s.byKey)
@@ -40,6 +40,10 @@ export function DocumentList() {
     return result
   }, [occurrences, byKey])
 
+  // 휴지통에 있는 문서는 목록에 나오지 않는다 — 되살릴 곳이 있어야 한다
+  const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
+  const trashedCount = allDocuments.length - documents.length
+
   const direction = documentSortDir[documentSort]
   const sorted = useMemo(
     () => sortDocuments(documents, documentSort, direction),
@@ -47,7 +51,21 @@ export function DocumentList() {
   )
 
   if (loading) return <p className="p-8 text-sm text-ink-muted">{t('list.loading')}</p>
-  if (documents.length === 0) return <p className="p-8 text-sm text-ink-muted">{t('list.empty')}</p>
+  if (documents.length === 0) {
+    return (
+      <p className="text-ink-muted p-8 text-sm">
+        {t('list.empty')}
+        {trashedCount > 0 && (
+          <>
+            {' '}
+            <Link to="/trash" className="text-accent underline">
+              {t('list.trashCount', { count: trashedCount })}
+            </Link>
+          </>
+        )}
+      </p>
+    )
+  }
 
   return (
     <>
@@ -68,6 +86,14 @@ export function DocumentList() {
           </select>
         </label>
         <div className="flex items-center gap-2">
+          {trashedCount > 0 && (
+            <Link
+              to="/trash"
+              className="text-ink-muted hover:text-ink rounded-lg border border-line px-2 py-1 text-xs"
+            >
+              {t('list.trashCount', { count: trashedCount })}
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => toggleDocumentSortDir(documentSort)}

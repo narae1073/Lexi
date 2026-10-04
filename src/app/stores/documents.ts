@@ -25,9 +25,16 @@ type DocumentsState = {
     /** 제목이 비었을 때 쓸 표기 — 스토어는 i18n 을 모르므로 호출부가 넘긴다 */
     fallbackTitle: string
   }) => Promise<Document>
-  remove: (id: string) => Promise<void>
   /** 문서를 열어 봤음을 기록한다 — 목록에 보이는 '최근 본 시각' 의 근거 */
   touch: (id: string) => Promise<void>
+  /** 제목을 바꾼다. 빈 제목은 받지 않는다 — 제목이 없는 문서는 길을 잃는다 */
+  rename: (id: string, title: string) => Promise<boolean>
+  /** 휴지통으로 보낸다 — 바로 지우지 않는다 */
+  trash: (id: string) => Promise<void>
+  /** 휴지통에서 되살린다 */
+  restore: (id: string) => Promise<void>
+  /** 되돌릴 수 없��� 지운다 — 등장 기록도 함께 사라진다 */
+  purge: (id: string) => Promise<void>
 }
 
 function now(): string {
@@ -46,6 +53,61 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
     set({ documents: docs, loading: false, ready: true })
   },
 
+  rename: async (id, title) => {
+    const trimmed = title.trim()
+    // 빈 제목을 받으면 목록에서 구분할 수 없다 — 거부하고 그대로 둔다
+    if (!trimmed) return false
+    const doc = get().documents.find((d) => d.id === id)
+    if (!doc || doc.title === trimmed) return false
+
+    const next = { ...doc, title: trimmed, updatedAt: new Date().toISOString() }
+    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
+    await idbPut(STORES.documents, next).catch((error) => {
+      console.error('문서 제목 저장 실패', error)
+    })
+    return true
+  },
+
+  /** 휴지통에 넣고 알린다 — 화면에서는 곧바로 사라진다 */
+  trash: async (id) => {
+    const doc = get().documents.find((d) => d.id === id)
+    if (!doc || doc.deletedAt) return
+
+    const now = new Date().toISOString()
+    const next = { ...doc, deletedAt: now, updatedAt: now }
+    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
+    await idbPut(STORES.documents, next).catch((error) => {
+      console.error('휴지통 이동 실패', error)
+    })
+  },
+
+  restore: async (id) => {
+    const doc = get().documents.find((d) => d.id === id)
+    if (!doc?.deletedAt) return
+
+    const next = { ...doc, deletedAt: null, updatedAt: new Date().toISOString() }
+    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
+    await idbPut(STORES.documents, next).catch((error) => {
+      console.error('문서 복구 실패', error)
+    })
+  },
+
+  /** 되돌릴 수 없��� 지운다 */
+  purge: async (id) => {
+    await idbDelete(STORES.documents, id)
+    await useOccurrencesStore.getState().forgetDocument(id)
+    set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
+
+    const user = useAuthStore.getState().user
+    if (user) {
+      try {
+        await deleteDocumentRemote(user.id, id)
+      } catch (error) {
+        console.error('서버 문서 삭제 실패', error)
+      }
+    }
+  },
+
   /**
    * 문서를 연 시각을 찍는다.
    *
@@ -62,24 +124,6 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
     await idbPut(STORES.documents, next).catch((error) => {
       console.error('문서 열람 시각 저장 실패', error)
     })
-  },
-
-  remove: async (id) => {
-    // 서버에도 알려야 한다 — 안 하면 다음 동기화 때 다른 기기에 다시 나타난다.
-    // 로컬 삭제를 먼저 끝내는 것이 맞다: 동기화가 안 되면 사용자는 문서를 지웠는데
-    // 다른 기기에 남는 것이, 지웠는데 여기에도 남는 것보다 낫다.
-    await idbDelete(STORES.documents, id)
-    await useOccurrencesStore.getState().forgetDocument(id)
-    set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
-
-    const user = useAuthStore.getState().user
-    if (user) {
-      try {
-        await deleteDocumentRemote(user.id, id)
-      } catch (error) {
-        console.error('서버 문서 삭제 실패 — 다음 동기화 때 다시 지운다', error)
-      }
-    }
   },
 
   create: async ({ title, languageCode, rawText, fallbackTitle }) => {

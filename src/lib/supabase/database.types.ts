@@ -24,6 +24,8 @@ export type Database = {
           raw_text: string
           created_at: string
           updated_at: string
+          /** 휴지통에 버린 시각. NULL 이면 살아 있는 문서 */
+          deleted_at: string | null
         }
         Insert: {
           id?: string
@@ -33,6 +35,7 @@ export type Database = {
           raw_text: string
           created_at?: string
           updated_at?: string
+          deleted_at?: string | null
         }
         Update: {
           id?: string
@@ -42,6 +45,7 @@ export type Database = {
           raw_text?: string
           created_at?: string
           updated_at?: string
+          deleted_at?: string | null
         }
         Relationships: []
       }

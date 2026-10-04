@@ -37,6 +37,7 @@ export const en = {
     markedLabel: 'Share of marked words',
     sortBy: 'Sort',
     sortHint: 'Dates show when you last opened each document',
+    trashCount: 'Trash ({count})',
     lastOpened: 'Last opened',
     directionArrow: {
       asc: 'Ascending',
@@ -59,6 +60,9 @@ export const en = {
 
   reader: {
     stats: '{words} words · {sentences} sentences',
+    trash: 'Move to trash',
+    titleLabel: 'Document title',
+    titleHint: 'Click to rename',
     toWordbook: 'Words in this document',
   },
 
@@ -76,6 +80,15 @@ export const en = {
     ready: 'A new version is ready — tap to update',
   },
 
+  trash: {
+    title: 'Trash',
+    close: 'Close',
+    empty: 'The trash is empty.',
+    hint: 'Restoring brings the document back to the list. Deleting for good also removes its word records.',
+    deletedAt: 'Trashed {date}',
+    restore: 'Restore',
+    purge: 'Delete for good',
+  },
   pagination: {
     label: 'Pagination',
     prev: 'Previous page',
