@@ -27,6 +27,7 @@ export function AccountPanel() {
   const status = useSyncStore((s) => s.status)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
   const syncError = useSyncStore((s) => s.error)
+  const dirty = useSyncStore((s) => s.dirty)
   const syncNow = useSyncStore((s) => s.syncNow)
 
   const [email, setEmail] = useState('')
@@ -78,6 +79,13 @@ export function AccountPanel() {
               {lastSyncedAt ? new Date(lastSyncedAt).toLocaleTimeString() : '—'}
             </dd>
           </div>
+          {/* 마지막 동기화 시각만으로는 지금 것이 올라갔는지 알 수 없다 */}
+          {dirty && (
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.pending')}</dt>
+              <dd className="text-status-unsure">{t('sync.pending')}</dd>
+            </div>
+          )}
         </dl>
 
         <button

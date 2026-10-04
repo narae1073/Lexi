@@ -6,10 +6,23 @@ import { useDocumentsStore } from './documents'
 import { useLanguagesStore } from './languages'
 import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
+import { createSyncScheduler } from './syncScheduler'
+import { onLocalWrite } from '../../lib/storage/localDb'
 import { supabase } from '../../lib/supabase/client'
 import { SyncUnavailable, pushOccurrences, readLocal, syncOnce } from '../../lib/sync/sync'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
+
+/**
+ * 연속해서 여러 번 바꿔도 서버에는 한 번만 보낸다.
+ *
+ * 단어를 하나 표시할 때마다 왕복하면 느리고 服务器를 많이 먹는다. 사람은 1초 안에
+ * 서너 개를 표시하는데, 그 사이에 보낼 필요가 없다.
+ */
+const SYNC_DEBOUNCE_MS = 1_200
+
+/** 아무리 자주 눌러도 이만큼 지나면 한 번은 보낸다 — 미루기만 하다가 끝내지 않게 */
+const SYNC_MAX_WAIT_MS = 10_000
 
 type SyncState = {
   status: SyncStatus
@@ -19,6 +32,15 @@ type SyncState = {
   syncNow: () => Promise<void>
   /** 로그인·앱 시작·온라인 복귀 때 조용히 돌린다 (실패해도 조용히) */
   syncQuietly: () => Promise<void>
+  /**
+   * 이 기기에 저장된 것이 서버보다 앞서 있는지.
+   *
+   * 진도를 잃어버린 이유를 그대로 나타낸다 — 저장은 끝났는데 아무도 서버에
+   * 알리지 않았다. 창을 X 로 닫으면 다시 열 때까지 그 상태가 유지된다.
+   */
+  dirty: boolean
+  /** 저장은 끝났지만 아직 서버에 반영되지 않은 changes 수 — 화면에 보여줄 수 있게 */
+  pendingWrites: number
 }
 
 /**
@@ -31,6 +53,8 @@ export const useSyncStore = create<SyncState>((set) => ({
   status: 'local',
   lastSyncedAt: null,
   error: null,
+  dirty: false,
+  pendingWrites: 0,
 
   syncNow: async () => {
     if (!useAuthStore.getState().user) return
@@ -77,7 +101,14 @@ async function run(set: Setter) {
     const local = await readLocal()
     await pushOccurrences(user.id, local.occurrences)
 
-    set({ status: 'synced', lastSyncedAt: new Date().toISOString(), error: null })
+    set({
+      status: 'synced',
+      lastSyncedAt: new Date().toISOString(),
+      error: null,
+      // 다 밀었다 — 이제 서버와 같다
+      dirty: false,
+      pendingWrites: 0,
+    })
   } catch (error) {
     // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
     if (error instanceof SyncUnavailable) {
@@ -106,6 +137,51 @@ export function useCloudSync() {
   useEffect(() => {
     void restore()
   }, [restore])
+
+  /**
+   * 무언가를 바꿨으면 곧바로 서버로 보낸다.
+   *
+   * 예전에는 로그인·앱 시작·온라인 복귀에만 돌았다. 그래서 진도는 이 기기의
+   * IndexedDB 에만 남았다 — 창을 X 로 닫으면 서버는 마지막으로 열었을 때 상태를
+   * 알고 있었다. 새로고침해야 '제대로 반영된' 것처럼 보였던 이유가 이것이다.
+   */
+  useEffect(() => {
+    if (!user) return
+
+    const scheduler = createSyncScheduler({
+      flush: syncQuietly,
+      debounceMs: SYNC_DEBOUNCE_MS,
+      maxWaitMs: SYNC_MAX_WAIT_MS,
+    })
+
+    const unsubscribe = onLocalWrite(() => {
+      // 저장은 끝났는데 서버는 아직 모른다 — 이 순간이 바로 '진도가 사라진' 상태다
+      useSyncStore.setState((s) => ({ dirty: true, pendingWrites: s.pendingWrites + 1 }))
+      scheduler.notify()
+    })
+
+    const syncDirty = () => {
+      if (!scheduler.pending) return
+      scheduler.flushNow()
+    }
+
+    // 창을 닫을 때는 미뤄 둔 시간을 기다리지 않는다 — 지금 보낸다.
+    // pagehide 는 beforeunload 보다 믿을 만하다: bfcache 로 들어갈 때도 불리고,
+    // 휴대전화에서 X 를 눌러도 난다.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') syncDirty()
+    }
+
+    window.addEventListener('pagehide', syncDirty)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      unsubscribe()
+      window.removeEventListener('pagehide', syncDirty)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      scheduler.dispose()
+    }
+  }, [user, syncQuietly])
 
   useEffect(() => onAuthChanged(() => {
     // 로그인·로그아웃 어느 쪽이든 곧바로 반영한다

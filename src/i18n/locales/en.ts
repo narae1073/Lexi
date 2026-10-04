@@ -99,6 +99,11 @@ export const en = {
     readerSize: 'Words per page',
     readerRange: 'Page {page} of {pageCount}',
   },
+  sync: {
+    pending: 'Not synced yet',
+    syncing: 'Saving…',
+    failed: 'Save failed',
+  },
   account: {
     title: 'Account & sync',
     hint: 'Sign in to keep your progress when you switch devices. Without an account everything stays on this device.',
@@ -112,6 +117,7 @@ export const en = {
     syncNow: 'Sync now',
     syncStatus: 'Sync',
     lastSynced: 'Last synced',
+    pending: 'On server',
     errorRateLimit:
       'Too many sign-in emails from the built-in mail server. Waiting does not help — add a custom SMTP provider (Resend) in Supabase → Project Settings → Authentication → Email.',
     errorNotAllowed: 'Sign-ups are closed on this server.',

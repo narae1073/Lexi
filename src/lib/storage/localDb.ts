@@ -30,6 +30,43 @@ export const STORES = {
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
 
+/**
+ * 서버로 보내야 하는 저장소.
+ *
+ * 여기가 바뀐 것은 이 기기 밖에 있는 계정에도 반영되어야 한다. 응답 캐시는 기기 안에서
+ * 재사용용이고, documentMeta 는 기기 안의 계산 기록이라 서버와 상관없다.
+ */
+const SYNCED_STORES: readonly StoreName[] = ['documents', 'wordStates', 'wordOccurrences']
+
+type LocalWriteListener = (store: StoreName) => void
+
+const writeListeners = new Set<LocalWriteListener>()
+
+/**
+ * 이 기기에 저장된 학습 데이터가 바뀌었음을 알린다.
+ *
+ * 쓰기는 tx() 하나를 지나는데, 거기서 한 번만 알린다. 그래서 동기화가 필요한 지점을
+ * 빠뜨릴 수 없다 — 단어를 표시하거나 문서를 고치는 코드가 늘어도 저절로 따라온다.
+ */
+export function onLocalWrite(listener: LocalWriteListener): () => void {
+  writeListeners.add(listener)
+  return () => {
+    writeListeners.delete(listener)
+  }
+}
+
+function notifyLocalWrite(store: StoreName) {
+  if (!SYNCED_STORES.includes(store)) return
+  for (const listener of writeListeners) {
+    try {
+      listener(store)
+    } catch (error) {
+      // 알림에 실패해도 저장은 끝난 일이다 — 저장을 막지 않는다
+      console.error('저장 완료 알림 실패', error)
+    }
+  }
+}
+
 let dbPromise: Promise<IDBDatabase> | null = null
 
 function openDb(): Promise<IDBDatabase> {
@@ -77,7 +114,11 @@ function tx<T>(store: StoreName, mode: IDBTransactionMode, run: (s: IDBObjectSto
       new Promise<T>((resolve, reject) => {
         const transaction = db.transaction(store, mode)
         const req = run(transaction.objectStore(store))
-        req.onsuccess = () => resolve(req.result)
+        req.onsuccess = () => {
+          // 커밋된 뒤에 알린다 — 아직 저장되지 않은 것을 '저장됐다' 고 알리면 안 된다
+          if (mode === 'readwrite') queueMicrotask(() => notifyLocalWrite(store))
+          resolve(req.result)
+        }
         req.onerror = () => reject(req.error)
       }),
   )

@@ -98,6 +98,11 @@ export const ko: Dictionary = {
     readerSize: '한 쪽 단어 수',
     readerRange: '{page} / {pageCount} 쪽',
   },
+  sync: {
+    pending: '저장 대기 중',
+    syncing: '저장 중…',
+    failed: '저장 실패',
+  },
   account: {
     title: '계정과 동기화',
     hint: '로그인하면 기기를 바꿔도 학습 기록이 이어집니다. 하지 않아도 이 기기에서만 그대로 쓸 수 있습니다.',
@@ -111,6 +116,7 @@ export const ko: Dictionary = {
     syncNow: '지금 동기화',
     syncStatus: '동기화',
     lastSynced: '마지막 동기화',
+    pending: '서버 반영',
     errorRateLimit:
       '기본 메일 서버의 발송 한도를 넘었습니다. 기다려도 해결되지 않습니다 — Supabase → Project Settings → Authentication → Email 에 커스텀 SMTP(Resend)를 연결하세요.',
     errorNotAllowed: '이 서버에서는 가입이 닫혀 있습니다.',

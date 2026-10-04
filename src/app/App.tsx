@@ -11,6 +11,7 @@ import { TrashView } from '../features/reader/TrashView'
 import { LanguagePicker } from '../features/languages/LanguagePicker'
 import { AppLanguageSwitcher } from '../features/settings/AppLanguageSwitcher'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
+import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
 import { useDocumentsStore } from './stores/documents'
 import { useLanguagesStore } from './stores/languages'
@@ -56,6 +57,8 @@ function Nav() {
           {t('nav.settings')}
         </Link>
         <span className="ml-auto" />
+        {/* 읽는 중에도 저장이 갔는지 보인다 — 설정 화면을 열지 않아도 된다 */}
+        <SyncIndicator />
         <AppLanguageSwitcher compact />
       </div>
     </nav>
