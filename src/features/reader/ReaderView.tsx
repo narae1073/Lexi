@@ -24,6 +24,15 @@ import { WordPopover } from './WordPopover'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
+/**
+ * 선택이 멈추었다고 보고할 때까지의 시간.
+ *
+ * 손가락으로 끌 때는 selectionchange 가 계속 울린다. 끝날 때까지 기다리면
+ * 손을 뗄 때마다 팝오버가 깜빡이고, 기다리지 않으면 드래그 도중에 떠서
+ * 원래 고른 자리를 가린다.
+ */
+const SELECTION_SETTLE_MS = 220
+
 type Selection =
   | { kind: 'word'; segment: WordSegment; anchor: HTMLElement }
   /**
@@ -63,6 +72,7 @@ export function ReaderView({ doc }: { doc: Document }) {
   const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
   const [pageIndex, setPageIndex] = useState(0)
   const retryTimer = useRef(0)
+  const settleTimer = useRef(0)
 
   /**
    * 표기 → lemma 매핑.
@@ -216,13 +226,14 @@ export function ReaderView({ doc }: { doc: Document }) {
   )
 
   /**
-   * 드래그로 문장을 고르는 경로 (plan.txt 6줄).
-   * 선택이 안 된(단순 클릭) 상태면 단어 팝오버를 그대로 둔다.
+   * 선택된 문장을 연다 (plan.txt 6줄).
    *
+   * 신호는 'selectionchange' 다. 터치 기기에서는 손을 떼는 순(touchend)이나
+   * scroll 로 넘어가는 순간(touchcancel)에 getSelection() 을 읽으면 아직 확정되지
+   * 않은 값을 받는다. 그래서 폰에서는 아무 일도 일어나지 않았다 — 운영체제 기본
+   * 선택 상자만 뜬다. 브라우저가 선택을 확정했다는 신호를 직접 듣는 것이 맞다.
    *
-   * 무엇이 됐는지를 돌려준다 — 호출한 쪽이 재시도를 정한다.
-   * 'pending' 은 "선택은 있는데 앵커를 못 잡았다", 즉 브라우저가 아직 선택을
-   * 확정하지 않은 상태다. 이때만 한 번 더 확인한다.
+   * 'pending' = 선택은 있는데 앵커를 못 잡았다. 호출한 쪽이 조금 뒤에 다시 본다.
    */
   const readSelection = useCallback((): 'opened' | 'pending' | 'none' => {
     const sel = window.getSelection()
@@ -232,15 +243,32 @@ export function ReaderView({ doc }: { doc: Document }) {
     if (!container) return 'none'
 
     const range = sel.getRangeAt(0)
-    if (!container.contains(range.commonAncestorContainer)) return 'none'
 
-    // 컨테이너의 텍스트는 원문과 문자 단위로 같으므로,
-    // 시작점까지의 Range 길이가 곧 원문 문자 오프셋이다.
+    /**
+     * 선택이 본문과 닿는지.
+     *
+     * 손으로 끌면 선택이 컨테이너 밖(앞 문단의 끝이나 뒤 공백)까지 뻗을 수 있다.
+     * 공통 조상이 컨테이너 안에 있을 때만 본다고 하면 그 경우를 놓친다.
+     */
+    const touches =
+      container.contains(range.startContainer) ||
+      container.contains(range.endContainer) ||
+      container.contains(range.commonAncestorContainer)
+    if (!touches) return 'none'
+
+    // 시작점이 컨테이너 밖이면 오프셋을 셀 수 없다. 끝점으로 대신 잰다.
+    const at = container.contains(range.startContainer) ? range.startContainer : range.endContainer
+    const atOffset = container.contains(range.startContainer) ? range.startOffset : range.endOffset
+
     const prefix = document.createRange()
     prefix.selectNodeContents(container)
-    prefix.setEnd(range.startContainer, range.startOffset)
+    try {
+      prefix.setEnd(at, atOffset)
+    } catch {
+      return 'none'
+    }
 
-    // 컨테이너는 이 쪽에 있는 문장만 담고 있다. 여기서 얻은 오프셋은 쪽 기준이므로
+    // 컨테이너는 이 쪽 문장만 담고 있다. 여기서 얻은 오프셋은 쪽 기준이므로
     // 원문 기준으로 되돌려야 문장 번역이 맞는 문장을 찾는다.
     const start = page.start + prefix.toString().length
     const end = start + range.toString().length
@@ -263,25 +291,39 @@ export function ReaderView({ doc }: { doc: Document }) {
     return 'opened'
   }, [sentences, page.start])
 
-  /**
-   * 손을 떼는 순간에 문장을 연다.
-   *
-   * ① 손을 떼는 것은 touchend 다 — mouseup 보다 먼저 온다.
-   * ② 곧장 스크롤로 넘어가면 touchend 대신 touchcancel 이 온다. 둘 다 같은 경로로 받는다.
-   * ③ 이 시점의 선택은 아직 확정되지 않았을 수 있다. 앵커를 못 잡았다면 한 번 더 본다.
-   *    빈손 탭이 오해되지 않도록, 실제로 선택이 있는 경우에만 다시 확인한다.
-   */
+  /** 데스크톱: 마우스를 떼는 즉시 반응해야 손맛이 맞는다 */
   const handleSelectionEnd = useCallback(() => {
+    if (window.getSelection()?.isCollapsed) return
+    settleTimer.current = 0
     if (readSelection() !== 'pending') return
     retryTimer.current = window.setTimeout(() => readSelection(), 80)
   }, [readSelection])
 
+  /**
+   * 터치: 브라우저가 선택을 확정했다는 신호를 듣는다.
+   *
+   * 끌고 있는 동안 계속 울리므로 기다렸다가 한 번만 본다. 마지막 신호로부터
+   * 시간이 지나면 사용자가 손을 멈춘 것으로 본다.
+   */
   useEffect(() => {
+    const onSelectionChange = () => {
+      if (!containerRef.current) return
+      // 선택이 사라졌다(빈손 탭, ESC)는 아무것도 하지 않는다 — 단어 팝오버를 지우는 쪽이 따로 있다
+      if (window.getSelection()?.isCollapsed) return
+      if (settleTimer.current) window.clearTimeout(settleTimer.current)
+      settleTimer.current = window.setTimeout(() => {
+        if (readSelection() !== 'pending') return
+        retryTimer.current = window.setTimeout(() => readSelection(), 80)
+      }, SELECTION_SETTLE_MS)
+    }
+
+    document.addEventListener('selectionchange', onSelectionChange)
     return () => {
+      document.removeEventListener('selectionchange', onSelectionChange)
+      if (settleTimer.current) window.clearTimeout(settleTimer.current)
       if (retryTimer.current) window.clearTimeout(retryTimer.current)
     }
-  }, [])
-
+  }, [readSelection])
 
   /**
    * 드래그 없이 문장을 번역하는 길 (plan.txt 6줄).
@@ -345,11 +387,13 @@ export function ReaderView({ doc }: { doc: Document }) {
       <div
         ref={containerRef}
         onClick={handleClick}
+        /*
+         * 데스크톱 드래그: 마우스를 떼는 순간 바로 연다.
+         * 터치는 touchend 에 읽으면 아직 확정되지 않은 값을 받으므로
+         * selectionchange 신호를 쓴다 — 이벤트를 기다리는 것만으로는
+         * 폰에서 여는 것이 불가능했다.
+         */
         onMouseUp={handleSelectionEnd}
-        // 터치 기기에서 손을 떼는 것은 touchend 지만, 스크롤로 넘어가면
-        // touchcancel 이 온다. 둘 다 같은 경로로 받는다.
-        onTouchEnd={handleSelectionEnd}
-        onTouchCancel={handleSelectionEnd}
         className="text-[1.05rem] leading-[2.1] break-words whitespace-pre-wrap"
       >
         {pageItems.map((segment) =>

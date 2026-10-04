@@ -50,31 +50,45 @@ export async function run(ctx) {
   const selected = await selectFirstSentence(ctx)
   ctx.check('첫 문장을 고른다', selected === true, '범위 설정')
 
-  // 손을 떼는 순간 touchend 가 먼저 온다
-  await ctx.touchEnd('[data-start]')
+  /*
+   * touchend 를 쏘지 않는다.
+   *
+   * 회귀: 터치 기기에서 touchend / touchcancel 어느 쪽을 기다려도 문장 창이
+   * 뜨지 않았다. 운영체제 기본 선택 상자만 떴다. 진짜 신호는 브라우저가 선택을
+   * 확정했다는 selectionchange 다 — 이건 우리가 쏠 수 없다(브라우저가 쏜다).
+   * 프로그램을 요소를 고른 뒤 그 신호가 오면 열린다.
+   */
   await ctx.waitFor(
     `(() => { const d = document.querySelector('[role="dialog"]'); return !!d })()`,
     '문장 팝오버', 15_000,
   )
   const byTouch = await ctx.popover()
-  ctx.check('touchend 로도 문장 번역 창이 뜬다', Boolean(byTouch),
+  ctx.check('선택이 확정되면 문장 번역 창이 뜬다', Boolean(byTouch),
     (byTouch?.text ?? '').replace(/\n/g, ' | ').slice(0, 70))
   ctx.check('문장 박스가 단어 박스보다 넓다 (plan.txt 6줄)',
     (byTouch?.width ?? 0) > (wordBox?.width ?? 999),
     `문장 ${byTouch?.width}px vs 단어 ${wordBox?.width}px`)
   await ctx.pressEscape()
 
-  // ── 1b. 스크롤로 넘어가면 touchend 대신 touchcancel 이 온다 ──
+  // ── 1b. 선택이 본문 밖에서 일어나면 열지 않는다 ──
   await ctx.pressEscape()
   await ctx.page.evaluate(`getSelection()?.removeAllRanges(); true`)
   await sleep(300)
-  await selectFirstSentence(ctx)
-  await ctx.touchCancel('[data-start]')
-  await ctx.waitFor(
-    `(() => { const d = document.querySelector('[role="dialog"]'); return !!d })()`,
-    '문장 팝오버 (touchcancel)', 15_000,
-  )
-  ctx.check('스크롤로 넘어가 touchcancel 이 와도 열린다', Boolean(await ctx.popover()), '열림')
+  // 문서 제목(<h1>)은 본문 컨테이너 밖이다 — 여기서 고르면 열리면 안 된다
+  const outside = await ctx.page.evaluate(`(() => {
+    const title = document.querySelector('article h1');
+    if (!title) return 'no-title';
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return sel.toString();
+  })()`)
+  await sleep(500)
+  ctx.check('본문 밖의 제목만 골르면 열지 않는다',
+    String(outside).length > 0 && !(await ctx.page.evaluate(`!!document.querySelector('[role="dialog"]')`)),
+    `선택 "${String(outside).slice(0, 24)}"`)
 
   // ── 2. 드래그 없이 하는 길 ──
   await ctx.page.evaluate(`getSelection()?.removeAllRanges(); true`)
