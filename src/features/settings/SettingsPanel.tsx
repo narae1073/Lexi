@@ -1,6 +1,7 @@
 import { useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { AppLanguageSwitcher } from './AppLanguageSwitcher'
 import { ThemePicker } from './ThemePicker'
+import { UnmarkedDimControl } from './UnmarkedDimControl'
 
 export function SettingsPanel() {
   const t = useTranslation()
@@ -22,6 +23,8 @@ export function SettingsPanel() {
           <AppLanguageSwitcher />
         </div>
       </div>
+
+      <UnmarkedDimControl />
 
       <div className="flex items-center gap-3">
         <button

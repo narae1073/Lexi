@@ -13,10 +13,11 @@ export async function run(ctx) {
   ctx.check('○ ◐ ● 세 상태 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('New'))), popover?.buttons.join(' '))
   ctx.check('사전 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('Dictionary'))))
 
-  const plainColor = await colorOf(ctx, 'apple')
+  const unmarkedColor = await colorOf(ctx, 'apple')
   await ctx.setStatus('New')
   const unknownColor = await colorOf(ctx, 'apple')
-  ctx.check('● 선택 시 색이 바뀐다', plainColor !== unknownColor, `${plainColor} → ${unknownColor}`)
+  ctx.check('● 선택 시 색이 바뀐다', unmarkedColor !== unknownColor,
+    `미표시 ${unmarkedColor} → ${unknownColor}`)
   await ctx.pressEscape()
 
   // 같은 표기가 반복된 다른 위치도 함께 칠해진다 (전역 상태)
@@ -27,15 +28,17 @@ export async function run(ctx) {
   ctx.check('같은 단어의 모든 등장 위치가 함께 칠해진다', appleColors.count >= 1 && appleColors.distinct === 1,
     `${appleColors.count}곳`)
 
-  // 아는 단어는 기본 색(본문색) — plan.txt 4줄
+  // 아는 단어는 본문색 그대로(plan.txt 4줄), 표시 안 한 단어는 그보다 옅다
   await ctx.clickWord('busy')
   await sleep()
   await ctx.setStatus('Know')
   await ctx.pressEscape()
+  const inkColor = await ctx.page.evaluate(`getComputedStyle(document.body).color`)
   const knownColor = await colorOf(ctx, 'busy')
-  const unmarkedColor = await colorOf(ctx, 'busy')
-  ctx.check('아는 단어는 표시되지 않은 단어와 같은 기본 색이다', knownColor === unmarkedColor,
-    `${knownColor} vs ${unmarkedColor}`)
+  const untouchedColor = await colorOf(ctx, 'store')
+  ctx.check('아는 단어는 본문색 그대로다', knownColor === inkColor, `${knownColor} vs 본문 ${inkColor}`)
+  ctx.check('표시 안 한 단어는 아는 단어보다 옅다', untouchedColor !== knownColor,
+    `미표시 ${untouchedColor} vs 알음 ${knownColor}`)
 
   // 대소문자 충돌: US 와 us 의 상태가 서로 독립여야 한다
   await ctx.clickWord('US')
@@ -59,9 +62,13 @@ export async function run(ctx) {
     known: await colorOf(ctx, 'busy'),
     plain: await colorOf(ctx, 'economy'),
   }
+  const inkAfter = await ctx.page.evaluate(`getComputedStyle(document.body).color`)
   ctx.check('새로고침 후 상태가 복원된다',
-    afterReload.unknown !== afterReload.plain && afterReload.known === afterReload.plain,
-    `모름=${afterReload.unknown} 앎=${afterReload.known}`)
+    afterReload.unknown !== afterReload.plain && afterReload.known === inkAfter,
+    `모름=${afterReload.unknown} 앎=${afterReload.known} 본문=${inkAfter}`)
+  ctx.check('새로고침 후에도 표시 안 한 단어는 옅다',
+    afterReload.plain !== afterReload.known,
+    `미표시=${afterReload.plain} 앎=${afterReload.known}`)
 
   // ESC 로 닫는다
   await ctx.clickWord('economy')

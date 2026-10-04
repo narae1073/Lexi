@@ -6,13 +6,26 @@ import { createTranslator, DEFAULT_APP_LANGUAGE, type AppLanguage, type Translat
 import type { SupportedLanguageCode } from '../../lib/languages'
 import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features/settings/themes'
 
+/** 표시 안 한 단어의 옅은 정도 (%) — 0 이면 본문색 그대로, 클수록 옅다 */
+export const UNMARKED_DIM_MIN = 0
+export const UNMARKED_DIM_MAX = 70
+export const UNMARKED_DIM_DEFAULT = 34
+
+export function clampUnmarkedDim(value: number): number {
+  if (!Number.isFinite(value)) return UNMARKED_DIM_DEFAULT
+  return Math.min(UNMARKED_DIM_MAX, Math.max(UNMARKED_DIM_MIN, Math.round(value)))
+}
+
 type SettingsState = {
   /** 사용자가 명시적으로 고른 앱 언어. null 이면 기기 설정을 따른다. */
   appLanguage: AppLanguage | null
   /** null 이면 시스템 설정을 따른다 */
   theme: ThemeId | null
+  /** 표시 안 한 단어를 본문색에서 얼마나 뺄지 (%, 클수록 옅다) */
+  unmarkedDim: number
   setAppLanguage: (language: AppLanguage | null) => void
   setTheme: (theme: ThemeId | null) => void
+  setUnmarkedDim: (value: number) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
 }
@@ -33,8 +46,10 @@ export const useSettingsStore = create<SettingsState>()(
     (set, get) => ({
       appLanguage: null,
       theme: null,
+      unmarkedDim: UNMARKED_DIM_DEFAULT,
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
+      setUnmarkedDim: (value) => set({ unmarkedDim: clampUnmarkedDim(value) }),
       resolvedAppLanguage: () => get().appLanguage ?? detectDeviceLanguage(),
       resolvedTheme: () => get().theme ?? detectPreferredTheme(),
     }),
@@ -51,6 +66,7 @@ export const useSettingsStore = create<SettingsState>()(
 export function useApplyTheme() {
   const theme = useSettingsStore((s) => s.theme)
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme)
+  const unmarkedDim = useSettingsStore((s) => s.unmarkedDim)
 
   const id = useMemo(() => theme ?? resolvedTheme(), [theme, resolvedTheme])
 
@@ -61,6 +77,14 @@ export function useApplyTheme() {
     const meta = document.querySelector('meta[name="theme-color"]')
     meta?.setAttribute('content', getTheme(safeId)?.chromeColor ?? '#ffffff')
   }, [id])
+
+  // 표시 안 한 단어의 옅은 정도 — index.css 의 color-mix 가 이 값을 읽는다
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--unmarked-dim',
+      `${clampUnmarkedDim(unmarkedDim)}%`,
+    )
+  }, [unmarkedDim])
 }
 
 /**

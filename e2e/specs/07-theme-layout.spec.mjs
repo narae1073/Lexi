@@ -16,6 +16,29 @@ function contrast(fg, bg) {
   return (a + 0.05) / (b + 0.05)
 }
 
+/**
+ * 첫 문서를 열어 본문 화면으로 간다.
+ * 설정 화면에는 문서 링크가 없으므로 홈으로 나갔다가 들어가야 하고,
+ * 문서 링크는 /read/<id> 형태라 beginswith 로 눌러야 한다.
+ */
+async function openDocument(ctx) {
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(400)
+  await ctx.page.evaluate(
+    `[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')?.startsWith('/read/'))?.click(); true`,
+  )
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
+  await sleep(400)
+}
+
+/** 본문에서 표시 안 한 단어의 실제 렌더 색 */
+async function readShade(ctx) {
+  return ctx.page.evaluate(`(() => {
+    const n = [...document.querySelectorAll('[data-start]')].find(x => x.textContent === 'changed');
+    return n ? getComputedStyle(n).color : null;
+  })()`)
+}
+
 export async function run(ctx) {
   await ctx.enrollLanguage('English')
   await ctx.createDocument(TEXT, 'English')
@@ -35,6 +58,64 @@ export async function run(ctx) {
   await sleep()
   const themeCount = await ctx.page.evaluate(`document.querySelectorAll('ul li button').length`)
   ctx.check('설정 화면에 테마 10개가 보인다', themeCount === 10, `${themeCount}개`)
+
+  // ── 표시 안 한 단어는 아는 단어보다 옅게 보인다 ──
+  // 'wire' 를 아는 단어로 만든다 (Ubiquitous 는 위에서 ● 로 칠했다)
+  await openDocument(ctx)
+  await ctx.clickWord('wire')
+  await sleep()
+  await ctx.setStatus('Know')
+  await ctx.pressEscape()
+  const shade = await ctx.page.evaluate(`(() => {
+    const read = (t) => {
+      const n = [...document.querySelectorAll('[data-start]')].find(x => x.textContent === t);
+      return n ? getComputedStyle(n).color : null;
+    };
+    return { unmarked: read('changed'), known: read('wire'), ink: getComputedStyle(document.body).color };
+  })()`)
+  ctx.check('표시 안 한 단어가 아는 단어보다 옅다',
+    shade.unmarked !== null && shade.unmarked !== shade.known,
+    `미표시 ${shade.unmarked} / 알음 ${shade.known}`)
+  ctx.check('아는 단어는 본문색 그대로다', shade.known === shade.ink,
+    `알음 ${shade.known} / 본문 ${shade.ink}`)
+
+  // ── 설정에서 옅은 정도를 조절한다 ──
+  await ctx.clickSelector('a[href="/settings"]')
+  await sleep(500)
+  const setDim = (v) => ctx.page.evaluate(`(() => {
+    const r = document.querySelector('input[type="range"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(r, '${v}');
+    r.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+
+  await openDocument(ctx)
+  const faint = await readShade(ctx)
+  await ctx.clickSelector('a[href="/settings"]')
+  await sleep(400)
+  await setDim(0)
+  await openDocument(ctx)
+  const full = await readShade(ctx)
+  ctx.check('슬라이더로 옅은 정도가 바뀐다', faint !== full, `기본 ${faint} → 0% ${full}`)
+
+  await ctx.clickSelector('a[href="/settings"]')
+  await sleep(400)
+  await setDim(70)
+  await openDocument(ctx)
+  const faintest = await readShade(ctx)
+  ctx.check('크게 옅게 하면 아는 단어와 확실히 다르다', faintest !== full, `${faintest} vs ${full}`)
+
+  await ctx.clickSelector('a[href="/settings"]')
+  await sleep(400)
+  await ctx.page.evaluate(`(() => {
+    [...document.querySelectorAll('button')].find(b => b.innerText.trim() === 'Reset')?.click();
+    return true;
+  })()`)
+  await sleep(300)
+
+  await ctx.clickSelector('a[href="/settings"]')
+  await sleep(500)
 
   const report = []
   for (const label of THEMES) {

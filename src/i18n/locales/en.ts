@@ -96,6 +96,11 @@ export const en = {
 
   settings: {
     title: 'Settings',
+    unmarkedDim: 'Unmarked word shade',
+    unmarkedDimHint: 'Words you have not marked yet are drawn {value}% lighter. Applies to every theme.',
+    dimStrong: 'Strong',
+    dimFaint: 'Faint',
+    reset: 'Reset',
     appLanguage: 'App language',
     theme: 'Theme',
     system: 'System',

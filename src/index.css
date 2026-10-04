@@ -8,6 +8,10 @@
  * 사전(dictionary_entries)과 무관하게 색은 전부 여기서 온다.
  *
  * 알은(known)은 plan.txt 4줄에 따라 색을 칠하지 않는다 — 어떤 테마에서도 본문색 그대로.
+ *
+ * 표시 안 한 단어(unmarked)는 본문색을 약하게 뺀 색을 쓴다. 테마마다 따로 값을
+ * 적지 않고 본문색과 배경색을 섞어 만들기 때문에, 테마 10종 어디서든 같은
+ * "얼마나 옅게" 라는 하나의 설정(--unmarked-dim)만으로 맞는다.
  */
 
 @theme {
@@ -24,6 +28,16 @@
   --color-status-unknown: var(--t-status-unknown);
   --color-status-unsure-bg: var(--t-status-unsure-bg);
   --color-status-unknown-bg: var(--t-status-unknown-bg);
+  --color-unmarked: var(--t-unmarked);
+}
+
+/*
+ * 표시 안 한 단어의 옅은 정도. 0% 면 본문색 그대로, 값이 클수록 옅어진다.
+ * settings 의 슬라이더가 documentElement.style 로 이 값을 덮어쓴다.
+ */
+:root {
+  --unmarked-dim: 34%;
+  --t-unmarked: color-mix(in oklab, var(--t-ink) calc(100% - var(--unmarked-dim)), var(--t-surface));
 }
 
 /* ── 밝은 테마 ────────────────────────────────────────────────────────── */
