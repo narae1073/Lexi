@@ -75,6 +75,11 @@ export const ko: Dictionary = {
     syncNow: '지금 동기화',
     syncStatus: '동기화',
     lastSynced: '마지막 동기화',
+    errorRateLimit:
+      '기본 메일 서버의 발송 한도를 넘었습니다. 기다려도 해결되지 않습니다 — Supabase → Project Settings → Authentication → Email 에 커스텀 SMTP(Resend)를 연결하세요.',
+    errorNotAllowed: '이 서버에서는 가입이 닫혀 있습니다.',
+    errorNotConfirmed: '먼저 이메일 주소를 인증한 뒤 다시 로그인하세요.',
+    errorTooMany: '시도가 너무 많습니다. 잠시 뒤 다시 시도하세요.',
     status: {
       local: '로그인 안 함',
       syncing: '동기화 중…',

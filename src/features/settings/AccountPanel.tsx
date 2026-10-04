@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { authErrorKeyOrMessage } from '../../lib/authError'
 import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { useAuthStore } from '../../app/stores/auth'
@@ -142,7 +143,16 @@ export function AccountPanel() {
       )}
 
       {linkSent && <p className="text-status-unsure mt-3 text-xs">{t('account.linkSent')}</p>}
-      {authError && <p className="text-status-unknown mt-3 text-xs">{authError}</p>}
+      {/* Supabase 원문을 그대로 붙잡지 않는다 — 무엇을 고쳐야 하는지까지 알려준다 */}
+      {authError && (
+        <div className="border-status-unknown mt-3 rounded-lg border p-2.5">
+          <p className="text-status-unknown text-xs">
+            {authErrorKeyOrMessage(authError)?.startsWith('account.error.')
+              ? t(authErrorKeyOrMessage(authError) as never)
+              : authError}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

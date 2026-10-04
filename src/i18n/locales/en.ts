@@ -76,6 +76,11 @@ export const en = {
     syncNow: 'Sync now',
     syncStatus: 'Sync',
     lastSynced: 'Last synced',
+    errorRateLimit:
+      'Too many sign-in emails from the built-in mail server. Waiting does not help — add a custom SMTP provider (Resend) in Supabase → Project Settings → Authentication → Email.',
+    errorNotAllowed: 'Sign-ups are closed on this server.',
+    errorNotConfirmed: 'Confirm your email address first, then sign in again.',
+    errorTooMany: 'Too many attempts. Wait a moment and try again.',
     status: {
       local: 'Not signed in',
       syncing: 'Syncing…',
