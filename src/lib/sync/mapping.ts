@@ -27,10 +27,16 @@ type OccurrenceInsert = Database['public']['Tables']['word_occurrences']['Insert
 export type OccurrenceGroup = { documentId: string; lemma: string; rows: OccurrenceKey[] }
 
 /** 읽을 때 필요한 열만 — Row 와 Insert 를 모두 받으려면 이만큼이면 된다 */
+/**
+ * 읽을 때 필요한 열만.
+ *
+ * occurrences_count 는 서버 기본값이 있으므로 없을 수도 있다 — 마이그레이션
+ * 이전에 쓰인 행, 그리고 값을 싣지 않은 insert 모두 이 경우다. 없으면 1 이다.
+ */
 type OccurrenceKey = Pick<
   OccurrenceRow,
   'document_id' | 'language_code' | 'lemma' | 'surface' | 'char_start' | 'char_end' | 'sentence'
->
+> & { occurrences_count?: number }
 
 const statusToServer = (status: WordStatus): Database['public']['Enums']['word_status'] => status
 const statusFromServer = (status: WordStateRow['status']): WordStatus => status
@@ -101,6 +107,8 @@ export function occurrenceToRows(userId: string, record: WordOccurrence): Occurr
     char_start: record.charStart,
     char_end: record.charEnd,
     sentence: record.sentence,
+    // 같은 단어의 표기들은 등장 횟수가 같다. 어느 줄에 실어도 무방하다.
+    occurrences_count: record.count,
   }
   return record.surfaces.map((surface) => ({ ...base, surface }))
 }
@@ -108,9 +116,11 @@ export function occurrenceToRows(userId: string, record: WordOccurrence): Occurr
 /**
  * 서버 행 → 로컬 등장 기록.
  *
- * 서버에는 등장 횟수가 없으므로 표기 수로 채운다. 정확하지 않아도 괜찮다 —
- * 서버의 기록은 "이 단어가 이 문서의 이 자리에 쓰였다" 를 보여주기 위한 것이고,
- * 정밀한 횟수는 로컬 문서를 열 때 다시 계산된다.
+ * 등장 횟수는 서버의 occurrences_count 를 쓴다. 같은 (문서, 단어) 그룹의
+ * 모든 줄이 같은 값을 갖고 있어 첫 줄만 보면 된다.
+ *
+ * 옛 행에는 이 열이 없어 기본값 1 이 들어 있다. 그 문서를 열면 다시 계산되어
+ * 정확해진다.
  */
 export function occurrenceFromRows(rows: OccurrenceKey[], document: Document): WordOccurrence {
   const ordered = [...rows].sort((a, b) => a.char_start - b.char_start)
@@ -122,7 +132,7 @@ export function occurrenceFromRows(rows: OccurrenceKey[], document: Document): W
     languageCode: first.language_code as LanguageCode,
     lemma: first.lemma,
     surfaces: [...new Set(ordered.map((r) => r.surface))],
-    count: ordered.length,
+    count: first.occurrences_count ?? 1,
     recordedAt: Date.parse(document.updatedAt),
     charStart: first.char_start,
     charEnd: last.char_end,

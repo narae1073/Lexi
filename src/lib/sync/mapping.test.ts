@@ -177,4 +177,20 @@ describe('word_occurrences 매핑', () => {
   it('표기가 하나뿐이면 한 줄이다', () => {
     expect(occurrenceToRows(USER, { ...record, surfaces: ['us'] })).toHaveLength(1)
   })
+
+  it('등장 횟수를 함께 보낸다', () => {
+    // 없으면 새 기기에서 ×N 이 표기 수(대부분 1)로 보여 실제와 어긋난다
+    const rows = occurrenceToRows(USER, { ...record, count: 7 })
+    expect(rows.map((r) => r.occurrences_count)).toEqual([7, 7])
+  })
+
+  it('라운드트립 후에도 등장 횟수가 보존된다', () => {
+    const rows = occurrenceToRows(USER, { ...record, count: 4 })
+    expect(occurrenceFromRows(rows, doc).count).toBe(4)
+  })
+
+  it('옛 행에 횟수 열이 없어도 1 로 읽는다 — 마이그레이션 이전 데이터', () => {
+    const { occurrences_count: _dropped, ...legacy } = occurrenceToRows(USER, record)[0]
+    expect(occurrenceFromRows([legacy], doc).count).toBe(1)
+  })
 })

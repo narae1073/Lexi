@@ -89,6 +89,8 @@ export type Database = {
           char_start: number
           char_end: number
           sentence: string
+          /** 이 표기가 등장한 횟수 */
+          occurrences_count: number
         }
         Insert: {
           id?: never
@@ -100,6 +102,7 @@ export type Database = {
           char_start: number
           char_end: number
           sentence: string
+          occurrences_count?: number
         }
         Update: {
           id?: never
@@ -111,6 +114,7 @@ export type Database = {
           char_start?: number
           char_end?: number
           sentence?: string
+          occurrences_count?: number
         }
         Relationships: []
       }

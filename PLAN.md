@@ -440,6 +440,20 @@ Node(Express, PM2)는 개인 페이지 백엔드일 뿐이다.
 `mc` 가 DNS only 라서 원본 IP 가 노출된다. 표의 경고는 이 때문이다.
 마크를 같은 IP 에 두는 한 완전히 막을 수 없다.
 
+### 10.0.0.1 마이그레이션
+
+Supabase CLI 를 프로젝트 devDependency 로 쓴다 (`npx supabase`). 원격 프로젝트는
+이미 link 되어 있다.
+
+```bash
+npm run db:status   # 로컬/원격 마이그레이션 대조
+npm run db:push     # 새 마이그레이션 적용
+```
+
+`supabase/config.toml` 은 `supabase init` 이 만든 파일이고, `project_id` 는
+폴더 이름에서 온 값이므로 실제 프로젝트 ref 와 다르다. link 정보는
+`supabase/.temp/` 에 있고 gitignore 된다.
+
 ### 10.0.1 인증서
 
 - **엣지**: Cloudflare 와일드카드 인증서가 이미 있다 (`*.achijaser.date`)
@@ -581,3 +595,5 @@ RLS 는 실제 사용자 데이터가 들어 있는 상태에서 실측했다
   사전이 비어 있다. 다른 provider 로 갈아타거나, 이 언어를 목록에서 뺄지 정해야 한다
 - **한국어 불규칙 활용** (`갑니다`→`가다`) — 규칙 표에 없으면 못 맞춘다
 - **PWA 에는 저장소가 없다** — Capacitor 는 "pwa 만으로" 로 결정되어 보류
+- 등장 횟수는 마이그레이션 `20261004000002` 로 서버에 추가했다. 마이그레이션
+  이전에 쓰인 행은 기본값 1 이고, 그 문서를 열면 정확해진다
