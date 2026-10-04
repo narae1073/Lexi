@@ -35,8 +35,17 @@ export type WordOccurrence = {
 type OccurrencesState = {
   /** languageCode 별 등장 기록 */
   byLanguage: Record<string, WordOccurrence[]>
+  /**
+   * 적재된 모든 등장 기록 (언어 구분 없이).
+   *
+   * 문서 목록에서 문서별로 묶어 진도를 내려면 전체가 필요하다. 언어별로 쪼개진
+   * 맵을 다시 합치는 대신 여기 한 벌�� 둔다 — 목록은 한 번만 계산한다.
+   */
+  occurrences: WordOccurrence[]
   /** 이미 기록을 끝낸 문서 id — 다시 열 때 중복 기록하지 않기 위함 */
   recorded: Record<string, true>
+  /** 진도 계산이 도는 중인지 — 동시 호출을 막는다 */
+  refreshing: boolean
   recordDocument: (doc: Document, force?: boolean) => Promise<void>
   loadLanguage: (languageCode: LanguageCode) => Promise<void>
   forgetDocument: (documentId: string) => Promise<void>
@@ -55,9 +64,16 @@ function sortByPosition(a: WordOccurrence, b: WordOccurrence) {
   return a.charStart - b.charStart
 }
 
+/** languageCode 별 맵에서 전체 목록을 다시 잇는다 — 적재가 끝날 때마다 한 번만 */
+function flatten(byLanguage: Record<string, WordOccurrence[]>): WordOccurrence[] {
+  return Object.values(byLanguage).flat()
+}
+
 export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   byLanguage: {},
+  occurrences: [],
   recorded: {},
+  refreshing: false,
 
   loadLanguage: async (languageCode) => {
     const rows = await idbGetAllByIndex<WordOccurrence>(
@@ -66,7 +82,10 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       languageCode,
     )
     rows.sort(sortByPosition)
-    set((s) => ({ byLanguage: { ...s.byLanguage, [languageCode]: rows } }))
+    set((s) => {
+      const byLanguage = { ...s.byLanguage, [languageCode]: rows }
+      return { byLanguage, occurrences: flatten(byLanguage) }
+    })
   },
 
   /**
@@ -76,6 +95,9 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
    */
   refreshStaleDocuments: async (docs) => {
     if (docs.length === 0) return 0
+    // 목록과 동기화가 동시에 부를 수 있다 — 중복 계산을 막는다
+    if (get().refreshing) return 0
+    set({ refreshing: true })
 
     const meta = await idbGetAll<{ documentId: string; lemmaVersion: number }>(
       STORES.documentMeta,
@@ -83,13 +105,17 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     const known = new Map(meta.map((m) => [m.documentId, m.lemmaVersion]))
     const stale = docs.filter((doc) => known.get(doc.id) !== LEMMA_VERSION)
 
-    for (const doc of stale) {
-      await get().recordDocument(doc, true)
-      await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
-        () => {},
-      )
+    try {
+      for (const doc of stale) {
+        await get().recordDocument(doc, true)
+        await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
+          () => {},
+        )
+      }
+      return stale.length
+    } finally {
+      set({ refreshing: false })
     }
-    return stale.length
   },
 
   recordDocument: async (doc, force = false) => {
@@ -143,10 +169,14 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       .sort(sortByPosition)
     await replaceOccurrences(doc.id, records)
 
-    set((s) => ({
-      recorded: { ...s.recorded, [doc.id]: true },
-      byLanguage: { ...s.byLanguage, [doc.languageCode]: records },
-    }))
+    set((s) => {
+      const byLanguage = { ...s.byLanguage, [doc.languageCode]: records }
+      return {
+        recorded: { ...s.recorded, [doc.id]: true },
+        byLanguage,
+        occurrences: flatten(byLanguage),
+      }
+    })
   },
 
   forgetDocument: async (documentId) => {
@@ -159,7 +189,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       for (const [language, rows] of Object.entries(s.byLanguage)) {
         byLanguage[language] = rows.filter((r) => r.documentId !== documentId)
       }
-      return { recorded, byLanguage }
+      return { recorded, byLanguage, occurrences: flatten(byLanguage) }
     })
   },
 }))

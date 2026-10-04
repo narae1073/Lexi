@@ -50,6 +50,49 @@ Ubiquitous smartphones changed communication everywhere.`
   )
   ctx.check('문서가 목록에 추가된다', (await ctx.bodyText()).includes('Untitled'))  // 기본 제목은 i18n 에서 온다
 
+  // ── 목록 오른쪽 진도 게이지 (plan.txt 8줄 과 같은 기준) ──
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(600)
+  const gauge = await ctx.page.evaluate(`(() => {
+    const rows = [...document.querySelectorAll('li')];
+    return rows.map(li => {
+      const bar = li.querySelector('[role="progressbar"]');
+      const note = li.textContent.match(/(\\d+)% marked/);
+      return {
+        percent: bar ? Number(bar.getAttribute('aria-valuenow')) : null,
+        width: bar ? bar.firstElementChild?.style.width : null,
+        note: note ? Number(note[1]) : null,
+      };
+    });
+  })()`)
+  ctx.check('목록에 진도 게이지가 보인다',
+    gauge.length > 0 && gauge.every((g) => g.percent === 0 && g.width === '0%'),
+    JSON.stringify(gauge.slice(0, 2)))
+
+  // 문장을 열면 기록이 쌓이고, 표시한 단어가 생기면 비율이 오른다
+  await ctx.page.evaluate(`[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')?.startsWith('/read/'))?.click(); true`)
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
+  await sleep(1200)
+  // 이 문서는 한국어다 — 표기가 다른 단어를 고르면 토크나이저가 통째로 다른 것으로 본다
+  for (const word of ['나는', '매일', '글을']) {
+    if (await ctx.clickWord(word)) {
+      await sleep()
+      await ctx.setStatus('Know')
+      await ctx.pressEscape()
+    }
+  }
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(600)
+  const afterMark = await ctx.page.evaluate(`(() => {
+    const li = [...document.querySelectorAll('li')].find(x => x.textContent.includes('Untitled'));
+    const bar = li?.querySelector('[role="progressbar"]');
+    const note = li?.textContent.match(/(\\d+)% marked/);
+    return { percent: bar ? Number(bar.getAttribute('aria-valuenow')) : null, note: note ? Number(note[1]) : null };
+  })()`)
+  ctx.check('표시한 단어가 반영되어 비율이 오른다',
+    afterMark.percent !== null && afterMark.percent > 0 && afterMark.percent === afterMark.note,
+    `${afterMark.percent}% (본문 표기 ${afterMark.note}%)`)
+
   await ctx.page.evaluate(
     `[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')?.startsWith('/read/')).click(); true`,
   )

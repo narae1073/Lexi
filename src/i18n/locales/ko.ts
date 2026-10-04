@@ -32,6 +32,8 @@ export const ko: Dictionary = {
   },
 
   list: {
+    marked: '{percent}% 표시',
+    markedLabel: '표시한 단어 비율',
     loading: '불러오는 중…',
     empty: '아직 문서가 없습니다.',
     meta: '{language} · {count}자 · {date}',

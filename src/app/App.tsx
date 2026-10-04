@@ -74,12 +74,32 @@ export default function App() {
   } = useRegisterSW()
 
   const loadOccurrences = useOccurrencesStore((s) => s.loadLanguage)
+  const refreshStaleDocuments = useOccurrencesStore((s) => s.refreshStaleDocuments)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const enrolled = useLanguagesStore((s) => s.enrolled)
 
   useEffect(() => {
     void load()
   }, [load])
+
+  /**
+   * 목록의 진도 게이지를 위해, 아직 기록이 없는 문서를 유휴 시점에 계산한다.
+   *
+   * 등장 기록은 원문을 토크나이징해야 생긴다. 문서를 열 때만 하면 목록의 게이지가
+   * 전부 비어 있고, '문서를 열어야만 보인다' 는 말과 같은 문제가 된다.
+   * 계산은 기기 안에서만 일어나고 한 번 끝나면 다시 하지 않는다.
+   */
+  useEffect(() => {
+    if (documents.length === 0) return
+    const run = () => void refreshStaleDocuments(documents)
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300))
+    const handle = idle(run)
+    return () => {
+      if (typeof window.cancelIdleCallback === 'function' && typeof handle === 'number') {
+        window.cancelIdleCallback(handle)
+      }
+    }
+  }, [documents, refreshStaleDocuments])
 
   // 번역·사전 응답은 기기에 계속 쌓인다. 오래된 것부터 한 번씩 버린다.
   useEffect(() => {

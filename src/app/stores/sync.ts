@@ -70,19 +70,8 @@ async function run(set: Setter) {
     const occurrences = useOccurrencesStore.getState()
     await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
 
-    /**
-     * 표기 규칙이 바뀌면 저장된 기록은 옛 결과다.
-     *
-     * 사용자가 문서를 하나씩 열어야만 최신 규칙으로 다시 계산되던 상태를
-     * 없앤다 — 문서는 서버에서 왔으므로 원문이 있어 계산할 수 있다.
-     * 계산만 하고 네트워크를 쓰지 않으므로 비용은 낮다.
-     */
-    const refreshed = await occurrences.refreshStaleDocuments(
-      useDocumentsStore.getState().documents,
-    )
-    if (refreshed > 0) {
-      await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
-    }
+    // 기록이 없는/옛 기록인 문서의 재계산은 App 이 문서 목록에 반응해 맡는다.
+    // 여기서 다시 부르면 같은 계산을 두 번 한다.
 
     // 등장 기록은 문서를 열 때 다시 쓰인다 — 지금 있는 것만 서버로 보낸다
     const local = await readLocal()

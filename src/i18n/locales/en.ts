@@ -33,6 +33,8 @@ export const en = {
   },
 
   list: {
+    marked: '{percent}% marked',
+    markedLabel: 'Share of marked words',
     loading: 'Loading…',
     empty: 'No documents yet.',
     meta: '{language} · {count} chars · {date}',
