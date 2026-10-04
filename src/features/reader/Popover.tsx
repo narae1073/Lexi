@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
+import { useBottomInset } from '../../lib/bottomInset'
 import { useAnchoredPosition } from '../../lib/useAnchoredPosition'
 import type { PopoverSize } from '../../lib/position'
 
 const FALLBACK_SIZE: PopoverSize = { width: 224, height: 96 }
 
-/** 사전 항목처럼 내용이 긴 경우 화면을 넘지 않도록 상한을 둔다 */
-const MAX_CONTENT_HEIGHT = 'min(58vh, 420px)'
+/** 화면 가장자리에서 남길 여백 */
+const EDGE_MARGIN = 16
 
 /**
  * 앵커 위에 뜨는 작은 박스 (plan.txt 3줄).
@@ -30,6 +31,15 @@ export function Popover({
 }) {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<PopoverSize | null>(null)
+
+  /**
+   * 아래쪽 상태 바의 높이를 뺀 만큼만 커지게 한다.
+   *
+   * 자리를 잘 계산해도 앵커가 낮으면 위 공간이 부족하다. 그러면 위쪽 경계로 밀려
+   * 아래쪽이 상태 바를 덮는다 — 높이를 함께 줄여야 덮을 일이 없다.
+   */
+  const bottomInset = useBottomInset()
+  const maxHeight = `min(58vh, 420px, calc(100vh - ${bottomInset}px - ${EDGE_MARGIN}px))`
 
   /**
    * 이 박스의 크기를 재고, 크기가 바뀌면 자리를 다시 잡는다.
@@ -95,7 +105,7 @@ export function Popover({
         left: position?.left ?? 0,
         top: position?.top ?? 0,
         width,
-        maxHeight: MAX_CONTENT_HEIGHT,
+        maxHeight,
         // 위치를 재는 동안 깜빡이지 않게 숨긴다
         visibility: position ? 'visible' : 'hidden',
       }}
@@ -106,7 +116,7 @@ export function Popover({
           ESC/외부 클릭으로 닫고 다시 선택해야 한다. */}
       <div
         className="pointer-events-auto overflow-y-auto overscroll-contain"
-        style={{ maxHeight: MAX_CONTENT_HEIGHT }}
+        style={{ maxHeight }}
       >
         {/* 스크롤 컨테이너의 직속 자식이 flex 로 잡히면 높이가 눌린다
             (제목이 4px 로 뭉개진 사례). 높이는 auto 로 둔다. */}

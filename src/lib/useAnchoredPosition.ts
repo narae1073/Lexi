@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from 'react'
 
+import { useBottomInset } from './bottomInset'
 import { computePopoverPosition } from './position'
 
 /**
@@ -19,6 +20,8 @@ export function useAnchoredPosition(
   height: number,
 ) {
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
+  // 아래쪽 고정 바의 높이만큼 자리를 올려 준다 — 그 바를 덮지 않게
+  const bottomInset = useBottomInset()
 
   useLayoutEffect(() => {
     if (!anchor) return
@@ -27,7 +30,7 @@ export function useAnchoredPosition(
       const next = computePopoverPosition(
         anchor.getBoundingClientRect(),
         { width, height },
-        { width: window.innerWidth, height: window.innerHeight },
+        { width: window.innerWidth, height: window.innerHeight, bottomInset },
       )
       setPosition((prev) =>
         prev && prev.left === next.left && prev.top === next.top
@@ -48,7 +51,7 @@ export function useAnchoredPosition(
       window.removeEventListener('scroll', update, true)
       window.removeEventListener('resize', update)
     }
-  }, [anchor, anchorKey, width, height])
+  }, [anchor, anchorKey, width, height, bottomInset])
 
   return position
 }

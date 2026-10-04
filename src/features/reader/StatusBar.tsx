@@ -28,6 +28,8 @@ export function StatusBar({ stats }: { stats: DocumentStats }) {
   return (
     <aside
       aria-label={t('statusBar.label')}
+      // 팝오버가 이 바를 덮지 않게 — 아래쪽 여백에서 이 높이를 뺀다
+      data-obstructs-bottom
       className="border-line bg-surface/95 fixed inset-x-0 bottom-0 z-20 border-t backdrop-blur"
     >
       <div className="mx-auto w-full max-w-2xl px-5 py-2">

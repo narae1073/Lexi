@@ -72,6 +72,39 @@ describe('팝오버 자리', () => {
     expect(pos.left + 300).toBeLessThanOrEqual(VIEWPORT.width - 8 + 1)
   })
 
+  /**
+   * 아래에 붙은 상태 바는 덮으면 안 된다.
+   *
+   * 상태 바는 fixed bottom-0 이고 z-20 이라 팝오버를 덮는다 — 내용이 잘린 것처럼
+   * 보인다. 뷰포트 전체를 쓸 수 있는 공간으로 보면, 아래 여백이 넉넉해 보이는 만큼
+   * '아래' 로 열리고 그대로 상태 바를 덮는다.
+   */
+  it('아래 상태 바를 덮지 않는다', () => {
+    const viewport = { width: 390, height: 844, bottomInset: 85 }
+    const pos = computePopoverPosition(rect(20, 390, 60, 18), { width: 300, height: 420 }, viewport)
+    expect(pos.placement).toBe('top')
+    expect(pos.top + 420).toBeLessThanOrEqual(844 - 85)
+  })
+
+  it('상태 바를 무시하면 같은 자리가 아래로 내려가 덮는다 — 이것이 원인이었다', () => {
+    const anchor = rect(20, 390, 60, 18)
+    const size = { width: 300, height: 420 }
+
+    const without = computePopoverPosition(anchor, size, { width: 390, height: 844 })
+    const with_ = computePopoverPosition(anchor, size, { width: 390, height: 844, bottomInset: 85 })
+
+    expect(without.placement).toBe('bottom')
+    expect(without.top + size.height).toBeGreaterThan(844 - 85)
+    expect(with_.placement).toBe('top')
+  })
+
+  it('상태 바가 없으면 여백은 그대로다 — 목록 화면에서는 달라지지 않는다', () => {
+    const anchor = rect(20, 300, 60, 20)
+    const plain = computePopoverPosition(anchor, { width: 300, height: 100 }, { width: 390, height: 844 })
+    const zero = computePopoverPosition(anchor, { width: 300, height: 100 }, { width: 390, height: 844, bottomInset: 0 })
+    expect(plain).toEqual(zero)
+  })
+
   it('같은 자리를 계속 계산하면 같은 값을 낸다 — 출렁이면 사용자가 못 읽는다', () => {
     const a = computePopoverPosition(LOW_ANCHOR, { width: 300, height: 420 }, VIEWPORT)
     const b = computePopoverPosition(LOW_ANCHOR, { width: 300, height: 420 }, VIEWPORT)
