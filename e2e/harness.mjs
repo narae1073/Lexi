@@ -471,6 +471,18 @@ class Ctx {
 
 // ── 프로세스 수명주기 ─────────────────────────────────────────────────────
 
+/** 프로세스 그룹을 통째로 끝낸다 — 자식이 고아로 남으면 다음 실행에 포트가 걸린다 */
+function killGroup(child) {
+  if (!child?.pid || child.exitCode !== null) return
+  try {
+    process.kill(-child.pid, 'SIGTERM')
+  } catch {
+    try {
+      child.kill('SIGTERM')
+    } catch {}
+  }
+}
+
 async function waitForHttp(url, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -505,9 +517,21 @@ export async function runAll(filter) {
   })
 
   console.log('preview 서버 기동…')
-  const server = spawn('npm', ['run', 'preview', '--', '--port', '4173'], { stdio: 'ignore' })
+  // detached 로 띄워서 프로세스 그룹째로 끝낸다.
+  // npm 은 vite 를 자식 프로세스로 띄우므로, npm 만 죽이면 vite 가 고아로 남는다.
+  // 실제로 한 번 실행했을 때 preview 프로세스 43개가 쌓였다.
+  const server = spawn('npm', ['run', 'preview', '--', '--port', '4173'], {
+    stdio: 'ignore',
+    detached: true,
+  })
+  const killServer = () => killGroup(server)
+  // Ctrl-C 로 끝내도 남지 않게 — 지금도 signal 경로가 없다
+  process.once('exit', killServer)
+  process.once('SIGINT', () => process.exit(130))
+  process.once('SIGTERM', () => process.exit(143))
+
   if (!(await waitForHttp(APP_ORIGIN))) {
-    server.kill()
+    killServer()
     console.error('preview 서버가 뜨지 않았습니다')
     return 1
   }
@@ -542,7 +566,7 @@ export async function runAll(filter) {
 
   if (!page) {
     chrome.kill()
-    server.kill()
+    killServer()
     console.error('크롬에 연결하지 못했습니다')
     return 1
   }
@@ -583,7 +607,7 @@ export async function runAll(filter) {
   const exited = new Promise((resolve) => chrome.on('exit', resolve))
   chrome.kill()
   await Promise.race([exited, sleep(3000)])
-  server.kill()
+  killServer()
   await sleep(300)
   try {
     rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
