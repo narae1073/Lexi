@@ -82,6 +82,34 @@ Ubiquitous smartphones changed communication everywhere.`
   await sleep(2000)
   const occurrences = await ctx.readOccurrences()
   ctx.check('등장 기록이 저장된다', occurrences.length > 0, `${occurrences.length}건`)
+
+  /**
+   * 문서 URL 로 바로 들어가도 문서가 떠야 한다 (회귀).
+   *
+   * 예전에는 저장소가 아직 비어 있는 첫 렌더에서 "그런 문서 없다" 고 판단해
+   * 홈으로 튕겼다. 적재는 effect 에서 시작되므로 적재 전 판단이 언제나 일어났다.
+   * 새로고침하거나 링크를 붙여 여는 경우가 전부 여기 걸린다.
+   */
+  // 지금은 본문 화면이다 — 목록으로 돌아가서 링크를 찾는다
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(500)
+  const docId = await ctx.page.evaluate(`(() => {
+    const a = [...document.querySelectorAll('a')].find(x => x.getAttribute('href')?.startsWith('/read/'));
+    return a ? a.getAttribute('href').split('/').pop() : null;
+  })()`)
+  ctx.check('문서 링크를 찾는다', Boolean(docId), String(docId))
+
+  await ctx.navigateTo(`/read/${docId}`)
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문', 15_000)
+  ctx.check('문서 URL 로 바로 들어가면 문서가 뜬다',
+    !(await ctx.bodyText()).includes('Paste a text'),
+    (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
+
+  await ctx.navigateTo('/read/없는-문서')
+  await sleep(700)
+  ctx.check('실제로 없는 문서만 홈으로 보낸다',
+    (await ctx.bodyText()).includes('Paste a text') || (await ctx.bodyText()).includes('Add text'),
+    (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
 }
 
 function sleep() {

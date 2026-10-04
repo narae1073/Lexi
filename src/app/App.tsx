@@ -19,6 +19,10 @@ import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/setti
 
 function DocumentReader({ id }: { id: string }) {
   const doc = useDocumentsStore((s) => s.documents.find((d) => d.id === id))
+  const ready = useDocumentsStore((s) => s.ready)
+
+  // 적재가 끝나기 전에 "없다" 고 판단하면 문서 URL 로 들어올 때마다 홈으로 튕긴다
+  if (!ready) return null
   if (!doc) return <Navigate to="/" replace />
   // key 로 다시 그려야 문서를 바꿀 때 쪽·선택 상태가 함께 초기화된다
   return <ReaderView key={doc.id} doc={doc} />

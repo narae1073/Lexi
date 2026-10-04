@@ -9,6 +9,14 @@ import type { Document, LanguageCode } from '../../types'
 type DocumentsState = {
   documents: Document[]
   loading: boolean
+  /**
+   * IndexedDB 읽기가 한 번이라도 끝났는가.
+   *
+   * 이것이 없으면 문서 URL 로 바로 들어왔을 때 저장소가 아직 비어 있어
+   * "그런 문서 없다" 고 판단하고 홈으로 튕긴다 — 적재가 시작되기 전에
+   * 판단하므로 항상 튕긴다.
+   */
+  ready: boolean
   load: () => Promise<void>
   create: (input: {
     title: string
@@ -27,12 +35,13 @@ function now(): string {
 export const useDocumentsStore = create<DocumentsState>((set) => ({
   documents: [],
   loading: false,
+  ready: false,
 
   load: async () => {
     set({ loading: true })
     const docs = await idbGetAll<Document>(STORES.documents)
     docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    set({ documents: docs, loading: false })
+    set({ documents: docs, loading: false, ready: true })
   },
 
   remove: async (id) => {

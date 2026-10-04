@@ -164,6 +164,12 @@ class Ctx {
     })
   }
 
+  /** 주소를 그대로 열 때의 origin (딥링크 확인용) */
+  async navigateTo(path) {
+    await this.page.send('Page.navigate', { url: `${APP_ORIGIN}${path}` })
+    await sleep(400)
+  }
+
   async reload() {
     await this.page.send('Page.reload')
     await sleep(400)
