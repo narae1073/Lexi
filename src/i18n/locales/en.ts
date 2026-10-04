@@ -53,6 +53,10 @@ export const en = {
     shortUnknown: 'New',
   },
 
+  update: {
+    ready: 'A new version is ready — tap to update',
+  },
+
   pagination: {
     label: 'Pagination',
     prev: 'Previous page',

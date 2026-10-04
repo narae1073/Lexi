@@ -52,6 +52,10 @@ export const ko: Dictionary = {
     shortUnknown: '모름',
   },
 
+  update: {
+    ready: '새 버전이 있습니다 — 누르면 적용합니다',
+  },
+
   pagination: {
     label: '페이지 이동',
     prev: '이전 쪽',

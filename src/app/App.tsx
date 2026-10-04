@@ -107,13 +107,17 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 
+      {/*
+        새 버전이 있다는 알림이다. "다시 시도" 라고 하면 무엇을 해야 하는지
+        알 수 없으므로, 할 일을 그대로 말한다.
+      */}
       {needRefresh && (
         <button
           type="button"
           onClick={() => void updateServiceWorker(true)}
-          className="fixed right-4 bottom-4 rounded-lg bg-accent px-4 py-2 text-sm text-accent-ink shadow-lg"
+          className="fixed right-4 bottom-20 rounded-lg bg-accent px-4 py-2 text-sm text-accent-ink shadow-lg"
         >
-          {t('sentence.retry')}
+          {t('update.ready')}
         </button>
       )}
     </div>
