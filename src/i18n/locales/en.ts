@@ -59,6 +59,7 @@ export const en = {
     next: 'Next page',
     range: 'Showing {from}–{to} of {total}',
     size: 'Per page',
+    unit: 'words',
   },
   wordbook: {
     title: 'Wordbook',

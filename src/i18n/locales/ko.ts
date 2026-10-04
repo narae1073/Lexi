@@ -58,6 +58,7 @@ export const ko: Dictionary = {
     next: '다음 쪽',
     range: '{total}개 중 {from}–{to}',
     size: '한 쪽에',
+    unit: '개',
   },
   wordbook: {
     title: '단어장',

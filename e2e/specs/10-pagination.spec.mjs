@@ -16,7 +16,10 @@ const pageButtonsVisible = (ctx) =>
 
 /** 쪽 수 선택기가 보이는지 — 한 쪽이어도 남아야 한다 */
 const sizeSelectVisible = (ctx) =>
-  ctx.page.evaluate(`!!document.querySelector('nav[aria-label] select')`)
+  ctx.page.evaluate(`(() => {
+    const s = document.querySelector('select');
+    return !!s && !!s.closest('label');
+  })()`)
 
 /** 현재 보고 있는 쪽 번호 */
 const currentPage = (ctx) =>
@@ -39,9 +42,14 @@ async function openWordbook(ctx) {
   await sleep(600)
 }
 
+/**
+ * 쪽 수를 바꾼다.
+ * 위치가 아니라 라벨 글자로 찾아낸다 — 컨트롤이 목록 위·아래 어디로 옮겨져도
+ * 다른 select 를 잘못 건드리지 않는다.
+ */
 async function setPageSize(ctx, value) {
   const ok = await ctx.page.evaluate(`(() => {
-    const s = [...document.querySelectorAll('nav[aria-label] select')][0];
+    const s = [...document.querySelectorAll('label')].find(l => /Per page|한 쪽에/.test(l.innerText))?.querySelector('select');
     if (!s) return false;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
     setter.call(s, '${value}');
@@ -63,7 +71,7 @@ export async function run(ctx) {
   // ── 기본은 한 쪽에 20개 ──
   await openWordbook(ctx)
   const options = await ctx.page.evaluate(`(() => {
-    const s = document.querySelector('nav[aria-label] select');
+    const s = document.querySelector('select');
     return s ? [...s.options].map(o => Number(o.value)) : [];
   })()`)
   ctx.check('쪽 수 선택지가 10·20·30·40·50 다', JSON.stringify(options) === JSON.stringify([10, 20, 30, 40, 50]),
@@ -72,6 +80,20 @@ export async function run(ctx) {
   const onFirst = await itemCount(ctx)
   ctx.check('기본은 한 쪽에 20개까지 보여준다', onFirst === 20, `${onFirst}개`)
   ctx.check('쪽 수 선택은 한 쪽이어도 항상 보인다', await sizeSelectVisible(ctx), '보임')
+
+  // ── 쪽 수 선택이 목록 위에 있어야 한다 ──
+  const placement = await ctx.page.evaluate(`(() => {
+    const select = document.querySelector('select');
+    const nav = document.querySelector('nav[aria-label]');
+    const list = document.querySelector('li');
+    if (!select || !list) return null;
+    const sy = select.getBoundingClientRect().bottom;
+    return { aboveList: sy <= list.getBoundingClientRect().top, navHasSelect: !!nav?.querySelector('select') };
+  })()`)
+  ctx.check('쪽 수 선택이 목록 위에 있다', placement?.aboveList === true,
+    `select 아래 ${placement?.aboveList ? '목록 위' : '목록 아래'}`)
+  ctx.check('목록 아래 페이지 이동에는 쪽 수 선택이 남지 않는다', placement?.navHasSelect === false,
+    `nav 안에 select 있음: ${placement?.navHasSelect}`)
 
   // ── 10 개로 줄이면 몇 쪽으로 나뉘는지 ──
   await setPageSize(ctx, 10)

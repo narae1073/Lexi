@@ -11,10 +11,11 @@ import {
   useTranslation,
 } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import { paginate, PAGE_SIZES } from '../../lib/paginate'
+import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
 import type { WordbookGroup } from './buildWordbook'
+import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
 
@@ -126,6 +127,15 @@ export function Wordbook() {
         className="border-line focus:border-accent mb-4 w-full rounded-lg border px-3 py-2 text-sm outline-none"
       />
 
+      {/* 목록 위에 둔다 — 몇 개가 한 화면을 차지하는지 보고 고르는 게 자연스럽다 */}
+      <PageSizeSelect
+        value={pageSize}
+        onChange={(size) => {
+          setPageSize(size)
+          resetPage()
+        }}
+      />
+
       {/* 상태별 구분 (plan.txt 9줄) */}
       <div className="border-line mb-1 flex overflow-x-auto border-b text-sm">
         {WORDBOOK_GROUPS.map((key) => (
@@ -161,15 +171,7 @@ export function Wordbook() {
         </ul>
       )}
 
-      <Pagination
-        page={current}
-        onPageChange={setPageNumber}
-        pageSizes={PAGE_SIZES}
-        onPageSizeChange={(size) => {
-          setPageSize(size)
-          resetPage()
-        }}
-      />
+      <Pagination page={current} onPageChange={setPageNumber} />
     </section>
   )
 }
