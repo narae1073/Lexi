@@ -18,7 +18,8 @@ import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/setti
 function DocumentReader({ id }: { id: string }) {
   const doc = useDocumentsStore((s) => s.documents.find((d) => d.id === id))
   if (!doc) return <Navigate to="/" replace />
-  return <ReaderView doc={doc} />
+  // key 로 다시 그려야 문서를 바꿀 때 쪽·선택 상태가 함께 초기화된다
+  return <ReaderView key={doc.id} doc={doc} />
 }
 
 function DocumentRoute() {

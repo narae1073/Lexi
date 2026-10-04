@@ -18,7 +18,12 @@ const STATUS_CLASS: Record<WordStatus, string> = {
 
 const UNMARKED_CLASS = 'text-unmarked'
 
-export function statusClass(status: WordStatus | undefined): string {
-  if (!status) return UNMARKED_CLASS
+/**
+ * 'unmarked' 는 상태가 아직 없는 단어를 뜻한다.
+ * 상태가 없는 경우(undefined)와 같은 표시이므로 여기서 받아준다 —
+ * 상태 바처럼 모르는 값을 반드시 만들어 내는 곳에서도 같은 규칙을 쓴다.
+ */
+export function statusClass(status: WordStatus | 'unmarked' | undefined): string {
+  if (!status || status === 'unmarked') return UNMARKED_CLASS
   return STATUS_CLASS[status]
 }

@@ -59,6 +59,20 @@ export const ko: Dictionary = {
     range: '{total}개 중 {from}–{to}',
     size: '한 쪽에',
     unit: '개',
+    readerSize: '한 쪽 단어 수',
+    readerRange: '{page} / {pageCount} 쪽',
+  },
+  statusBar: {
+    label: '문서 진도',
+    total: '단어 {count}개',
+    percent: '{percent}% 표시',
+    occurrences: '총 {count}회 등장',
+    status: {
+      known: '앎',
+      unsure: '헷갈림',
+      unknown: '모름',
+      unmarked: '미표시',
+    },
   },
   wordbook: {
     title: '단어장',

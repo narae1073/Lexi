@@ -3,14 +3,22 @@ import { Link } from 'react-router-dom'
 
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import { useLanguageName, useTranslation } from '../../app/stores/settings'
+import {
+  useLanguageName,
+  useSettingsStore,
+  useTranslation,
+} from '../../app/stores/settings'
 import { statusClass } from '../../lib/color'
 import { DEFINITION_LANGUAGE } from '../../lib/languages'
-import type { Document, Segment, Sentence } from '../../types'
+import type { Document, Segment, Sentence, WordStatus } from '../../types'
+import type { Page } from '../../lib/paginate'
+import { isOnPage, pageWordsOrDefault, planPages, READER_PAGE_WORDS } from './pageBreak'
+import { Pagination } from '../wordbook/Pagination'
 import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
 import { resolveLemmasFromWords } from './surfaceLemma'
 import { isSentenceInitial, segmentAt, tokenize } from './tokenizer'
+import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
@@ -39,6 +47,10 @@ export function ReaderView({ doc }: { doc: Document }) {
   const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
   const [selection, setSelection] = useState<Selection | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const pageWords = useSettingsStore((s) => s.readerPageWords)
+  const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
+  const [pageIndex, setPageIndex] = useState(0)
 
   /**
    * 표기 → lemma 매핑.
@@ -81,6 +93,86 @@ export function ReaderView({ doc }: { doc: Document }) {
     () => segments.reduce((n, s) => (s.type === 'word' ? n + 1 : n), 0),
     [segments],
   )
+
+  /**
+   * 쪽 배치 (plan.txt 7줄).
+   *
+   * 문장 경계에서만 자르되 오프셋은 원문 그대로 둔다. 그래야 어느 쪽에서
+   * 단어를 눌러도 문장 번역을 눌러도 같은 오프셋을 쓰게 된다.
+   */
+  const pages = useMemo(
+    () =>
+      planPages(
+        doc.rawText,
+        sentences,
+        sentences.map((sentence) =>
+          segments.reduce(
+            (n, s) => (s.type === 'word' && s.sentenceIndex === sentence.index ? n + 1 : n),
+            0,
+          ),
+        ),
+        pageWords,
+      ),
+    [doc.rawText, sentences, segments, pageWords],
+  )
+
+  // 다른 문서를 열었거나 쪽 크기를 줄여 쪽 수가 줄면 범위를 벗어난 쪽으로 가지 않는다
+  const safePageIndex = Math.min(pageIndex, Math.max(0, pages.length - 1))
+  const page = pages[safePageIndex]
+
+  const pageItems = useMemo(() => segments.filter((s) => isOnPage(s, page)), [segments, page])
+
+  /** 쪽 이동 UI — 단어 수는 이 쪽이 덮는 구간을 보여준다 */
+  const pageNav = useMemo<Page<unknown>>(
+    () => ({
+      items: [page],
+      page: safePageIndex + 1,
+      pageCount: pages.length,
+      total: wordCount,
+      pageSize: wordCount,
+      from: page.from,
+      to: page.to,
+      hasPrev: safePageIndex > 0,
+      hasNext: safePageIndex < pages.length - 1,
+    }),
+    [page, pages.length, safePageIndex, wordCount],
+  )
+
+  /**
+   * 쪽을 옮긴다.
+   *
+   * 위에서 시작하고 열려 있던 팝오버를 닫는다 — 새 쪽에는 그 앵커가 없으므로
+   * 닫지 않으면 엉뚱한 자리에 떠 있다. 사용자가 누른 결과라 그 자리에서 해도 된다.
+   */
+  const goToPage = useCallback((index: number) => {
+    setPageIndex(index)
+    setSelection(null)
+    window.scrollTo({ top: 0 })
+  }, [])
+
+  /**
+   * 상태 바 통계.
+   *
+   * 총합과 상태별 개수는 같은 기준이어야 한다 — 하나는 중복을 빼고 다른 하나는
+   * 셀대로 세면 합이 영영 맞지 않아 화면이 거짓말을 한다.
+   * 여기서는 전부 "중복을 뺀 서로 다른 단어" 로 센다.
+   */
+  const stats = useMemo<DocumentStats>(() => {
+    // 한 단어의 상태는 전역이라 같은 lemma 은 어디서든 같은 값이다.
+    // 한 번만 세면 된다.
+    const byLemma = new Map<string, WordStatus | 'unmarked'>()
+    for (const segment of segments) {
+      if (segment.type !== 'word') continue
+      const lemma = lemmaFor(segment)
+      if (byLemma.has(lemma)) continue
+      byLemma.set(lemma, byKey[`${doc.languageCode}::${lemma}`]?.status ?? 'unmarked')
+    }
+
+    const byStatus: DocumentStats['byStatus'] = { known: 0, unsure: 0, unknown: 0, unmarked: 0 }
+    for (const status of byLemma.values()) byStatus[status] += 1
+
+    return { uniqueWords: byLemma.size, occurrences: wordCount, byStatus }
+  }, [segments, byKey, doc.languageCode, lemmaFor, wordCount])
 
   /** 세그먼트를 감싸는 요소. 팝오버 앵커로 쓴다. */
   const anchorFor = (node: Node | null): HTMLElement | null => {
@@ -137,7 +229,9 @@ export function ReaderView({ doc }: { doc: Document }) {
     prefix.selectNodeContents(container)
     prefix.setEnd(range.startContainer, range.startOffset)
 
-    const start = prefix.toString().length
+    // 컨테이너는 이 쪽에 있는 문장만 담고 있다. 여기서 얻은 오프셋은 쪽 기준이므로
+    // 원문 기준으로 되돌려야 문장 번역이 맞는 문장을 찾는다.
+    const start = page.start + prefix.toString().length
     const end = start + range.toString().length
     if (end <= start) return
 
@@ -152,10 +246,11 @@ export function ReaderView({ doc }: { doc: Document }) {
       sentences: sentences.filter((s) => indexes.includes(s.index)),
       anchor,
     })
-  }, [sentences])
+  }, [sentences, page.start])
 
   return (
-    <article className="mx-auto w-full max-w-2xl px-5 py-8">
+    // 하단 상태 바가 본문을 가리지 않도록 여유를 둔다
+    <article className="mx-auto w-full max-w-2xl px-5 pt-8 pb-32">
       <header className="mb-6">
         <h1 className="text-lg font-semibold">{doc.title}</h1>
         <p className="text-ink-muted mt-1 text-xs">
@@ -171,13 +266,32 @@ export function ReaderView({ doc }: { doc: Document }) {
         </Link>
       </header>
 
+      {/* 한 쪽에 몇 단어까지 담을지 — 몇 단어가 한 화면을 차지하는지 보고 고른다 */}
+      <label className="text-ink-muted mb-3 flex items-center justify-end gap-1.5 text-xs">
+        {t('pagination.readerSize')}
+        <select
+          value={pageWords}
+          onChange={(event) => {
+            setPageWords(pageWordsOrDefault(Number(event.target.value)))
+            goToPage(0)
+          }}
+          className="border-line focus:border-accent rounded-lg border bg-surface px-2 py-1 text-sm outline-none"
+        >
+          {READER_PAGE_WORDS.map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div
         ref={containerRef}
         onClick={handleClick}
         onMouseUp={handleMouseUp}
         className="text-[1.05rem] leading-[2.1] break-words whitespace-pre-wrap"
       >
-        {segments.map((segment) =>
+        {pageItems.map((segment) =>
           segment.type === 'word' ? (
             <span
               key={segment.start}
@@ -193,6 +307,14 @@ export function ReaderView({ doc }: { doc: Document }) {
           ),
         )}
       </div>
+
+      {pages.length > 1 && (
+        <p className="text-ink-muted mt-6 text-center text-xs">
+          {t('pagination.readerRange', { page: safePageIndex + 1, pageCount: pages.length })}
+        </p>
+      )}
+
+      <Pagination page={pageNav} onPageChange={(n) => goToPage(n - 1)} />
 
       {selection?.kind === 'word' && (
         <WordPopover
@@ -213,6 +335,8 @@ export function ReaderView({ doc }: { doc: Document }) {
           onClose={() => setSelection(null)}
         />
       )}
+
+      <StatusBar stats={stats} />
     </article>
   )
 }

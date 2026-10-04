@@ -60,6 +60,20 @@ export const en = {
     range: 'Showing {from}–{to} of {total}',
     size: 'Per page',
     unit: 'words',
+    readerSize: 'Words per page',
+    readerRange: 'Page {page} of {pageCount}',
+  },
+  statusBar: {
+    label: 'Document progress',
+    total: '{count} words',
+    percent: '{percent}% marked',
+    occurrences: '{count} occurrences',
+    status: {
+      known: 'Know',
+      unsure: 'Unsure',
+      unknown: 'New',
+      unmarked: 'Unmarked',
+    },
   },
   wordbook: {
     title: 'Wordbook',
