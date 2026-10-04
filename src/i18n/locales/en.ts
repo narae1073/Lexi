@@ -35,6 +35,15 @@ export const en = {
   list: {
     marked: '{percent}% marked',
     markedLabel: 'Share of marked words',
+    sortBy: 'Sort',
+    sortHint: 'Dates show when you last opened each document',
+    lastOpened: 'Last opened',
+    sort: {
+      recent: 'Recently opened',
+      longest: 'Longest first',
+      created: 'Newest created',
+      alpha: 'Title A–Z',
+    },
     loading: 'Loading…',
     empty: 'No documents yet.',
     meta: '{language} · {count} chars · {date}',

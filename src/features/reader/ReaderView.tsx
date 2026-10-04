@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { useDocumentsStore } from '../../app/stores/documents'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import {
@@ -88,6 +89,7 @@ export function ReaderView({ doc }: { doc: Document }) {
   const byKey = useWordStatesStore((s) => s.byKey)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
+  const touchDocument = useDocumentsStore((s) => s.touch)
   const [selection, setSelection] = useState<Selection | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -121,6 +123,11 @@ export function ReaderView({ doc }: { doc: Document }) {
   useEffect(() => {
     void loadWordStates(doc.languageCode)
   }, [doc.languageCode, loadWordStates])
+
+  // 연 시각이 곧 '최근 본 시각' 이다 — 목록에서 쓰인다
+  useEffect(() => {
+    void touchDocument(doc.id)
+  }, [doc.id, touchDocument])
 
   // 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
   useEffect(() => {

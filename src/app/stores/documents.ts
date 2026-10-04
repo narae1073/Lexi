@@ -26,13 +26,15 @@ type DocumentsState = {
     fallbackTitle: string
   }) => Promise<Document>
   remove: (id: string) => Promise<void>
+  /** 문서를 열어 봤음을 기록한다 — 목록에 보이는 '최근 본 시각' 의 근거 */
+  touch: (id: string) => Promise<void>
 }
 
 function now(): string {
   return new Date().toISOString()
 }
 
-export const useDocumentsStore = create<DocumentsState>((set) => ({
+export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   documents: [],
   loading: false,
   ready: false,
@@ -42,6 +44,24 @@ export const useDocumentsStore = create<DocumentsState>((set) => ({
     const docs = await idbGetAll<Document>(STORES.documents)
     docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     set({ documents: docs, loading: false, ready: true })
+  },
+
+  /**
+   * 문서를 연 시각을 찍는다.
+   *
+   * 이 앱에서 문서는 고치지 않는다 — 만들어서 읽기만 한다. 그래서 updated_at 은
+   * '마지막으로 읽은 시각' 이라고 읽는 것이 맞다.
+   */
+  touch: async (id) => {
+    const now = new Date().toISOString()
+    const doc = get().documents.find((d) => d.id === id)
+    if (!doc || doc.updatedAt === now) return
+
+    const next = { ...doc, updatedAt: now }
+    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
+    await idbPut(STORES.documents, next).catch((error) => {
+      console.error('문서 열람 시각 저장 실패', error)
+    })
   },
 
   remove: async (id) => {

@@ -166,8 +166,29 @@ export async function syncOnce({
 
   await writeLocal(mergedDocuments, mergedWords, mergedOccurrences)
 
+  /**
+   * 바뀐 문서만 보낸다.
+   *
+   * 전부 다시 보내면 안 된다. upsert 는 기존 행에 UPDATE 를 걸고, 서버의
+   * set_updated_at 트리거가 updated_at 을 now() 로 다시 찍는다. 한 번 동기화할 때
+   * 보낸 모든 문서의 '최근 본 시각' 이 같은 시각이 되어, 목록의 날짜가 전부
+   * 같아지고 정렬도 무의미해진다. 실제로 그랬다.
+   */
+  const remoteById = new Map(remote.documents.map((d) => [d.id, d]))
+  const documentsToPush = mergedDocuments.filter((doc) => {
+    const theirs = remoteById.get(doc.id)
+    // 새 문서
+    if (!theirs) return true
+    // 내용이 달라졌다
+    if (theirs.title !== doc.title) return true
+    if (theirs.rawText !== doc.rawText) return true
+    if (theirs.languageCode !== doc.languageCode) return true
+    // 이 기기에서 더 늦게 열었다
+    return doc.updatedAt > theirs.updatedAt
+  })
+
   // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
-  await push({ userId, db, languages, documents: mergedDocuments, words: words.pushOnly })
+  await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly })
 
   return {
     pushed: words.pushOnly.length,

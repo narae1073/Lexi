@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
-import { useLanguageName, useTranslation } from '../../app/stores/settings'
+import { useLanguageName, useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
+import { DOCUMENT_SORTS, sortDocuments } from './documentSort'
 
 export function DocumentList() {
   const t = useTranslation()
@@ -14,6 +15,8 @@ export function DocumentList() {
   const loading = useDocumentsStore((s) => s.loading)
   const occurrences = useOccurrencesStore((s) => s.occurrences)
   const byKey = useWordStatesStore((s) => s.byKey)
+  const documentSort = useSettingsStore((s) => s.documentSort)
+  const setDocumentSort = useSettingsStore((s) => s.setDocumentSort)
 
   /**
    * 문서별 진도를 한 번에 계산한다.
@@ -35,12 +38,34 @@ export function DocumentList() {
     return result
   }, [occurrences, byKey])
 
+  const sorted = useMemo(() => sortDocuments(documents, documentSort), [documents, documentSort])
+
   if (loading) return <p className="p-8 text-sm text-ink-muted">{t('list.loading')}</p>
   if (documents.length === 0) return <p className="p-8 text-sm text-ink-muted">{t('list.empty')}</p>
 
   return (
-    <ul className="divide-y divide-line">
-      {documents.map((doc) => (
+    <>
+      <div className="border-line flex items-center justify-between gap-3 border-b px-5 py-2">
+        <label className="text-ink-muted flex items-center gap-1.5 text-xs">
+          {t('list.sortBy')}
+          <select
+            value={documentSort}
+            onChange={(event) => setDocumentSort(event.target.value as typeof documentSort)}
+            aria-label={t('list.sortBy')}
+            className="border-line focus:border-accent rounded-lg border bg-surface px-2 py-1 text-sm outline-none"
+          >
+            {DOCUMENT_SORTS.map((option) => (
+              <option key={option} value={option}>
+                {t(`list.sort.${option}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="text-ink-muted text-xs">{t('list.sortHint')}</span>
+      </div>
+
+      <ul className="divide-y divide-line">
+      {sorted.map((doc) => (
         <li key={doc.id}>
           <Link
             to={`/read/${doc.id}`}
@@ -65,7 +90,8 @@ export function DocumentList() {
           </Link>
         </li>
       ))}
-    </ul>
+      </ul>
+    </>
   )
 }
 

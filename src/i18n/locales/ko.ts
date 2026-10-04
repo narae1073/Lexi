@@ -34,6 +34,15 @@ export const ko: Dictionary = {
   list: {
     marked: '{percent}% 표시',
     markedLabel: '표시한 단어 비율',
+    sortBy: '정렬',
+    sortHint: '날짜는 마지막으로 열어 본 시각입니다',
+    lastOpened: '최근 본 시각',
+    sort: {
+      recent: '최근 본 순',
+      longest: '글자 많은 순',
+      created: '만든 날 순',
+      alpha: '이름 순',
+    },
     loading: '불러오는 중…',
     empty: '아직 문서가 없습니다.',
     meta: '{language} · {count}자 · {date}',

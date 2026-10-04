@@ -153,6 +153,94 @@ Ubiquitous smartphones changed communication everywhere.`
   ctx.check('실제로 없는 문서만 홈으로 보낸다',
     (await ctx.bodyText()).includes('Paste a text') || (await ctx.bodyText()).includes('Add text'),
     (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
+
+  await assertSortAndLastOpened(ctx)
+}
+
+/**
+ * 목록 정렬 기준 (plan.txt 8줄).
+ *
+ * 정렬 순서 자체는 단위 테스트가 맡는다(docsort.test.ts). 여기서는 배선만 본다 —
+ * 기준을 고르면 목록의 순서가 바뀌고, 새로고침해도 그 선택이 남는다.
+ */
+async function assertSortAndLastOpened(ctx) {
+  const readSort = () => ctx.page.evaluate(
+    `[...document.querySelectorAll('select')].find(x => /Sort|정렬/.test(x.getAttribute('aria-label') ?? ''))?.value ?? null`,
+  )
+  const setSort = (value) => ctx.page.evaluate(`(() => {
+    const s = [...document.querySelectorAll('select')].find(x => /Sort|정렬/.test(x.getAttribute('aria-label') ?? ''));
+    if (!s) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(s, '${value}');
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`)
+  const order = () => ctx.page.evaluate(
+    `[...document.querySelectorAll('li')].map(li => li.querySelector('span')?.innerText ?? '')`,
+  )
+
+  const options = await ctx.page.evaluate(
+    `[...document.querySelectorAll('select')].filter(x => /Sort|정렬/.test(x.getAttribute('aria-label') ?? '')).length === 1
+       ? [...document.querySelectorAll('select')].find(x => /Sort|정렬/.test(x.getAttribute('aria-label') ?? '')).options.length
+       : 0`,
+  )
+  ctx.check('정렬 기준이 4개 보인다', options === 4, `${options}개`)
+
+  // 제목이 같은 문서끼리는 어떤 기준에서도 순서가 같다 — 제목을 달리게 한다
+  await ctx.clickSelector('a[href="/compose"]')
+  await sleep(400)
+  await ctx.page.evaluate(`(() => {
+    const input = [...document.querySelectorAll('input')].find(x => !x.type || x.type === 'text');
+    if (!input) return false;
+    input.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'Zebra document');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(200)
+  await ctx.typeIntoTextarea('Zebra 는 알파벳 기준으로 맨 뒤여야 한다. 오늘 아주 좋은 날이다.')
+  await ctx.clickText('Create document')
+  await sleep(700)
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(500)
+
+  const before = await order()
+  await setSort('alpha')
+  await sleep(400)
+  ctx.check('기준을 고르면 목록의 순서가 바뀐다', JSON.stringify(await order()) !== JSON.stringify(before),
+    `${before.join('/')} → ${(await order()).join('/')}`)
+
+  await ctx.reload()
+  await sleep(800)
+  ctx.check('고른 기준이 새로고침 후에도 남는다', (await readSort()) === 'alpha', String(await readSort()))
+
+  await setSort('recent')
+  await sleep(400)
+
+  /**
+   * 마지막으로 연 문서가 맨 위로 온다.
+   *
+   * 회귀: 문서를 동기화할 때마다 서버의 set_updated_at 트리거가 updated_at 을
+   * 다시 찍어 모든 문서의 날짜가 같은 시각이 되었다. 목록의 날짜가 전부 같으면
+   * '최근 본 순' 이 무의미해진다.
+   */
+  const target = await ctx.page.evaluate(
+    `[...document.querySelectorAll('li')].length`,
+  )
+  await ctx.page.evaluate(
+    `[...document.querySelectorAll('a')].filter(x=>x.getAttribute('href')?.startsWith('/read/')).pop()?.click(); true`,
+  )
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
+  await sleep(500)
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(600)
+
+  const dates = await ctx.page.evaluate(
+    `[...document.querySelectorAll('li')].map(li => (li.innerText.match(/[0-9]{1,2}:[0-9]{2}/) ?? ['없음'])[0])`,
+  )
+  ctx.check('마지막으로 연 문서의 시각이 목록에 찍힌다', dates.length === target && dates[0] !== '없음',
+    dates.join(' / '))
 }
 
 function sleep() {
