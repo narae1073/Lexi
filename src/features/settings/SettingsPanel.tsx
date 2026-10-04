@@ -1,6 +1,7 @@
 import { useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { AppLanguageSwitcher } from './AppLanguageSwitcher'
 import { ThemePicker } from './ThemePicker'
+import { TextScaleControl } from './TextScaleControl'
 import { UnmarkedDimControl } from './UnmarkedDimControl'
 
 export function SettingsPanel() {
@@ -23,6 +24,8 @@ export function SettingsPanel() {
           <AppLanguageSwitcher />
         </div>
       </div>
+
+      <TextScaleControl />
 
       <UnmarkedDimControl />
 

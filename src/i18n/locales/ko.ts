@@ -95,6 +95,9 @@ export const ko: Dictionary = {
 
   settings: {
     title: '설정',
+    textScale: '글자 크기',
+    textScaleHint: '화면 전체를 함께 키워 {value}% 크기로 표시합니다.',
+    textScalePreview: '다람쥐 헌 쳇바퀴에 타고파.',
     unmarkedDim: '표시 안 한 단어의 옅은 정도',
     unmarkedDimHint: '아직 표시하지 않은 단어를 본문보다 {value}% 옅게 보여줍니다. 모든 테마에 똑같이 적용됩니다.',
     dimStrong: '진하게',

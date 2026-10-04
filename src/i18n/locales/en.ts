@@ -96,6 +96,9 @@ export const en = {
 
   settings: {
     title: 'Settings',
+    textScale: 'Text size',
+    textScaleHint: 'Everything scales together, at {value}% of the normal size.',
+    textScalePreview: 'The quick brown fox jumps over the lazy dog.',
     unmarkedDim: 'Unmarked word shade',
     unmarkedDimHint: 'Words you have not marked yet are drawn {value}% lighter. Applies to every theme.',
     dimStrong: 'Strong',

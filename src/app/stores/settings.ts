@@ -16,6 +16,26 @@ export function clampUnmarkedDim(value: number): number {
   return Math.min(UNMARKED_DIM_MAX, Math.max(UNMARKED_DIM_MIN, Math.round(value)))
 }
 
+/**
+ * 화면 전체 글자 크기 배율 (%).
+ *
+ * 루트 font-size 를 바꾸면 Tailwind 의 rem 단위 유틸리티가 전부 같이 커지므로
+ * 본문뿐 아니라 여백·테두리·아이콘까지 같은 비율로 늘어난다 — 배율만 조절하는
+ * 앱이라면 이 방법이 가장 안전하다. 브라우저의 기본 글자 크기 설정도 함께
+ * 곱해지므로 사용자가 정한 크기를 존중한다.
+ */
+export const TEXT_SCALE_MIN = 85
+export const TEXT_SCALE_MAX = 160
+export const TEXT_SCALE_STEP = 5
+export const TEXT_SCALE_DEFAULT = 100
+
+/** 저장된 값이 슬라이더 눈금에 없는 값이어도 눈금 위로 올려 snaps — 손잡이가 어긋나지 않게 */
+export function clampTextScale(value: number): number {
+  if (!Number.isFinite(value)) return TEXT_SCALE_DEFAULT
+  const clamped = Math.min(TEXT_SCALE_MAX, Math.max(TEXT_SCALE_MIN, value))
+  return Math.round(clamped / TEXT_SCALE_STEP) * TEXT_SCALE_STEP
+}
+
 type SettingsState = {
   /** 사용자가 명시적으로 고른 앱 언어. null 이면 기기 설정을 따른다. */
   appLanguage: AppLanguage | null
@@ -23,9 +43,12 @@ type SettingsState = {
   theme: ThemeId | null
   /** 표시 안 한 단어를 본문색에서 얼마나 뺄지 (%, 클수록 옅다) */
   unmarkedDim: number
+  /** 화면 전체 글자 크기 배율 (%) */
+  textScale: number
   setAppLanguage: (language: AppLanguage | null) => void
   setTheme: (theme: ThemeId | null) => void
   setUnmarkedDim: (value: number) => void
+  setTextScale: (value: number) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
 }
@@ -47,9 +70,11 @@ export const useSettingsStore = create<SettingsState>()(
       appLanguage: null,
       theme: null,
       unmarkedDim: UNMARKED_DIM_DEFAULT,
+      textScale: TEXT_SCALE_DEFAULT,
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
       setUnmarkedDim: (value) => set({ unmarkedDim: clampUnmarkedDim(value) }),
+      setTextScale: (value) => set({ textScale: clampTextScale(value) }),
       resolvedAppLanguage: () => get().appLanguage ?? detectDeviceLanguage(),
       resolvedTheme: () => get().theme ?? detectPreferredTheme(),
     }),
@@ -85,6 +110,23 @@ export function useApplyTheme() {
       `${clampUnmarkedDim(unmarkedDim)}%`,
     )
   }, [unmarkedDim])
+}
+
+/**
+ * 글자 크기 배율을 문서에 반영한다.
+ *
+ * html { font-size } 하나만 바꾸면 화면 전체가 같은 비율로 늘어난다.
+ * 100% 일 때는 값을 아예 건드리지 않아 기본값과 똑같이 둔다.
+ */
+export function useApplyTextScale() {
+  const textScale = useSettingsStore((s) => s.textScale)
+
+  useEffect(() => {
+    const scale = clampTextScale(textScale)
+    const root = document.documentElement
+    if (scale === TEXT_SCALE_DEFAULT) root.style.removeProperty('font-size')
+    else root.style.fontSize = `${scale}%`
+  }, [textScale])
 }
 
 /**

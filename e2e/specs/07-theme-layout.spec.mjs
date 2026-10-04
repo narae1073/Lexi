@@ -82,8 +82,10 @@ export async function run(ctx) {
   // ── 설정에서 옅은 정도를 조절한다 ──
   await ctx.clickSelector('a[href="/settings"]')
   await sleep(500)
+  // 최대값으로 찾아낸다 — 설정 순서가 바뀌어도 글자 크기 슬라이더를 건드리지 않게
   const setDim = (v) => ctx.page.evaluate(`(() => {
-    const r = document.querySelector('input[type="range"]');
+    const r = [...document.querySelectorAll('input[type="range"]')].find(x => Number(x.max) === 70);
+    if (!r) return false;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(r, '${v}');
     r.dispatchEvent(new Event('input', { bubbles: true }));
@@ -109,7 +111,9 @@ export async function run(ctx) {
   await ctx.clickSelector('a[href="/settings"]')
   await sleep(400)
   await ctx.page.evaluate(`(() => {
-    [...document.querySelectorAll('button')].find(b => b.innerText.trim() === 'Reset')?.click();
+    const target = [...document.querySelectorAll('p')].find(p => p.innerText.trim() === 'Unmarked word shade');
+    const section = target?.closest('div')?.parentElement;
+    [...(section?.querySelectorAll('button') ?? [])].find(b => b.innerText.trim() === 'Reset')?.click();
     return true;
   })()`)
   await sleep(300)

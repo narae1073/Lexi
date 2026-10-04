@@ -13,7 +13,7 @@ import { useDocumentsStore } from './stores/documents'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
 import { useWordStatesStore } from './stores/wordStates'
-import { useApplyTheme, useTranslation } from './stores/settings'
+import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/settings'
 
 function DocumentReader({ id }: { id: string }) {
   const doc = useDocumentsStore((s) => s.documents.find((d) => d.id === id))
@@ -55,6 +55,7 @@ function Nav() {
 
 export default function App() {
   useApplyTheme()
+  useApplyTextScale()
   const t = useTranslation()
   const ready = useLanguagesStore((s) => s.ready)
   const load = useDocumentsStore((s) => s.load)
