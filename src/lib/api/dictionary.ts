@@ -2,6 +2,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js'
 import { create } from 'zustand'
 
 import { supabase } from '../supabase/client'
+import { cacheKey, fetchOrCached } from './offlineCache'
 import type { LanguageCode } from '../../types'
 
 export type DictionarySense = {
@@ -36,6 +37,8 @@ export type DictionaryEntry = {
   languageCode: LanguageCode
   sections: DictionarySection[]
   cached: boolean
+  /** 서버에 닿지 못해 이 기기에 저장돼 있던 결과인지 */
+  offline?: boolean
 }
 
 export class DictionaryError extends Error {
@@ -47,6 +50,10 @@ export class DictionaryError extends Error {
     this.status = status
   }
 }
+
+/** 서버가 답하지 못했다는 신호 */
+const transportStatus = (error: unknown): number | undefined =>
+  error instanceof DictionaryError ? error.status : undefined
 
 type DictionaryState = {
   entries: Record<string, DictionaryEntry>
@@ -82,19 +89,30 @@ export const useDictionaryStore = create<DictionaryState>((set, get) => ({
     if (existing) return existing
 
     const request = (async () => {
-      if (!supabase) throw new DictionaryError('Supabase is not configured')
+      // 클라이언트를 지역 변수로 잡아 둔다 — 중첩 함수 안에서는 narrowing 이 풀린다
+      const client = supabase
+      if (!client) throw new DictionaryError('Supabase is not configured')
 
-      const { data, error } = await supabase.functions.invoke<DictionaryEntry>('dictionary', {
-        // surface 를 함께 보내야 독일어처럼 명사를 대문자로 쓰는 언어를 조회할 수 있다
-        body: { languageCode, lemma: word, surface: surface?.trim() },
-      })
+      const { value, fromCache } = await fetchOrCached<DictionaryEntry>(
+        // surface 를 키에 넣어야 표 대문자 표기가 다른 결과를 섞지 않는다
+        cacheKey(`d:${key}`, surface ?? ''),
+        async () => {
+          const { data, error } = await client.functions.invoke<DictionaryEntry>('dictionary', {
+            // surface 를 함께 보내야 독일어처럼 명사를 대문자로 쓰는 언어를 조회할 수 있다
+            body: { languageCode, lemma: word, surface: surface?.trim() },
+          })
 
-      if (error) {
-        const status = error instanceof FunctionsHttpError ? error.context.status : undefined
-        throw new DictionaryError(error.message, status)
-      }
-      if (!data) throw new DictionaryError('empty response from dictionary')
-      return data
+          if (error) {
+            const status = error instanceof FunctionsHttpError ? error.context.status : undefined
+            throw new DictionaryError(error.message, status)
+          }
+          if (!data) throw new DictionaryError('empty response from dictionary')
+          return data
+        },
+        transportStatus,
+      )
+
+      return fromCache ? { ...value, offline: true } : value
     })()
 
     set((s) => {

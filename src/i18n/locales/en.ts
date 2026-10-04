@@ -129,6 +129,7 @@ export const en = {
     failed: 'Could not reach the dictionary.',
     failedStatus: 'Dictionary error ({status}).',
     source: 'Wiktionary · {license}',
+    offline: 'Offline — showing a copy saved on this device.',
     hide: 'Hide',
     baseForm: 'Base form',
   },
@@ -139,6 +140,7 @@ export const en = {
     identity: 'This text is already in English, so there is nothing to translate.',
     failed: 'Translation failed. Please try again.',
     failedStatus: 'Translation service error ({status}).',
+    offline: 'Offline — showing a copy saved on this device.',
   },
 
   settings: {

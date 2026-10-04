@@ -128,6 +128,7 @@ export const ko: Dictionary = {
     failed: '사전에 연결하지 못했습니다.',
     failedStatus: '사전 오류 ({status}).',
     source: '위키낱말 · {license}',
+    offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
     hide: '접기',
     baseForm: '기본형',
   },
@@ -138,6 +139,7 @@ export const ko: Dictionary = {
     identity: '원문이 이미 영어라 번역할 것이 없습니다.',
     failed: '번역에 실패했습니다. 다시 시도해 주세요.',
     failedStatus: '번역 서비스 오류 ({status}).',
+    offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
   },
 
   settings: {

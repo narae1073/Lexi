@@ -15,6 +15,8 @@ type Outcome = {
   requestKey: string
   phase: Phase
   translatedText?: string
+  /** 서버에 닿지 못해 이 기기에 저장돼 있던 결과인지 */
+  offline?: boolean
   identity?: boolean
   status?: number
 }
@@ -57,7 +59,13 @@ export function SentencePopover({
     translate(source, languageCode, targetLanguage)
       .then((r) => {
         if (cancelled) return
-        setOutcome({ requestKey, phase: 'done', translatedText: r.translatedText, identity: r.identity })
+        setOutcome({
+          requestKey,
+          phase: 'done',
+          translatedText: r.translatedText,
+          identity: r.identity,
+          offline: r.offline,
+        })
       })
       .catch((error: unknown) => {
         if (cancelled) return
@@ -105,7 +113,11 @@ export function SentencePopover({
         )}
 
         {current?.phase === 'done' && !current.identity && (
-          <p className="py-1 text-sm leading-relaxed">{current.translatedText}</p>
+          <>
+            <p className="py-1 text-sm leading-relaxed">{current.translatedText}</p>
+            {/* 서버를 못 봤으면 최신이라고 착각하지 않도록 밝힌다 */}
+            {current.offline && <p className="text-status-unsure text-[10px]">{t('sentence.offline')}</p>}
+          </>
         )}
       </div>
     </Popover>

@@ -153,6 +153,17 @@ class Ctx {
   }
 
   /** 새로고침 — IndexedDB 는 남고 메모리 상태만 사라진다 */
+  /** 네트워크를 끊는다 — 오프라인 동작을 확인하려면 이것 없이는 불가능하다 */
+  async goOffline(offline = true) {
+    await this.page.send('Network.enable')
+    await this.page.send('Network.emulateNetworkConditions', {
+      offline,
+      latency: 0,
+      downloadThroughput: offline ? 0 : -1,
+      uploadThroughput: offline ? 0 : -1,
+    })
+  }
+
   async reload() {
     await this.page.send('Page.reload')
     await sleep(400)

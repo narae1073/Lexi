@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 
+import { pruneCache } from '../lib/api/offlineCache'
 import { ComposeDocument } from '../features/reader/ComposeDocument'
 import { DocumentList } from '../features/reader/DocumentList'
 import { ReaderView } from '../features/reader/ReaderView'
@@ -75,6 +76,11 @@ export default function App() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // 번역·사전 응답은 기기에 계속 쌓인다. 오래된 것부터 한 번씩 버린다.
+  useEffect(() => {
+    void pruneCache()
+  }, [])
 
   // 배운 언어의 등장 기록과 상태를 앱 시작 시 한 번에 적재한다.
   // 단어장은 문서를 열지 않아도 상태를 보여줘야 한다 (plan.txt 9줄).

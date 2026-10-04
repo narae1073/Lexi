@@ -4,13 +4,20 @@
  */
 
 const DB_NAME = 'lexi'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 export const STORES = {
   documents: 'documents',
   wordStates: 'wordStates',
   /** 단어가 실제로 등장한 위치. 단어장의 "이 문서에서 본 단어" 를 만드는 원본 데이터 */
   wordOccurrences: 'wordOccurrences',
+  /**
+   * 번역·사전 응답의 기기 사본.
+   *
+   * 서버 캐시가 있어도 서버에 닿아야 한다. 네트워크가 끊기면 아무것도 못 보므로,
+   * 받아 본 응답을 이 기기에도 남겨 두는 유일한 방법이다 (PLAN.md 결정 4).
+   */
+  responseCache: 'responseCache',
 } as const
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
@@ -32,6 +39,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.wordStates)) {
         const s = db.createObjectStore(STORES.wordStates, { keyPath: ['languageCode', 'lemma'] })
         s.createIndex('languageCode', 'languageCode')
+      }
+      if (!db.objectStoreNames.contains(STORES.responseCache)) {
+        const s = db.createObjectStore(STORES.responseCache, { keyPath: 'key' })
+        s.createIndex('cachedAt', 'cachedAt')
       }
       if (!db.objectStoreNames.contains(STORES.wordOccurrences)) {
         const s = db.createObjectStore(STORES.wordOccurrences, {
@@ -61,6 +72,10 @@ function tx<T>(store: StoreName, mode: IDBTransactionMode, run: (s: IDBObjectSto
   )
 }
 
+export function idbGet<T>(store: StoreName, key: IDBValidKey): Promise<T | undefined> {
+  return tx<T | undefined>(store, 'readonly', (s) => s.get(key))
+}
+
 export function idbGetAll<T>(store: StoreName): Promise<T[]> {
   return tx<T[]>(store, 'readonly', (s) => s.getAll())
 }
@@ -71,6 +86,37 @@ export function idbDelete(store: StoreName, key: IDBValidKey): Promise<undefined
 
 export function idbPut<T>(store: StoreName, value: T): Promise<IDBValidKey> {
   return tx(store, 'readwrite', (s) => s.put(value))
+}
+
+/**
+ * 인덱스에서 특정 값 이하인 항목을 모두 지운다.
+ *
+ * 응답 캐시는 무한정 쌓이므로 필요할 때 훑어 버린다.
+ * idbDeleteByIndex 가 하는 '정확히 그 키' 삭제가 아니라 범위 삭제라는 점이 다르다.
+ */
+export function idbDeleteByIndexRange(
+  store: StoreName,
+  index: string,
+  upperBound: IDBValidKey,
+): Promise<number> {
+  return openDb().then(
+    (db) =>
+      new Promise<number>((resolve, reject) => {
+        const transaction = db.transaction(store, 'readwrite')
+        const req = transaction.objectStore(store).index(index).openCursor(IDBKeyRange.upperBound(upperBound))
+        let removed = 0
+        req.onsuccess = () => {
+          const cursor = req.result
+          if (!cursor) return
+          cursor.delete()
+          removed += 1
+          cursor.continue()
+        }
+        req.onerror = () => reject(req.error)
+        transaction.oncomplete = () => resolve(removed)
+        transaction.onabort = () => reject(transaction.error)
+      }),
+  )
 }
 
 /** 문서 하나의 등장 기록을 통째로 교체한다 (재저장 시 낡은 행이 남지 않게). */

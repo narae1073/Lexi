@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { FunctionsHttpError } from '@supabase/supabase-js'
 
 import { supabase } from '../supabase/client'
+import { cacheKey, fetchOrCached } from './offlineCache'
 import type { AppLanguage } from '../../i18n'
 
 export type TranslateResult = {
@@ -9,6 +10,8 @@ export type TranslateResult = {
   cached: boolean
   /** 원문과 목표 언어가 같아 번역이 불필요한 경우 */
   identity: boolean
+  /** 서버에 닿지 못해 이 기기에 저장돼 있던 결과를 쓴 경우 */
+  offline?: boolean
 }
 
 type TranslateState = {
@@ -27,10 +30,14 @@ export class TranslateError extends Error {
   }
 }
 
-function cacheKey(text: string, source: string, target: string): string {
+function translationKey(text: string, source: string, target: string): string {
   // 매우 긴 문장은 어차피 캐시 적중률이 낮으니 길이만으로 구분해 키 크기를 제한한다
-  return `${source}:${target}:${text.length}:${text.slice(0, 120)}`
+  return `t:${source}:${target}:${text.length}:${text.slice(0, 120)}`
 }
+
+/** 버가 답하지 못했다는 신호 */
+const transportStatus = (error: unknown): number | undefined =>
+  error instanceof TranslateError ? error.status : undefined
 
 const MAX_CHARS = 5000
 
@@ -42,24 +49,34 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     if (trimmed.length === 0) throw new TranslateError('empty text')
     if (trimmed.length > MAX_CHARS) throw new TranslateError('text too long')
 
-    const key = cacheKey(trimmed, source, target)
+    const key = translationKey(trimmed, source, target)
     const existing = get().inFlight.get(key)
     if (existing) return existing
 
     const request = (async () => {
-      if (!supabase) throw new TranslateError('Supabase is not configured')
+      // 클라이언트를 지역 변수로 잡아 둔다 — 중첩 함수 안에서는 narrowing 이 풀린다
+      const client = supabase
+      if (!client) throw new TranslateError('Supabase is not configured')
 
-      const { data, error } = await supabase.functions.invoke<TranslateResult>('translate', {
-        body: { sourceLanguage: source, targetLanguage: target, text: trimmed },
-      })
+      const { value, fromCache } = await fetchOrCached<TranslateResult>(
+        cacheKey(key),
+        async () => {
+          const { data, error } = await client.functions.invoke<TranslateResult>('translate', {
+            body: { sourceLanguage: source, targetLanguage: target, text: trimmed },
+          })
 
-      if (error) {
-        // 함수에서 4xx/5xx 를 돌려준 경우 상태 코드를 그대로 살려서 UI 가 구분한다
-        const status = error instanceof FunctionsHttpError ? error.context.status : undefined
-        throw new TranslateError(error.message, status)
-      }
-      if (!data?.translatedText) throw new TranslateError('empty response from translate')
-      return data
+          if (error) {
+            // 함수에서 4xx/5xx 를 돌려준 경우 상태 코드를 그대로 살려서 UI 가 구분한다
+            const status = error instanceof FunctionsHttpError ? error.context.status : undefined
+            throw new TranslateError(error.message, status)
+          }
+          if (!data?.translatedText) throw new TranslateError('empty response from translate')
+          return data
+        },
+        transportStatus,
+      )
+
+      return fromCache ? { ...value, offline: true } : value
     })()
 
     set((s) => ({ inFlight: new Map(s.inFlight).set(key, request) }))

@@ -380,7 +380,13 @@ plan.txt 4줄 "아는 단어는 기본 색(검은색)" 유지. 다크모드 대�
 - 산출물: plan.txt 7·8줄 충족
 
 ### Phase 8 — PWA 완성 + 모바일 패키징 준비 (1일)
-- Service worker, 오프라인 셸 캐시
+- Service worker, 오프라인 셸 캐시 — 셸은 이미 오프라인에서 열린다 (e2e 13 로 확인)
+- 번역·사전 응답의 기기 사본 — **완료**
+  - 서버 캐시가 있어도 보려면 서버에 닿아야 한다. 지하철에서 읽으려면 이 기기에도 남겨야 한다
+  - **네트워크 실패일 때만** 사본을 쓴다. 서버가 "그런 단어 없다" 고 한 것을
+    오프라인 탓으로 바꾸면 없는 단어가 있는 것처럼 보이는 훨씬 나쁜 오류가 된다
+  - 사본으로 대신한 결과는 화면에 밝힌다 — 최신이라고 착각하지 않도록
+  - 90일 지난 항목은 앱 시작 시 버린다
 - 모바일 레이아웃 (safe-area, 반응형)
 - Capacitor 설정 파일 + 앱 아이콘/스플래시 → 앱스토어 제출 시 남은 일 정리
 - 산출물: plan.txt 1줄 완전 충족
@@ -414,7 +420,77 @@ plan.txt 4줄 "아는 단어는 기본 색(검은색)" 유지. 다크모드 대�
 
 ---
 
-## 10. 로그인 수단 설정 (배포 전에 반드시)
+## 10. 배포 (nginx + Cloudflare)
+
+`achijaser.date` 로 이 컴퓨터를 서빙한다. 웹서버는 nginx 이고,
+Node(Express, PM2)는 개인 페이지 백엔드일 뿐이다.
+
+### 10.0 DNS (Cloudflare)
+
+| 이름 | 타입 | 프록시 | 용도 |
+|---|---|---|---|
+| `@` | A | Proxied | 개인 페이지 |
+| `app` | A | Proxied | Lexi 앱 |
+| `mc` | A | **DNS only** | 마크 서버 — 프록시하면 TCP 25565 가 막힌다 |
+| `send` | — | DNS only | 메일 발신 (Resend) |
+
+`mc` 가 DNS only 라서 원본 IP 가 노출된다. 표의 경고는 이 때문이다.
+마크를 같은 IP 에 두는 한 완전히 막을 수 없다.
+
+### 10.0.1 인증서
+
+- **엣지**: Cloudflare 와일드카드 인증서가 이미 있다 (`*.achijaser.date`)
+- **원본**: Cloudflare Origin CA 인증서 (ECC). SSL 모드는 **Full (strict)**
+
+  Cloudflare → SSL/TLS → Origin Server → Create Certificate
+  → `achijaser.date, *.achijaser.date` → 다운로드 후
+  ```bash
+  sudo install -m 644 cloudflare-origin.crt /etc/ssl/certs/achijaser-origin.pem
+  sudo install -m 600 cloudflare-origin.key /etc/ssl/private/achijaser-origin.key
+  ```
+
+  개인 키는 world-readable 이면 nginx 가 기동을 거부한다.
+
+### 10.0.2 nginx
+
+`/etc/nginx/sites-available/lexi` — `/settings` 가 200 이어야 로그인이 된다.
+매직링크가 항상 `origin + /settings` 로 돌아오는데 SPA fallback (`try_files`)
+이 없으면 404 가 되고, 토큰을 소비할 페이지가 없어 로그인이 안 된 것처럼 보인다.
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name app.achijaser.date;
+    ssl_certificate     /etc/ssl/certs/achijaser-origin.pem;
+    ssl_certificate_key /etc/ssl/private/achijaser-origin.key;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+
+    root /var/www/lexi;
+    index index.html;
+
+    location = /index.html { add_header Cache-Control "no-cache"; }
+    location /assets/ { add_header Cache-Control "public, max-age=31536000, immutable"; }
+    location / { try_files $uri $uri/ /index.html; }   # ← 이것 없으면 매직링크가 깨진다
+}
+```
+
+### 10.0.3 갱신
+
+```bash
+npm run build
+sudo cp -r dist/* /var/www/lexi/
+sudo chown -R www-data:www-data /var/www/lexi
+```
+
+### 10.0.4 세션은 origin 에 묶인다
+
+`218.155.107.116:5173` 과 `app.achijaser.date` 는 같은 서버라도 브라우저상
+다른 사이트다. 거기서 로그인한 것과 여기서 로그인한 것은 서로 다른 계정이다.
+검증도 배포 주소로 통일해 한다.
+
+---
+
+## 11. 로그인 수단 설정 (배포 전에 반드시)
 
 코드는 다 들어 있다. 남은 것은 **Supabase 콘솔과 외부 서비스의 설정**뿐이고,
 이건 계정 주인이 직접 해야 하는 일이다.

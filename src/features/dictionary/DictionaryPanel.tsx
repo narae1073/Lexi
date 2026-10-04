@@ -78,6 +78,10 @@ export function DictionaryPanel({
 
   return (
     <div className="flex flex-col gap-2.5">
+      {/* 서버에 닿지 못해 이 기기에 저장된 결과임을 알린다 — 최신이라고 착각하지 않도록 */}
+      {entry.offline && (
+        <p className="text-status-unsure text-[10px]">{t('dictionary.offline')}</p>
+      )}
       {sections.map((section, index) => (
         <SectionView
           key={`${section.role}:${section.form}`}
