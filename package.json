@@ -14,7 +14,8 @@
     "verify:rls": "node e2e/verify-rls.mjs",
     "verify:email": "node e2e/verify-email-setup.mjs",
     "test:unit": "vitest run",
-    "deploy": "npm run build && sudo rm -rf /var/www/lexi/* && sudo cp -r dist/* /var/www/lexi/ && sudo chown -R www-data:www-data /var/www/lexi && echo '배포 완료 — 브라우저에서 새로고침 (서비스워커 때문에 한 번 더 필요할 수 있음)'"
+    "deploy": "npm run build && sudo rm -rf /var/www/lexi/* && sudo cp -r dist/* /var/www/lexi/ && sudo chown -R www-data:www-data /var/www/lexi && echo '배포 완료 — 브라우저에서 새로고침 (서비스워커 때문에 한 번 더 필요할 수 있음)'",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build && npm run verify:rls"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
