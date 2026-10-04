@@ -20,6 +20,17 @@ import { normalizeLemma } from './tokenizer'
  * 네트워크 호출이 필요해 자동으로 하지 않는다.
  */
 
+/**
+ * 표기 → lemma 규칙의 버전.
+ *
+ * 저장된 등장 기록은 이 규칙으로 계산된 결과다. 규칙을 고치면 옛 기록은
+ * 조용히 틀린 상태로 남고, 문서를 직접 열어야만 다시 계산된다.
+ * 그때까지는 같은 문서인데 기기마다 다른 단어가 보인다.
+ *
+ * 규칙을 바꿀 때마다 올린다 (PLAN.md — 표기 규칙 변경 시).
+ */
+export const LEMMA_VERSION = 2
+
 export type SurfaceUsage = {
   surface: string
   /** 문서 전체 출현 횟수 */

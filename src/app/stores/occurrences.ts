@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 
-import { STORES, idbDeleteByIndex, idbGetAllByIndex, replaceOccurrences } from '../../lib/storage/localDb'
+import { STORES, idbDeleteByIndex, idbGetAll, idbGetAllByIndex, idbPut, replaceOccurrences } from '../../lib/storage/localDb'
 import { isSentenceInitial, tokenize } from '../../features/reader/tokenizer'
-import { resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
+import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
 import type { Document, LanguageCode } from '../../types'
 
 /**
@@ -40,6 +40,14 @@ type OccurrencesState = {
   recordDocument: (doc: Document, force?: boolean) => Promise<void>
   loadLanguage: (languageCode: LanguageCode) => Promise<void>
   forgetDocument: (documentId: string) => Promise<void>
+  /**
+   * 옛 표기 규칙으로 계산된 기록을 문�� 다시 계산한다.
+   *
+   * 서버에 있는 기록은 규칙이 바뀐 뒤에도 옛 결과로 남아 있다. 그 문서를
+   * 직접 열기 전까지는 기기마다 단어장이 다르다 — 문서 안의 단어를 전부
+   * 열린 상태로 돌려놓는 것이 사용자 몫이 되어서는 안 된다.
+   */
+  refreshStaleDocuments: (docs: Document[]) => Promise<number>
 }
 
 /** 단어장 정렬용: 문서 내 등장 순서를 유지한다 */
@@ -59,6 +67,29 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     )
     rows.sort(sortByPosition)
     set((s) => ({ byLanguage: { ...s.byLanguage, [languageCode]: rows } }))
+  },
+
+  /**
+   * 현재 규칙으로 다시 계산되지 않은 문서를 되살린다.
+   *
+   * 한 번에 하나씩 유휴 시점에 처리한다 — 문서가 많으면 토크나이징이 무겁다.
+   */
+  refreshStaleDocuments: async (docs) => {
+    if (docs.length === 0) return 0
+
+    const meta = await idbGetAll<{ documentId: string; lemmaVersion: number }>(
+      STORES.documentMeta,
+    ).catch(() => [])
+    const known = new Map(meta.map((m) => [m.documentId, m.lemmaVersion]))
+    const stale = docs.filter((doc) => known.get(doc.id) !== LEMMA_VERSION)
+
+    for (const doc of stale) {
+      await get().recordDocument(doc, true)
+      await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
+        () => {},
+      )
+    }
+    return stale.length
   },
 
   recordDocument: async (doc, force = false) => {
@@ -101,6 +132,11 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       })
     }
 
+    // 계산에 사용한 규칙을 기억해 둔다 — 다음에 이 규칙이 바뀌면 다시 계산된다
+    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
+      () => {},
+    )
+
     const recordedAt = Date.now()
     const records = [...byLemma.values()]
       .map((record) => ({ ...record, recordedAt }))
@@ -115,6 +151,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
   forgetDocument: async (documentId) => {
     await idbDeleteByIndex(STORES.wordOccurrences, 'documentId', documentId)
+    await idbDeleteByIndex(STORES.documentMeta, 'documentId', documentId)
     set((s) => {
       const recorded = { ...s.recorded }
       delete recorded[documentId]

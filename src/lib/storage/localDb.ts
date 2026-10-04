@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'lexi'
-const DB_VERSION = 3
+const DB_VERSION = 4
 
 export const STORES = {
   documents: 'documents',
@@ -18,6 +18,14 @@ export const STORES = {
    * 받아 본 응답을 이 기기에도 남겨 두는 유일한 방법이다 (PLAN.md 결정 4).
    */
   responseCache: 'responseCache',
+  /**
+   * 문서별 표기 규칙 버전 (documentMeta).
+   *
+   * 서버로 보내지 않는다 — 기기 안에서만 bookkeeping 하는 용도다.
+   * 등장 기록은 서버에도 있으므로, "이 기기에서 이 규칙으로 다시 계산했는가"
+   * 만 알면 언제든 다시 계산할 수 있다.
+   */
+  documentMeta: 'documentMeta',
 } as const
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
@@ -39,6 +47,9 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.wordStates)) {
         const s = db.createObjectStore(STORES.wordStates, { keyPath: ['languageCode', 'lemma'] })
         s.createIndex('languageCode', 'languageCode')
+      }
+      if (!db.objectStoreNames.contains(STORES.documentMeta)) {
+        db.createObjectStore(STORES.documentMeta, { keyPath: 'documentId' })
       }
       if (!db.objectStoreNames.contains(STORES.responseCache)) {
         const s = db.createObjectStore(STORES.responseCache, { keyPath: 'key' })

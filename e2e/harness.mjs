@@ -508,6 +508,44 @@ class Ctx {
     })()`)
   }
 
+  /** 문서별 표기 규칙 버전 기록 */
+  async readMeta() {
+    return this.#eval(`(async () => {
+      try {
+        const db = await new Promise((res, rej) => {
+          const r = indexedDB.open('lexi');
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => rej(r.error);
+        });
+        if (!db.objectStoreNames.contains('documentMeta')) return [];
+        return await new Promise((res) => {
+          const t = db.transaction('documentMeta', 'readonly');
+          const r = t.objectStore('documentMeta').getAll();
+          r.onsuccess = () => res(r.result);
+        });
+      } catch { return []; }
+    })()`)
+  }
+
+  /** 규칙 버전 기록을 비운다 — 옛 규칙으로 계산된 것처럼 만들려고 */
+  async wipeMeta() {
+    return this.#eval(`(async () => {
+      try {
+        const db = await new Promise((res, rej) => {
+          const r = indexedDB.open('lexi');
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => rej(r.error);
+        });
+        if (!db.objectStoreNames.contains('documentMeta')) return false;
+        return await new Promise((res) => {
+          const t = db.transaction('documentMeta', 'readwrite');
+          const r = t.objectStore('documentMeta').clear();
+          r.onsuccess = () => res(true);
+        });
+      } catch { return false; }
+    })()`)
+  }
+
   bodyText() {
     return this.#eval('document.body.innerText')
   }
