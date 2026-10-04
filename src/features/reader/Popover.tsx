@@ -31,12 +31,35 @@ export function Popover({
   const popoverRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<PopoverSize | null>(null)
 
+  /**
+   * 이 박스의 크기를 재고, 크기가 바뀌면 자리를 다시 잡는다.
+   *
+   * 자식 요소를 의존성으로 삼지 않는다. 사전은 DictionaryPanel 안에서만 그려지므로
+   * 내용이 채워져도 이 박스는 다시 그려지지 않는다 — 그러면 첫 측정(로딩 한 줄 높이)
+   * 이 끝까지 남아, 아래쪽 단어의 사전이 아래로 열려 화면 밖으로 나간다.
+   * 닫았다 다시 열면 이번엔 처음부터 내용이 있어 위로 오른다. 같은 사전이 두 번
+   * 다르게 놓이는 셈이다.
+   *
+   * 그래서 내용물의 크기 변화를 직접 지켜본다. 사전이 로드되자마자 높이가 커지므로
+   * 그 즉시 방향을 뒤집는다.
+   */
   useLayoutEffect(() => {
     const el = popoverRef.current
     if (!el) return
-    const next = { width: el.offsetWidth, height: el.offsetHeight }
-    setSize((prev) => (prev && prev.width === next.width && prev.height === next.height ? prev : next))
-  }, [children])
+
+    const measure = () => {
+      const next = { width: el.offsetWidth, height: el.offsetHeight }
+      setSize((prev) =>
+        prev && prev.width === next.width && prev.height === next.height ? prev : next,
+      )
+    }
+
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   const position = useAnchoredPosition(
     anchor,

@@ -371,6 +371,23 @@ class Ctx {
   }
 
   /** 현재 열린 팝오버 내용. 없으면 null */
+  /** 팝오버의 실제 자리 — 위아래로 넘치는지 보려면 좌표가 필요하다 */
+  async popoverBox() {
+    return this.#eval(`(() => {
+      const d = document.querySelector('[role="dialog"]');
+      if (!d) return null;
+      const r = d.getBoundingClientRect();
+      return {
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        height: Math.round(r.height),
+        width: Math.round(r.width),
+        viewportHeight: innerHeight,
+        visible: getComputedStyle(d).visibility === 'visible',
+      };
+    })()`)
+  }
+
   async popover() {
     return this.#eval(`(() => {
       const d = document.querySelector('[role="dialog"]');
