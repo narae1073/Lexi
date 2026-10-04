@@ -18,6 +18,13 @@ import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
 import { resolveLemmasFromWords } from './surfaceLemma'
 import { anchorForRange } from './anchor'
+import {
+  countEvent,
+  enabled as debugEnabled,
+  record,
+  type SelectionTrace,
+} from './selectionDebug'
+import { SelectionDebugPanel } from './SelectionDebugPanel'
 import { isSentenceInitial, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
@@ -32,6 +39,22 @@ type WordSegment = Extract<Segment, { type: 'word' }>
  * 원래 고른 자리를 가린다.
  */
 const SELECTION_SETTLE_MS = 220
+
+/** 진단 기록의 뼈대 */
+const blankTrace = (): SelectionTrace => ({
+  events: 0,
+  at: '',
+  isCollapsed: null,
+  rangeCount: 0,
+  selectionType: null,
+  startInContainer: false,
+  endInContainer: false,
+  ancestorInContainer: false,
+  start: null,
+  end: null,
+  sentences: [],
+  note: '',
+})
 
 type Selection =
   | { kind: 'word'; segment: WordSegment; anchor: HTMLElement }
@@ -237,10 +260,33 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const readSelection = useCallback((): 'opened' | 'pending' | 'none' => {
     const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return 'none'
-
     const container = containerRef.current
-    if (!container) return 'none'
+
+    /** 흔적을 남긴다 — 기기에서 뭐가 일어나는지 보기 위한 것이 목적이다 */
+    const trace = (note: string, extra: Partial<SelectionTrace> = {}) => {
+      if (!debugEnabled()) return
+      record({
+        ...blankTrace(),
+        isCollapsed: sel ? sel.isCollapsed : null,
+        rangeCount: sel?.rangeCount ?? 0,
+        selectionType: sel?.type ?? null,
+        startInContainer: Boolean(sel && container && sel.rangeCount > 0 && container.contains(sel.getRangeAt(0).startContainer)),
+        endInContainer: Boolean(sel && container && sel.rangeCount > 0 && container.contains(sel.getRangeAt(0).endContainer)),
+        ancestorInContainer: Boolean(sel && container && sel.rangeCount > 0 && container.contains(sel.getRangeAt(0).commonAncestorContainer)),
+        sentences: [],
+        note,
+        ...extra,
+      })
+    }
+
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      trace('선택이 없음(collapsed)')
+      return 'none'
+    }
+    if (!container) {
+      trace('컨테이너 없음')
+      return 'none'
+    }
 
     const range = sel.getRangeAt(0)
 
@@ -254,7 +300,10 @@ export function ReaderView({ doc }: { doc: Document }) {
       container.contains(range.startContainer) ||
       container.contains(range.endContainer) ||
       container.contains(range.commonAncestorContainer)
-    if (!touches) return 'none'
+    if (!touches) {
+      trace('본문 밖의 선택')
+      return 'none'
+    }
 
     // 시작점이 컨테이너 밖이면 오프셋을 셀 수 없다. 끝점으로 대신 잰다.
     const at = container.contains(range.startContainer) ? range.startContainer : range.endContainer
@@ -265,6 +314,7 @@ export function ReaderView({ doc }: { doc: Document }) {
     try {
       prefix.setEnd(at, atOffset)
     } catch {
+      trace('오프셋 계산 실패', { note: '오프셋 계산 실패' })
       return 'none'
     }
 
@@ -275,14 +325,21 @@ export function ReaderView({ doc }: { doc: Document }) {
     if (end <= start) return 'none'
 
     const indexes = sentencesInRange(sentences, { start, end })
-    if (indexes.length === 0) return 'none'
+    if (indexes.length === 0) {
+      trace('문장을 못 찾음', { start, end })
+      return 'none'
+    }
 
     // 롱프레스는 선택이 요소 경계에서 시작하게 만든다. 앵커를 못 잡으면
     // 아무 일도 일어나지 않으므로, 오프셋을 보고 가장 가까운 단어까지 찾는다.
     const anchor = anchorForRange(range, start)
-    if (!anchor) return 'pending'
+    if (!anchor) {
+      trace('앵커를 못 잡음', { start, end, sentences: indexes })
+      return 'pending'
+    }
 
     retryTimer.current = 0
+    trace('열림', { start, end, sentences: indexes })
     setSelection({
       kind: 'sentence',
       sentences: sentences.filter((s) => indexes.includes(s.index)),
@@ -307,6 +364,7 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   useEffect(() => {
     const onSelectionChange = () => {
+      countEvent()
       if (!containerRef.current) return
       // 선택이 사라졌다(빈손 탭, ESC)는 아무것도 하지 않는다 — 단어 팝오버를 지우는 쪽이 따로 있다
       if (window.getSelection()?.isCollapsed) return
@@ -448,6 +506,9 @@ export function ReaderView({ doc }: { doc: Document }) {
       )}
 
       <StatusBar stats={stats} />
+
+      {/* `?debug=select` 일 때만 — 기기에서 무슨 일이 일어나는지 보여 준다 */}
+      {debugEnabled() && <SelectionDebugPanel />}
     </article>
   )
 }
