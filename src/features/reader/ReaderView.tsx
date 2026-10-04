@@ -17,6 +17,7 @@ import { Pagination } from '../wordbook/Pagination'
 import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
 import { resolveLemmasFromWords } from './surfaceLemma'
+import { anchorForRange } from './anchor'
 import { isSentenceInitial, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
@@ -25,7 +26,17 @@ type WordSegment = Extract<Segment, { type: 'word' }>
 
 type Selection =
   | { kind: 'word'; segment: WordSegment; anchor: HTMLElement }
-  | { kind: 'sentence'; sentences: Sentence[]; anchor: HTMLElement }
+  /**
+   * `backTo` 는 단어 팝오버에서 건너온 경로다.
+   * 문장 번역 창을 닫으면 원래 단어 팝오버로 돌아가야 한다 — 닫아 버리면
+   * 상태를 고치러 왔던 사용자가 길을 잃는다.
+   */
+  | {
+      kind: 'sentence'
+      sentences: Sentence[]
+      anchor: HTMLElement
+      backTo?: { kind: 'word'; segment: WordSegment; anchor: HTMLElement }
+    }
 
 /**
  * 문서를 단어 단위로 렌더링한다.
@@ -174,12 +185,6 @@ export function ReaderView({ doc }: { doc: Document }) {
     return { uniqueWords: byLemma.size, occurrences: wordCount, byStatus }
   }, [segments, byKey, doc.languageCode, lemmaFor, wordCount])
 
-  /** 세그먼트를 감싸는 요소. 팝오버 앵커로 쓴다. */
-  const anchorFor = (node: Node | null): HTMLElement | null => {
-    const el = (node?.nodeType === Node.TEXT_NODE ? node.parentElement : node) as HTMLElement | null
-    return el?.closest<HTMLElement>('[data-start]') ?? null
-  }
-
   /**
    * 단어 클릭은 이벤트 대상에서 직접 찾는다.
    * Selection API에 기대면 앵커가 요소 경계에 놓였을 때 문자 오프셋을 못 읽고
@@ -238,7 +243,9 @@ export function ReaderView({ doc }: { doc: Document }) {
     const indexes = sentencesInRange(sentences, { start, end })
     if (indexes.length === 0) return
 
-    const anchor = anchorFor(range.startContainer)
+    // 롱프레스는 선택이 요소 경계에서 시작하게 만든다. 앵커를 못 잡으면
+    // 아무 일도 일어나지 않으므로, 오프셋을 보고 가장 가까운 단어까지 찾는다.
+    const anchor = anchorForRange(range, start)
     if (!anchor) return
 
     setSelection({
@@ -247,6 +254,29 @@ export function ReaderView({ doc }: { doc: Document }) {
       anchor,
     })
   }, [sentences, page.start])
+
+
+  /**
+   * 드래그 없이 문장을 번역하는 길 (plan.txt 6줄).
+   *
+   * 모바일에서는 드래그로 글자를 고르는 동작 자체가 까다롭다 — 롱프레스가
+   * 브라우저의 선택 메뉴를 띄우고, 놓는 위치가 손가락 밑이라 자주 빗나간다.
+   * 단어를 눌러 팝오버를 띄운 뒤 '이 문장 번역' 을 누르면 그 문장이 정확히
+   * 어느 문장인지 알 필요도 없이 그 자리에서 시작한다.
+   */
+  const translateSentenceOf = useCallback(
+    (segment: WordSegment, anchor: HTMLElement) => {
+      const target = sentences.filter((sentence) => sentence.index === segment.sentenceIndex)
+      if (target.length === 0) return
+      setSelection({
+        kind: 'sentence',
+        sentences: target,
+        anchor,
+        backTo: { kind: 'word', segment, anchor },
+      })
+    },
+    [sentences],
+  )
 
   return (
     // 하단 상태 바가 본문을 가리지 않도록 여유를 둔다
@@ -289,6 +319,9 @@ export function ReaderView({ doc }: { doc: Document }) {
         ref={containerRef}
         onClick={handleClick}
         onMouseUp={handleMouseUp}
+        // 터치 기기에서 글자를 고른 뒤 손을 떼면 touchend 가 먼저 온다.
+        // mouseup 만 listening 하고 있으면 여기에 반응하지 않는다.
+        onTouchEnd={handleMouseUp}
         className="text-[1.05rem] leading-[2.1] break-words whitespace-pre-wrap"
       >
         {pageItems.map((segment) =>
@@ -322,6 +355,7 @@ export function ReaderView({ doc }: { doc: Document }) {
           lemma={lemmaFor(selection.segment)}
           languageCode={doc.languageCode}
           anchor={selection.anchor}
+          onTranslateSentence={() => translateSentenceOf(selection.segment, selection.anchor)}
           onClose={() => setSelection(null)}
         />
       )}
@@ -332,7 +366,12 @@ export function ReaderView({ doc }: { doc: Document }) {
           languageCode={doc.languageCode}
           targetLanguage={DEFINITION_LANGUAGE}
           anchor={selection.anchor}
-          onClose={() => setSelection(null)}
+          onClose={() =>
+            // 단어 팝오버에서 건너온 경로는 그 자리로 되돌린다
+            setSelection(
+              selection.backTo ?? null,
+            )
+          }
         />
       )}
 

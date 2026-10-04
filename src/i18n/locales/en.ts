@@ -135,6 +135,7 @@ export const en = {
   },
 
   sentence: {
+    button: 'Translate sentence',
     translating: 'Translating…',
     retry: 'Try again',
     identity: 'This text is already in English, so there is nothing to translate.',

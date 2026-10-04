@@ -330,6 +330,22 @@ class Ctx {
     })
   }
 
+  /**
+   * touchend 를 쏜다.
+   *
+   * 터치 기기에서 글자를 고르고 손을 떼면 touchend 가 mouseup 보다 먼저 온다.
+   * 앱이 mouseup 만 듣고 있으면 반응하지 않는다 — 이 경로가 실제로 되는지 본다.
+   */
+  async touchEnd(selector) {
+    return this.#eval(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const touch = new Touch({ identifier: 1, target: el, clientX: 12, clientY: 12 });
+      el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, changedTouches: [touch], touches: [] }));
+      return true;
+    })()`)
+  }
+
   async pressEscape() {
     await this.#eval(
       `document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); true`,

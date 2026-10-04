@@ -18,6 +18,7 @@ export function WordPopover({
   lemma,
   languageCode,
   anchor,
+  onTranslateSentence,
   onClose,
 }: {
   segment: Extract<Segment, { type: 'word' }>
@@ -25,6 +26,8 @@ export function WordPopover({
   lemma: string
   languageCode: LanguageCode
   anchor: HTMLElement | null
+  /** 이 단어가 속한 문장을 바로 번역한다 — 드래그 없이 하는 길 */
+  onTranslateSentence?: () => void
   onClose: () => void
 }) {
   const t = useTranslation()
@@ -83,13 +86,25 @@ export function WordPopover({
           </button>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => setShowDictionary(true)}
-          className="pointer-events-auto border-line text-ink-muted hover:text-ink hover:border-accent mt-1 w-full rounded-lg border px-2 py-1.5 text-xs transition"
-        >
-          {t('dictionary.button')}
-        </button>
+        <div className="mt-1 flex gap-1">
+          <button
+            type="button"
+            onClick={() => setShowDictionary(true)}
+            className="pointer-events-auto border-line text-ink-muted hover:text-ink hover:border-accent flex-1 rounded-lg border px-2 py-1.5 text-xs transition"
+          >
+            {t('dictionary.button')}
+          </button>
+          {onTranslateSentence && (
+            <button
+              type="button"
+              onClick={onTranslateSentence}
+              // 드래그로 고르는 길이 손에 익지 않으면 이 버튼이 대신한다 (plan.txt 6줄)
+              className="pointer-events-auto border-line text-ink-muted hover:text-ink hover:border-accent flex-1 rounded-lg border px-2 py-1.5 text-xs transition"
+            >
+              {t('sentence.button')}
+            </button>
+          )}
+        </div>
       )}
     </Popover>
   )

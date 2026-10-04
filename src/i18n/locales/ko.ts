@@ -134,6 +134,7 @@ export const ko: Dictionary = {
   },
 
   sentence: {
+    button: '이 문장 번역',
     translating: '번역 중…',
     retry: '다시 시도',
     identity: '원문이 이미 영어라 번역할 것이 없습니다.',
