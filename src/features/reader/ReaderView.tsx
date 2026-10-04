@@ -12,7 +12,7 @@ import { statusClass } from '../../lib/color'
 import { DEFINITION_LANGUAGE } from '../../lib/languages'
 import type { Document, Segment, Sentence, WordStatus } from '../../types'
 import type { Page } from '../../lib/paginate'
-import { isOnPage, pageWordsOrDefault, planPages, READER_PAGE_WORDS } from './pageBreak'
+import { pageWordsOrDefault, planPages, READER_PAGE_WORDS, textOfPage } from './pageBreak'
 import { Pagination } from '../wordbook/Pagination'
 import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
@@ -157,10 +157,9 @@ export function ReaderView({ doc }: { doc: Document }) {
           ),
         ),
         pageWords,
-        // 쪽 경계가 세그먼트를 가로지르면 글자가 사라진다.
-        // **모든** 세그먼트의 끝을 줘야 한다 — 단어만 주면 마침표와 공백이
-        // 빠져 있어 경계가 다음 문장의 첫 단어 뒤로 밀리고, 그 단어가 사라진다.
-        segments.map((s) => s.end),
+        // 경계가 단어 안에 들어가면 안 된다 — 단어만 경계 제약이다.
+        // 텍스트 세그먼트는 잘라서 렌더하므로 마침표와 여는 부호가 제자리를 찾는다.
+        segments.filter((s) => s.type === 'word').map((s) => s.start),
       ),
     [doc.rawText, sentences, segments, pageWords],
   )
@@ -169,7 +168,8 @@ export function ReaderView({ doc }: { doc: Document }) {
   const safePageIndex = Math.min(pageIndex, Math.max(0, pages.length - 1))
   const page = pages[safePageIndex]
 
-  const pageItems = useMemo(() => segments.filter((s) => isOnPage(s, page)), [segments, page])
+  // 경계가 텍스트 세그먼트 안에 있으면 잘라서 보여준다
+  const pageItems = useMemo(() => textOfPage(segments, page), [segments, page])
 
   /** 쪽 이동 UI — 단어 수는 이 쪽이 덮는 구간을 보여준다 */
   const pageNav = useMemo<Page<unknown>>(

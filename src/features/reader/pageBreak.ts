@@ -46,32 +46,20 @@ export function planPages(
   sentences: Sentence[],
   wordsPerSentence: readonly number[],
   wordsPerPage: number,
-  /**
-   * 세그먼트의 끝 위치(오름차순).
-   *
-   * 없으면 쪽 경계가 문장 시작에 딱 맞아떨어져야 하는데, 실제로는 그렇지 않다.
-   * 토크나이저는 마침표와 공백을 한 세그먼트로 묶어(". ") 두 칸을 차지하는데
-   * 문장 시작은 마침표 **뒤**다. 경계를 문장 시작에 두르면 그 세그먼트가
-   * 앞쪽 끝을 넘고 뒤쪽 시작을 미쳐 어느 쪽에도 렌더되지 않는다.
-   * '. ' 가 사라지고, 게다가 뒤쪽 페이지의 문자 오프셋이 어긋나 문장 번역이
-   * 옆 문장을 잡았다.
-   *
-   * 그래서 경계를 세그먼트 끝으로 민다.
-   */
-  segmentEnds: readonly number[],
+  wordStarts: readonly number[],
 ): DocumentPage[] {
   const size = Math.max(1, Math.floor(wordsPerPage))
   const pages: DocumentPage[] = []
 
-  /** 경계를 포함하는 세그먼트의 끝으로 민다 — 문장 끝의 '. ' 가 앞쪽 쪽에 남는다 */
+  /** 경계가 단어 안에 들어가면 그 단어 앞으로 되돌린다 — 단어는 자르지 않는다 */
   const snap = (boundary: number): number => {
-    for (const end of segmentEnds) {
-      if (end >= boundary) return end
+    // wordStarts 는 오름차순이므로, boundary 보다 작은 가장 큰 값이 그 단어의 시작
+    let before = 0
+    for (const start of wordStarts) {
+      if (start < boundary) before = start
+      else break
     }
-    // 세그먼트 정보가 없으면 어디까지 밀어야 안전한지 알 수 없다.
-    // 경계를 그대로 쓰면 글자가 사라지므로, 본문 끝을 최악으로 삼아 경고가
-    // 나게 하고(테스트가 잡아낸다) 본문이 빈 경우만 그대로 둔다.
-    return rawText.length
+    return boundary > before ? boundary : before
   }
 
   let start = 0
@@ -83,8 +71,6 @@ export function planPages(
     const count = wordsPerSentence[i] ?? 0
     const wouldBe = words + count
 
-    // 첫 문장은 예산을 넘어도 자기 쪽을 만든다.
-    // 넘긴다고 계속 넘기면 문장이 한 쪽에도 담기지 않는 상황이 생긴다.
     if (i > sentenceFrom && wouldBe > size) {
       const boundary = Math.max(start, snap(sentences[i].start))
       pages.push({
@@ -106,7 +92,6 @@ export function planPages(
     }
   }
 
-  // 마지막 문장 뒤에 남은 글자(줄바꿈 등)도 마지막 쪽에 붙인다
   pages.push({
     index: 0,
     start,
@@ -121,9 +106,38 @@ export function planPages(
   return pages.map((page, index) => ({ ...page, index }))
 }
 
-/** 이 쪽에 들어가는 세그먼트인가 — 오프셋은 원문 기준이라 그대로 비교하면 된다 */
+/**
+ * 이 쪽에서 렌더할 텍스트.
+ *
+ * 경계가 텍스트 세그먼트 안에 있을 수 있으므로 잘라서 돌려준다.
+ * 그래야 마침표는 앞쪽 쪽에 남고, 문장을 여는 부호는 그 문장에 남는다.
+ * 단어 세그먼트는 경계에 걸리지 않으므로 항상 통째로 나온다.
+ */
+export function textOfPage<T extends { start: number; end: number; text: string }>(
+  segments: T[],
+  page: DocumentPage,
+): T[] {
+  return segments
+    // 경계에 걸치면 양쪽에 나타난다 — 이 쪽에서 보여 줄 부분만 잘라 준다
+    .filter((s) => s.end > page.start && s.start < page.end)
+    .map((s) => ({
+      ...s,
+      text: s.text.slice(
+        Math.max(0, page.start - s.start),
+        Math.min(s.text.length, page.end - s.start),
+      ),
+    }))
+    .filter((s) => s.text.length > 0)
+}
+
+/**
+ * 이 쪽에 들어가는 세그먼트인가.
+ *
+ * 경계가 세그먼트 안에 있을 수 있으므로 '걸친다' 도 포함한다.
+ * 표시할 글자는 textOfPage 가 잘라 준다.
+ */
 export function isOnPage(segment: { start: number; end: number }, page: DocumentPage): boolean {
-  return segment.start >= page.start && segment.end <= page.end
+  return segment.end > page.start && segment.start < page.end
 }
 
 /** 문장 번호로 그 문장이 어느 쪽에 있는지 — 없으면 -1 */

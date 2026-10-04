@@ -122,6 +122,8 @@ export async function run(ctx) {
   ctx.check('둘째 쪽이 문장 중간에서 시작하지 않는다',
     /^[A-Z가-힣一-龥]/.test((shown ?? '').trimStart()),
     JSON.stringify((shown ?? '').slice(0, 40)))
+
+  // (여는 부호 검사는 아래 전용 문서에서 한다)
   ctx.check('이전 쪽으로 갈 수 있다',
     !(await ctx.page.evaluate(`(() => {
       const b = [...document.querySelectorAll('nav[aria-label] button')].find(x => x.getAttribute('aria-label') === 'Previous page');
@@ -243,6 +245,87 @@ export async function run(ctx) {
   })()`)
   ctx.check('본문이 상태 바 높이만큼 여유를 둔다', room.padding >= room.bar,
     `여유 ${room.padding}px / 바 ${room.bar}px`)
+
+  // 전용 문서가 필요하��� 맨 마지막에 확인한다
+  await assertOpeningQuotesStay(ctx)
+}
+
+/**
+ * 문장을 여는 부호가 앞쪽 쪽에 홀로 남지 않는다 (회귀).
+ *
+ * 사용자가 „ ¡ ! 가 페이지에 걸쳐 나뉘어 어색하게 배치된다고 했다.
+ * 경계를 세그먼트 끝으로 밀어 앞쪽 마침표를 지켰더니 이번엔 문장을 여는
+ * 부호가 앞쪽 쪽에 남았다 — 두 부호가 한 세그먼트('. „')에 붙어 있어서다.
+ * 이제 경계는 문장 시작에 두고 텍스트만 잘라 보여 준다.
+ *
+ * 쪽 크기 선택지가 50 부터라 작은 문서로 경계를 만들 수 없다.
+ * 문장을 충분히 길게 만들어 여러 쪽이 생기고, 어느 쪽 크기에서도
+ * 쪽이 여는 부호로 끝나지 않는지 본다.
+ */
+async function assertOpeningQuotesStay(ctx) {
+  const REPEAT = 'Der Fuchs lachte. „Jetzt habe ich ihn", sagt er glücklich. Die beiden blieben.'
+  const german = Array.from({ length: 16 }, () => REPEAT).join(' ')
+
+  await ctx.addLanguage('German')
+  await ctx.clickSelector('a[href="/compose"]')
+  await sleep(500)
+  await ctx.createDocument(german, 'German')
+
+  const spanish = Array.from(
+    { length: 16 },
+    () => 'Por fin te toqué. ¡Ahora por fin te tocaré!", dijo feliz. Los dos se fueron.',
+  ).join(' ')
+
+  await ctx.addLanguage('Spanish')
+  await ctx.clickSelector('a[href="/compose"]')
+  await sleep(500)
+  await ctx.createDocument(spanish, 'Spanish')
+
+  // 어느 쪽 크기에서도 쪽이 여는 부호(„ ¡ " ¿ «)로 끝나면 안 된다
+  for (const size of [50, 100, 200]) {
+    await setPageWords(ctx, size)
+    for (const label of ['„', '¡']) {
+      await openFirstDocument(ctx)
+      const pages = []
+      for (let guard = 0; guard < 12; guard++) {
+        const text = (await pageText(ctx)) ?? ''
+        pages.push(text)
+        if (!(await hasNext(ctx))) break
+        await ctx.clickText('›')
+        await sleep(350)
+      }
+      const endings = pages.map((t) => t.trimEnd().slice(-1))
+      const dangling = endings.filter((c) => `„"¡¿«`.includes(c))
+      ctx.check(`${label} — 한 쪽 ${size}단어: 쪽이 여는 부호로 끝나지 않는다`,
+        dangling.length === 0 && pages.length > 1,
+        `${pages.length}쪽, 끝글자 ${[...new Set(endings)].join('')}`)
+
+      const starts = pages.map((t) => t.trimStart().slice(0, 1))
+      ctx.check(`${label} — 한 쪽 ${size}단어: 쪽이 소문자 중간에서 시작하지 않는다`,
+        starts.every((c) => !/[a-zà-ÿ]/.test(c)),
+        `시작글자 ${[...new Set(starts)].join('')}`)
+    }
+  }
+}
+
+/** 다음 쪽으로 갈 수 있는가 */
+async function hasNext(ctx) {
+  return ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('nav[aria-label] button')].find(x => x.getAttribute('aria-label') === 'Next page');
+    return !!b && !b.disabled;
+  })()`)
+}
+
+/** 목록의 첫 문서를 연다 */
+async function openFirstDocument(ctx) {
+  await ctx.clickSelector('a[href="/"]')
+  await sleep(500)
+  await ctx.page.evaluate(
+    // 목록은 최근 수정 순 — 방금 만든 문서가 맨 위다
+    `[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')?.startsWith('/read/'))?.click(); true`,
+  )
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
+  await sleep(500)
 }
 
 function sleep() {

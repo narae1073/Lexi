@@ -8,6 +8,7 @@ import {
   pageWordsOrDefault,
   planPages,
   READER_PAGE_WORDS,
+  textOfPage,
   type DocumentPage,
 } from './pageBreak'
 import { tokenize } from './tokenizer'
@@ -29,20 +30,16 @@ function sentencesOf(text: string): Sentence[] {
  * 실제 토크나이저는 마침표와 공백을 한 세그먼트로 묶어 두 칸을 차지한다.
  * 그래서 문장 시작은 마침표 '뒤' 다 — 이 차이가 쪽 경계 글자 유실의 원인이었다.
  */
-function segmentEndsOf(text: string, sentences: Sentence[]): number[] {
-  const ends: number[] = []
-  let cursor = 0
-  for (const sentence of sentences) {
-    // 문장 앞의 구분 문자·공백을 한 세그먼트로 본다
-    if (sentence.start > cursor) {
-      cursor = sentence.start + 1
-      ends.push(cursor)
-    }
-    cursor = sentence.end
-    ends.push(cursor)
-  }
-  if (cursor < text.length) ends.push(text.length)
-  return [...new Set(ends)].sort((a, b) => a - b)
+/**
+ * 단어 세그먼트의 시작 위치 (오름차순).
+ *
+ * 실제 토크나이저를 쓰지 않고 문장만으로 근사한다. 텍스트 세그먼트는 경계에서
+ * 잘릴 수 있으므로 제약이 아니다.
+ */
+function segmentEndsOf(_text: string, sentences: Sentence[]): number[] {
+  const starts = new Set<number>()
+  for (const sentence of sentences) starts.add(sentence.start)
+  return [...starts].sort((a, b) => a - b)
 }
 
 /** 문장마다 단어를 counts 개씩 넣는다 */
@@ -170,10 +167,16 @@ describe('isOnPage', () => {
     expect(isOnPage(thirdSentence, pages[1])).toBe(true)
   })
 
-  it('어느 쪽에도 걸리지 않으면 어느 쪽에도 아니다', () => {
+  /**
+   * 경계에 걸친 세그먼트는 양쪽에 걸린 것으로 본다 — 잘라서 보여 준다.
+   *
+   * 예전엔 '어느 쪽에도 아니다' 가 정답이었다. 그랬더니 마침표와 공백 세그먼트가
+   * 통째로 사라져 쪽 끝의 마침표가 보이지 않았다.
+   */
+  it('경계에 걸친 세그먼트는 걸친 것으로 본다 — 양쪽에서 잘라 보여 준다', () => {
     const straddling = { start: pages[0].end - 1, end: pages[1].start + 1 }
-    expect(isOnPage(straddling, pages[0])).toBe(false)
-    expect(isOnPage(straddling, pages[1])).toBe(false)
+    expect(isOnPage(straddling, pages[0])).toBe(true)
+    expect(isOnPage(straddling, pages[1])).toBe(true)
   })
 })
 
@@ -225,6 +228,9 @@ describe('실제 토크나이저와 함께 — 글자가 하나도 사라지지 
     ['de', 'Das Haus ist groß. Die Straße ist lang. Guten Morgen! Wie geht es dir?'],
     ['fr', "Le chat dort. Un très long phrase qui ne finit pas. Après tout, c'est bien."],
     ['es', 'El gato y la luna. Había una vez un gato pequeño que vivía en un tejado.'],
+    ['de', 'Der Fuchs lachte. „Jetzt habe ich ihn", sagt er glücklich. Und die beiden bleiben.'],
+    ['es', 'Por fin te toqué. ¡Ahora por fin te tocaré!", dijo feliz. Y desde entonces.'],
+    ['es', 'Por fin te toqué! —¡Ahora por fin te tocaré!", dijo feliz. Y desde entonces.'],
     ['en', `Line one.
 Line two.
 
@@ -241,13 +247,19 @@ Line four!`],
       ),
     )
     return {
-      pages: planPages(text, sentences, counts, wordsPerPage, segments.map((s) => s.end)),
+      pages: planPages(
+        text,
+        sentences,
+        counts,
+        wordsPerPage,
+        segments.filter((s) => s.type === 'word').map((s) => s.start),
+      ),
       segments,
     }
   }
 
   const visibleText = (pages: DocumentPage[], segments: Segment[]) =>
-    pages.map((page) => segments.filter((s) => isOnPage(s, page)).map((s) => s.text).join(''))
+    pages.map((page) => textOfPage(segments, page).map((s) => s.text).join(''))
 
   for (const [languageCode, text] of CASES) {
     for (const wordsPerPage of [1, 2, 5, 13, 1000]) {
@@ -264,14 +276,22 @@ Line four!`],
         // ★ 표시되는 글자를 다 합치면 원문과 정확히 같아야 한다
         expect(visibleText(pages, segments).join('')).toBe(text)
 
-        // 경계가 세그먼트를 가로지르지 않는다 — 가로지르면 글자가 사라진다
-        for (const page of pages) {
+        // 단어 세그먼트는 경계에 걸치지 않는다 — 잘리면 클릭·상태 조회가 어긋난다.
+        // 텍스트 세그먼트는 잘릴 수 있다 (마침표·공백·여는 부호).
+        for (let i = 1; i < pages.length; i++) {
+          const boundary = pages[i].start
           for (const segment of segments) {
-            const inside = segment.start >= page.start && segment.end <= page.end
-            const before = segment.end <= page.start
-            const after = segment.start >= page.end
-            expect(inside || before || after).toBe(true)
+            if (segment.type !== 'word') continue
+            const straddles = segment.start < boundary && segment.end > boundary
+            expect(straddles).toBe(false)
           }
+        }
+
+        // 어떤 문자도 두 번 나오지 않는다 — 자르되 중복시키지 않는다
+        const shown = visibleText(pages, segments)
+        expect(shown.join('')).toBe(text)
+        for (const piece of shown) {
+          expect(piece.length).toBeGreaterThan(0)
         }
       })
     }
@@ -280,43 +300,67 @@ Line four!`],
   it('문장 끝의 마침표가 마지막 쪽에 남는다', () => {
     const text = 'First one two. Second one two. Third one two. Fourth one two.'
     const { pages, segments } = pagesOf('en', text, 6)
+    const sentences = tokenize(text, 'en').sentences
     expect(pages).toHaveLength(2)
 
-    const firstPageText = segments.filter((s) => isOnPage(s, pages[0])).map((s) => s.text).join('')
+    const firstPageText = textOfPage(segments, pages[0]).map((s) => s.text).join('')
 
     // 쪽이 마침표에서 끊기지 않는다 — 회귀: '. ' 가 어느 쪽에도 렌더되지 않았다
     expect(firstPageText.trimEnd().endsWith('two.')).toBe(true)
     expect(firstPageText).not.toBe('First one two. Second one two')
 
-    // 마침표와 그 뒤 공백은 앞쪽 쪽에 함께 남는다
-    expect(pages[0].end).toBe(text.indexOf('Third'))
-    expect(text.slice(pages[0].end - 2, pages[0].end)).toBe('. ')
+    // 경계는 문장 시작이다. 마침표는 앞쪽 쪽에 남고, 그 뒤 공백만 넘는다.
+    expect(pages[0].end).toBe(sentences[2].start)
+    expect(text.slice(pages[0].end - 1, pages[0].end)).toBe('.')
+    const secondPageText = textOfPage(segments, pages[1]).map((s) => s.text).join('')
+    expect(secondPageText.trimStart().startsWith('Third')).toBe(true)
   })
 
   /**
-   * 세그먼트 끝을 **모두** 넘겨야 한다.
+   * 경계는 문장 시작에 두되, 단어 안에 들어가면 단어 앞에서 멈춘다.
    *
-   * 단어 세그먼트만 넘기면 마침표와 공백 세그먼트가 빠져 있어, 경계를 밀 때
-   * 다음 문장의 첫 단어 뒤로 밀려 그 단어가 렌더되지 않는다.
-   * e2e 가 이걸 잡았다 — 쪽 2 가 'Repeat' 없이 ' that choice tomorrow.' 로 시작했다.
+   * 전 구간 경계를 세그먼트 끝으로 밀면 문장을 여는 부호(„ ¡ " ¿)가 앞쪽 쪽에
+   * 남아 문장이 쪼개진다 — 사용자가 목마료와 ¡ 가 페이지에 걸쳐 나뉘어 있다고
+   * 했다. 반대로 텍스트 세그먼트 끝으로 밀면 다음 문장의 첫 단어가 사라진다.
+   * 그래서 경계는 문장 시작 그대로 두고, 텍스트만 잘라 보여 준다.
    */
-  it('단어 세그먼트만 넘기면 다음 문장의 첫 단어가 사라진다 — 그래서 전부 넘긴다', () => {
+  it('문장을 여는 부호는 그 문장에 남는다 — „ 가 앞쪽 쪽에 홀로 남지 않는다', () => {
+    // 회귀: 경계를 세그먼트 끝으로 밀면서 „ 가 'Der Fuchs lachte. „' 로 남았다
+    const text = 'Der Fuchs lachte. „Jetzt habe ich ihn", sagt er glücklich. Und die beiden bleiben.'
+    // 첫 문장이 정확히 한 쪽 차이 나도록 — 'Der Fuchs lachte.' 가 3단어
+    const { pages, segments } = pagesOf('de', text, 3)
+    const pageText = pages.map((p) => textOfPage(segments, p).map((s) => s.text).join(''))
+
+    expect(pageText[0].trimEnd()).toBe('Der Fuchs lachte.')
+    expect(pageText[1].trimStart().startsWith('„Jetzt')).toBe(true)
+    expect(pageText.join('')).toBe(text)
+  })
+
+  it('¡ 도 그 문장에 남는다', () => {
+    const text = 'Por fin te toqué. ¡Ahora por fin te tocaré!", dijo feliz. Y desde entonces.'
+    // 'Por fin te toqué.' 가 4단어
+    const { pages, segments } = pagesOf('es', text, 4)
+    const pageText = pages.map((p) => textOfPage(segments, p).map((s) => s.text).join(''))
+
+    expect(pageText[0].trimEnd()).toBe('Por fin te toqué.')
+    expect(pageText[1].trimStart().startsWith('¡Ahora')).toBe(true)
+  })
+
+  it('단어 안에 경계가 들어가면 단어 앞에서 멈춘다', () => {
     const text = 'First one two. Second one two. Third one two. Fourth one two.'
     const { segments, sentences } = tokenize(text, 'en')
     const counts = sentences.map((s) =>
       segments.reduce((n, x) => (x.type === 'word' && x.sentenceIndex === s.index ? n + 1 : n), 0),
     )
 
-    const wordsOnly = planPages(text, sentences, counts, 6, segments
-      .filter((x) => x.type === 'word')
-      .map((x) => x.end))
-    const allEnds = planPages(text, sentences, counts, 6, segments.map((x) => x.end))
+    const wordStarts = segments.filter((x) => x.type === 'word').map((x) => x.start)
+    const good = planPages(text, sentences, counts, 6, wordStarts)
 
     const firstWordOf = (pages: DocumentPage[], index: number) =>
-      segments.find((x) => isOnPage(x, pages[index]) && x.type === 'word')?.text
+      textOfPage(segments, pages[index]).find((x) => x.type === 'word')?.text
 
-    expect(firstWordOf(wordsOnly, 1)).not.toBe('Third')
-    expect(firstWordOf(allEnds, 1)).toBe('Third')
+    expect(firstWordOf(good, 1)).toBe('Third')
+    expect(good.map((p) => textOfPage(segments, p).map((s) => s.text).join('')).join('')).toBe(text)
   })
 
   it('뒤쪽 쪽의 문자 오프셋이 원문과 일치한다 — 문장 번역이 옆 문장을 잡지 않는다', () => {
@@ -324,7 +368,7 @@ Line four!`],
     const { pages, segments } = pagesOf('en', text, 6)
     const second = pages[1]
 
-    const container = segments.filter((s) => isOnPage(s, second)).map((s) => s.text).join('')
+    const container = textOfPage(segments, second).map((s) => s.text).join('')
 
     // 쪽 안에서 몇 번째 글자인지 + 쪽 시작 = 원문 오프셋.
     // 어긋나면 문장 번역이 옆 문장을 잡는다 — 이게 쪽 경계 버그의 두 번째 얼굴이다.
