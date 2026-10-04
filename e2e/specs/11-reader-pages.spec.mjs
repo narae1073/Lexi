@@ -43,6 +43,9 @@ const pageCount = (ctx) =>
 /** 이 쪽 본문에 보이는 단어 수 */
 const wordsOnPage = (ctx) => ctx.page.evaluate(`document.querySelectorAll('[data-start]').length`)
 
+/** 이 쪽 본문 텍스트 */
+const pageText = (ctx) => ctx.page.evaluate(`document.querySelector('article > div')?.innerText ?? null`)
+
 /** 상태 바 숫자 */
 const readBar = (ctx) =>
   ctx.page.evaluate(`(() => {
@@ -108,6 +111,17 @@ export async function run(ctx) {
   await ctx.clickText('›')
   await sleep(500)
   ctx.check('다음 쪽으로 간다', (await currentPage(ctx)) === 2, `${await currentPage(ctx)}쪽`)
+
+  /*
+   * 뒤쪽 쪽의 본문은 원문 그 구간과 정확히 같아야 한다.
+   *
+   * 경계가 세그먼트를 가로지르면 글자가 사라지고, 쪽 시작 오프셋이 어긋나서
+   * 문장 번역이 옆 문장을 잡는다 — 같은 버그의 두 번째 얼굴이다.
+   */
+  const shown = await pageText(ctx)
+  ctx.check('둘째 쪽이 문장 중간에서 시작하지 않는다',
+    /^[A-Z가-힣一-龥]/.test((shown ?? '').trimStart()),
+    JSON.stringify((shown ?? '').slice(0, 40)))
   ctx.check('이전 쪽으로 갈 수 있다',
     !(await ctx.page.evaluate(`(() => {
       const b = [...document.querySelectorAll('nav[aria-label] button')].find(x => x.getAttribute('aria-label') === 'Previous page');

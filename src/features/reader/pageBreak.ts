@@ -46,9 +46,33 @@ export function planPages(
   sentences: Sentence[],
   wordsPerSentence: readonly number[],
   wordsPerPage: number,
+  /**
+   * 세그먼트의 끝 위치(오름차순).
+   *
+   * 없으면 쪽 경계가 문장 시작에 딱 맞아떨어져야 하는데, 실제로는 그렇지 않다.
+   * 토크나이저는 마침표와 공백을 한 세그먼트로 묶어(". ") 두 칸을 차지하는데
+   * 문장 시작은 마침표 **뒤**다. 경계를 문장 시작에 두르면 그 세그먼트가
+   * 앞쪽 끝을 넘고 뒤쪽 시작을 미쳐 어느 쪽에도 렌더되지 않는다.
+   * '. ' 가 사라지고, 게다가 뒤쪽 페이지의 문자 오프셋이 어긋나 문장 번역이
+   * 옆 문장을 잡았다.
+   *
+   * 그래서 경계를 세그먼트 끝으로 민다.
+   */
+  segmentEnds: readonly number[],
 ): DocumentPage[] {
   const size = Math.max(1, Math.floor(wordsPerPage))
   const pages: DocumentPage[] = []
+
+  /** 경계를 포함하는 세그먼트의 끝으로 민다 — 문장 끝의 '. ' 가 앞쪽 쪽에 남는다 */
+  const snap = (boundary: number): number => {
+    for (const end of segmentEnds) {
+      if (end >= boundary) return end
+    }
+    // 세그먼트 정보가 없으면 어디까지 밀어야 안전한지 알 수 없다.
+    // 경계를 그대로 쓰면 글자가 사라지므로, 본문 끝을 최악으로 삼아 경고가
+    // 나게 하고(테스트가 잡아낸다) 본문이 빈 경우만 그대로 둔다.
+    return rawText.length
+  }
 
   let start = 0
   let sentenceFrom = 0
@@ -62,17 +86,18 @@ export function planPages(
     // 첫 문장은 예산을 넘어도 자기 쪽을 만든다.
     // 넘긴다고 계속 넘기면 문장이 한 쪽에도 담기지 않는 상황이 생긴다.
     if (i > sentenceFrom && wouldBe > size) {
+      const boundary = Math.max(start, snap(sentences[i].start))
       pages.push({
         index: 0,
         start,
-        end: sentences[i].start,
+        end: boundary,
         sentenceFrom,
         sentenceTo: i,
         wordCount: words,
         from: seen + 1,
         to: seen + words,
       })
-      start = sentences[i].start
+      start = boundary
       sentenceFrom = i
       seen += words
       words = count

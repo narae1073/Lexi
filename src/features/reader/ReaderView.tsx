@@ -157,6 +157,10 @@ export function ReaderView({ doc }: { doc: Document }) {
           ),
         ),
         pageWords,
+        // 쪽 경계가 세그먼트를 가로지르면 글자가 사라진다.
+        // **모든** 세그먼트의 끝을 줘야 한다 — 단어만 주면 마침표와 공백이
+        // 빠져 있어 경계가 다음 문장의 첫 단어 뒤로 밀리고, 그 단어가 사라진다.
+        segments.map((s) => s.end),
       ),
     [doc.rawText, sentences, segments, pageWords],
   )
