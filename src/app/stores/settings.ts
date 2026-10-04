@@ -5,7 +5,15 @@ import { persist } from 'zustand/middleware'
 import { createTranslator, DEFAULT_APP_LANGUAGE, type AppLanguage, type Translator } from '../../i18n'
 import type { SupportedLanguageCode } from '../../lib/languages'
 import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features/settings/themes'
-import { DEFAULT_DOCUMENT_SORT, documentSortOrDefault, type DocumentSort } from '../../features/reader/documentSort'
+import {
+  DEFAULT_DOCUMENT_SORT,
+  DEFAULT_SORT_DIRECTION,
+  documentSortOrDefault,
+  directionOrDefault,
+  flipDirection,
+  type DocumentSort,
+  type SortDirection,
+} from '../../features/reader/documentSort'
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from '../../lib/paginate'
 import { DEFAULT_READER_PAGE_WORDS, pageWordsOrDefault } from '../../features/reader/pageBreak'
 
@@ -57,6 +65,8 @@ type SettingsState = {
   wordbookPageSize: number
   /** 문서 목록 정렬 기준 */
   documentSort: DocumentSort
+  /** 정렬 방향 — 기준마다 따로 들고 있다 */
+  documentSortDir: Record<DocumentSort, SortDirection>
   /** 문서 본문 한 쪽에 담을 단어 수 */
   readerPageWords: number
   setAppLanguage: (language: AppLanguage | null) => void
@@ -65,6 +75,8 @@ type SettingsState = {
   setTextScale: (value: number) => void
   setWordbookPageSize: (value: number) => void
   setDocumentSort: (value: DocumentSort) => void
+  setDocumentSortDir: (sort: DocumentSort, value: SortDirection) => void
+  toggleDocumentSortDir: (sort: DocumentSort) => void
   setReaderPageWords: (value: number) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
@@ -90,6 +102,7 @@ export const useSettingsStore = create<SettingsState>()(
       textScale: TEXT_SCALE_DEFAULT,
       wordbookPageSize: DEFAULT_PAGE_SIZE,
       documentSort: DEFAULT_DOCUMENT_SORT,
+      documentSortDir: { ...DEFAULT_SORT_DIRECTION },
       readerPageWords: DEFAULT_READER_PAGE_WORDS,
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
@@ -98,6 +111,24 @@ export const useSettingsStore = create<SettingsState>()(
       // 매번 고를 필요는 없지만, 지정한 뒤에 다음번에도 남아 있어야 한다
       setWordbookPageSize: (value) => set({ wordbookPageSize: pageSizeOrDefault(value) }),
       setDocumentSort: (value) => set({ documentSort: documentSortOrDefault(value) }),
+      setDocumentSortDir: (sort, value) => {
+        const safe = documentSortOrDefault(sort)
+        set((s) => ({
+          documentSortDir: {
+            ...s.documentSortDir,
+            [safe]: directionOrDefault(safe, value),
+          },
+        }))
+      },
+      toggleDocumentSortDir: (sort) => {
+        const safe = documentSortOrDefault(sort)
+        set((s) => ({
+          documentSortDir: {
+            ...s.documentSortDir,
+            [safe]: flipDirection(directionOrDefault(safe, s.documentSortDir[safe])),
+          },
+        }))
+      },
       setReaderPageWords: (value) => set({ readerPageWords: pageWordsOrDefault(value) }),
       resolvedAppLanguage: () => get().appLanguage ?? detectDeviceLanguage(),
       resolvedTheme: () => get().theme ?? detectPreferredTheme(),

@@ -38,6 +38,14 @@ export const en = {
     sortBy: 'Sort',
     sortHint: 'Dates show when you last opened each document',
     lastOpened: 'Last opened',
+    directionArrow: {
+      asc: 'Ascending',
+      desc: 'Descending',
+    },
+    direction: {
+      asc: 'Sort the other way',
+      desc: 'Reverse the sort order',
+    },
     sort: {
       recent: 'Recently opened',
       longest: 'Longest first',

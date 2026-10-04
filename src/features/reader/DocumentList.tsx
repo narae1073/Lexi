@@ -17,6 +17,8 @@ export function DocumentList() {
   const byKey = useWordStatesStore((s) => s.byKey)
   const documentSort = useSettingsStore((s) => s.documentSort)
   const setDocumentSort = useSettingsStore((s) => s.setDocumentSort)
+  const documentSortDir = useSettingsStore((s) => s.documentSortDir)
+  const toggleDocumentSortDir = useSettingsStore((s) => s.toggleDocumentSortDir)
 
   /**
    * 문서별 진도를 한 번에 계산한다.
@@ -38,7 +40,11 @@ export function DocumentList() {
     return result
   }, [occurrences, byKey])
 
-  const sorted = useMemo(() => sortDocuments(documents, documentSort), [documents, documentSort])
+  const direction = documentSortDir[documentSort]
+  const sorted = useMemo(
+    () => sortDocuments(documents, documentSort, direction),
+    [documents, documentSort, direction],
+  )
 
   if (loading) return <p className="p-8 text-sm text-ink-muted">{t('list.loading')}</p>
   if (documents.length === 0) return <p className="p-8 text-sm text-ink-muted">{t('list.empty')}</p>
@@ -61,7 +67,18 @@ export function DocumentList() {
             ))}
           </select>
         </label>
-        <span className="text-ink-muted text-xs">{t('list.sortHint')}</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => toggleDocumentSortDir(documentSort)}
+            aria-label={t(`list.direction.${direction}`)}
+            title={t(`list.direction.${direction}`)}
+            className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-2 py-1 text-xs"
+          >
+            {t(`list.directionArrow.${direction}`)}
+          </button>
+          <span className="text-ink-muted text-xs">{t('list.sortHint')}</span>
+        </div>
       </div>
 
       <ul className="divide-y divide-line">

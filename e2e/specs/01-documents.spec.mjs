@@ -218,6 +218,27 @@ async function assertSortAndLastOpened(ctx) {
   await setSort('recent')
   await sleep(400)
 
+  // ── 거꾸로 정렬 ──
+  const flip = () => ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button')]
+      .find(x => /Reverse the sort order|Sort the other way|정렬 방향|거꾸로/.test(x.getAttribute('aria-label') ?? ''));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+
+  const descOrder = await order()
+  ctx.check('뒤집기 버튼이 있다', (await flip()) === true, '클릭함')
+  await sleep(400)
+  const ascOrder = await order()
+  ctx.check('뒤집으면 순서가 반대가 된다', JSON.stringify(ascOrder) !== JSON.stringify(descOrder),
+    `${descOrder.join('/')} → ${ascOrder.join('/')}`)
+
+  await flip()
+  await sleep(400)
+  ctx.check('다시 뒤집으면 원래로 돌아온다', JSON.stringify(await order()) === JSON.stringify(descOrder),
+    (await order()).join('/'))
+
   /**
    * 마지막으로 연 문서가 맨 위로 온다.
    *

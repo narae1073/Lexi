@@ -37,6 +37,14 @@ export const ko: Dictionary = {
     sortBy: '정렬',
     sortHint: '날짜는 마지막으로 열어 본 시각입니다',
     lastOpened: '최근 본 시각',
+    directionArrow: {
+      asc: '오름차순',
+      desc: '내림차순',
+    },
+    direction: {
+      asc: '거꾸로 정렬하기',
+      desc: '정렬 방향 뒤집기',
+    },
     sort: {
       recent: '최근 본 순',
       longest: '글자 많은 순',
