@@ -99,6 +99,42 @@ export async function run(ctx) {
     ctx.check('한국어로 바꾸면 목록이 그 언어 기록을 따른다', (await ctx.bodyText()).includes('Korean'),
       '언어 전환됨')
   }
+
+  // ── 새로고침해도 문서를 열지 않고 상태가 살아 있어야 한다 ──
+  // 회귀: 상태 적재가 문서를 열 때만 일어나서, 새로고침 직후 단어장이
+  // 전부 "미표시" 로 보이던 문제.
+  await ctx.clickSelector('a[href="/wordbook"]')
+  await sleep(600)
+  await ctx.clickText('English')
+  await sleep(700)
+  const markedBefore = await readMarked(ctx)
+  ctx.check('새로고침 전에는 상태가 보인다', markedBefore >= 1, `${markedBefore}개 표시됨`)
+
+  await ctx.reload()
+  await ctx.waitFor(`!!document.querySelector('a[href="/wordbook"]')`, '앱 재시작')
+  await sleep(600)
+  await ctx.clickSelector('a[href="/wordbook"]')
+  await ctx.waitFor(`!!document.querySelector('input[placeholder]')`, '단어장')
+  await sleep(600)
+  const markedAfter = await readMarked(ctx)
+  ctx.check('새로고침 후에도 문서를 열지 않고 상태가 살아 있다', markedAfter >= 1,
+    `새로고침 전 ${markedBefore} → 후 ${markedAfter}`)
+
+  // 문서를 열지 않은 상태에서 다른 언어로 바꿔도 상태가 보여야 한다
+  await ctx.clickText('English')
+  await sleep(700)
+  const englishMarked = await readMarked(ctx)
+  ctx.check('문서를 열지 않고 언어를 바꿔도 상태가 유지된다', englishMarked >= 1,
+    `영어 ${englishMarked}개 표시됨`)
+}
+
+/**
+ * 상태가 지정된 항목 수 — "미표시" 를 제외한 세 탭의 합.
+ * 탭을 클릭하지 않고 헤더의 개수만 읽으므로 현재 어느 탭을 보고 있어도 같다.
+ */
+async function readMarked(ctx) {
+  const counts = await readTabCounts(ctx)
+  return counts.slice(1).reduce((sum, n) => sum + Number(n), 0)
 }
 
 async function readTabCounts(ctx) {

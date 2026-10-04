@@ -11,6 +11,8 @@ export function wordKey(languageCode: LanguageCode, lemma: string): string {
 type WordStatesStore = {
   /** key = `${languageCode}::${lemma}` */
   byKey: Record<string, WordState>
+  /** IndexedDB 에서 읽어 온 언어 — 같은 언어를 중복 읽지 않기 위함 */
+  loaded: Record<string, true>
   setStatus: (
     languageCode: LanguageCode,
     lemma: string,
@@ -27,6 +29,7 @@ type WordStatesStore = {
  */
 export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   byKey: {},
+  loaded: {},
 
   getStatus: (languageCode, lemma) => get().byKey[wordKey(languageCode, lemma)]?.status,
 
@@ -52,7 +55,16 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     })
   },
 
+  /**
+   * IndexedDB 에서 언어 하나의 상태를 읽어 온다.
+   *
+   * 여기서 읽지 않은 언어의 상태는 화면에 없다 — 새로고침 직후 단어장이
+   * 전부 "미표시" 로 보이던 문제가 정확히 그것이다. 앱 시작 시 배운 언어 전체에
+   * 대해 호출되므로 문서를 따로 열 필요가 없다.
+   */
   loadLanguage: async (languageCode) => {
+    if (get().loaded[languageCode]) return
+
     const rows = await idbGetAllByIndex<WordState & { surface?: string }>(
       STORES.wordStates,
       'languageCode',
@@ -64,7 +76,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
         const { surface: _surface, ...state } = row
         byKey[wordKey(languageCode, state.lemma)] = state
       }
-      return { byKey }
+      return { byKey, loaded: { ...s.loaded, [languageCode]: true } }
     })
   },
 }))

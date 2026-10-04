@@ -12,6 +12,7 @@ import { Wordbook } from '../features/wordbook/Wordbook'
 import { useDocumentsStore } from './stores/documents'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
+import { useWordStatesStore } from './stores/wordStates'
 import { useApplyTheme, useTranslation } from './stores/settings'
 
 function DocumentReader({ id }: { id: string }) {
@@ -64,15 +65,21 @@ export default function App() {
   } = useRegisterSW()
 
   const loadOccurrences = useOccurrencesStore((s) => s.loadLanguage)
+  const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const enrolled = useLanguagesStore((s) => s.enrolled)
 
   useEffect(() => {
     void load()
   }, [load])
 
+  // 배운 언어의 등장 기록과 상태를 앱 시작 시 한 번에 적재한다.
+  // 단어장은 문서를 열지 않아도 상태를 보여줘야 한다 (plan.txt 9줄).
   useEffect(() => {
-    for (const language of enrolled) void loadOccurrences(language)
-  }, [enrolled, loadOccurrences])
+    for (const language of enrolled) {
+      void loadOccurrences(language)
+      void loadWordStates(language)
+    }
+  }, [enrolled, loadOccurrences, loadWordStates])
 
   // 온보딩 완료 전에는 언어 선택 화면으로 보낸다 (plan.txt 5줄)
   if (!ready) return <LanguagePicker />

@@ -40,7 +40,6 @@ export function Wordbook() {
   const [group, setGroup] = useState<GroupKey>('unmarked')
 
   const occurrences = useOccurrencesStore((s) => s.byLanguage[languageCode ?? ''] ?? EMPTY)
-  const loadOccurrences = useOccurrencesStore((s) => s.loadLanguage)
   const byKey = useWordStatesStore((s) => s.byKey)
 
   const entries = useMemo(
@@ -132,30 +131,6 @@ export function Wordbook() {
           ))}
         </ul>
       )}
-
-      <PendingLanguageLoad languageCode={languageCode} onLoad={loadOccurrences} />
     </section>
   )
-}
-
-/**
- * store 에는 현재 언어의 기록만 들어 있다.
- * 언어를 바꿨다가 돌아왔을 때 아직 안 읽은 상태일 수 있다.
- */
-function PendingLanguageLoad({
-  languageCode,
-  onLoad,
-}: {
-  languageCode: LanguageCode
-  onLoad: (languageCode: LanguageCode) => Promise<void>
-}) {
-  const loaded = useOccurrencesStore((s) => s.byLanguage[languageCode])
-  const [requestedFor, setRequestedFor] = useState<LanguageCode | null>(null)
-
-  if (loaded === undefined && requestedFor !== languageCode) {
-    setRequestedFor(languageCode)
-    void onLoad(languageCode)
-  }
-
-  return null
 }

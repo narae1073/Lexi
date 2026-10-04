@@ -152,6 +152,12 @@ class Ctx {
     await sleep(300)
   }
 
+  /** 새로고침 — IndexedDB 는 남고 메모리 상태만 사라진다 */
+  async reload() {
+    await this.page.send('Page.reload')
+    await sleep(400)
+  }
+
   /** 온보딩을 통과해 언어 선택 화면을 띄운다 */
   async waitForOnboarding(label) {
     await this.waitFor(
