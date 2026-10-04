@@ -90,12 +90,41 @@ export function mergeByLanguage(
   return { ...byLanguage, [languageCode]: [...others, ...records].sort(sortByPosition) }
 }
 
+/**
+ * 두 기록 목록이 같은 내용인지.
+ *
+ * 동기화는 자주 돌고, 이 목록은 목록 화면의 진도 계산 전체를 먹인다. 내용이 같으면
+ * 그대로 둔다 — 사용자에게 보일 변화가 없는 것을 바꾸면 화면만 요동친다.
+ */
+export function sameOccurrences(a: WordOccurrence[] | undefined, b: WordOccurrence[]): boolean {
+  if (!a) return b.length === 0
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  return a.every((record, i) => {
+    const other = b[i]
+    return (
+      record.documentId === other.documentId &&
+      record.lemma === other.lemma &&
+      record.count === other.count &&
+      record.recordedAt === other.recordedAt &&
+      record.documentTitle === other.documentTitle &&
+      record.sentence === other.sentence
+    )
+  })
+}
+
 export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   byLanguage: {},
   occurrences: [],
   recorded: {},
   refreshing: false,
 
+  /**
+   * 이 언어의 기록을 읽는다.
+   *
+   * 내용이 같으면 상태를 건드리지 않는다. 동기화가 돌 때마다 이 적재가 일어나는데,
+   * 새 배열 하나만 만들어져도 목록 전체가 다시 그려지고 진도 계산도 다시 돈다.
+   */
   loadLanguage: async (languageCode) => {
     const rows = await idbGetAllByIndex<WordOccurrence>(
       STORES.wordOccurrences,
@@ -103,7 +132,9 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       languageCode,
     )
     rows.sort(sortByPosition)
+
     set((s) => {
+      if (sameOccurrences(s.byLanguage[languageCode], rows)) return s
       const byLanguage = { ...s.byLanguage, [languageCode]: rows }
       return { byLanguage, occurrences: flatten(byLanguage) }
     })
@@ -144,7 +175,15 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
     const { segments, sentences } = tokenize(doc.rawText, doc.languageCode)
     const words = segments.filter((s) => s.type === 'word')
-    if (words.length === 0) return
+    if (words.length === 0) {
+      // 단어가 없는 문서도 '확인했다' 고 기억한다 — 안 하면 목록을 열 때마다
+      // 영영 낫지 않은 문서를 다시 훑는다. 본문은 늘지 않으므로 다시 볼 이유가 없다.
+      await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
+        () => {},
+      )
+      set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
+      return
+    }
 
     // 문서 안에서 실제로 쓰인 표기만 보고 lemma 를 정한다 (US/us 분리 등)
     const lemmaOf = resolveLemmasFromWords(

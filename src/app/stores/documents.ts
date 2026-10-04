@@ -41,16 +41,58 @@ function now(): string {
   return new Date().toISOString()
 }
 
+/**
+ * 두 목록이 같은 내용인지 — 같은데 갈아끼우지 않기 위한 판단.
+ *
+ * 화면에 보이는 것을 모두 비교한다. updatedAt 만 보면 빠르지만, 제목을 바꿀 때
+ * updatedAt 이 함께 올라가므로 그것만으로는 '제목이 같나' 를 알 수 없다.
+ */
+export function sameDocuments(a: Document[], b: Document[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  return a.every((doc, i) => {
+    const other = b[i]
+    return (
+      doc.id === other.id &&
+      doc.title === other.title &&
+      doc.languageCode === other.languageCode &&
+      doc.rawText === other.rawText &&
+      doc.createdAt === other.createdAt &&
+      doc.updatedAt === other.updatedAt &&
+      (doc.deletedAt ?? null) === (other.deletedAt ?? null)
+    )
+  })
+}
+
 export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   documents: [],
   loading: false,
   ready: false,
 
+  /**
+   * IndexedDB 에서 문서를 읽는다.
+   *
+   * 두 가지를 주의한다.
+   *
+   * 첫째, '불러오는 중' 은 첫 적재에서만 보인다. 동기화가 끝날 때마다 이 적재를
+   * 다시 하는데, 그때까지 목록을 '불러오는 중' 으로 비우면 화면이 깜빡인다 — 이제
+   * 동기화가 자주 돌아니 읽는 내내 깜빡였다. 데이터는 이미 있으므로 지울 이유가 없다.
+   *
+   * 둘째, 내용이 같으면 배열을 갈아끼우지 않는다. 새 배열 하나에 목록 전체가 새로
+   * 그려지고, 진도 게이지 계산까지 다시 돈다. 동기화가 1.2초마다 돌아도 아무 일도
+   * 없도록 해야 한다.
+   */
   load: async () => {
-    set({ loading: true })
+    if (!get().ready) set({ loading: true })
+
     const docs = await idbGetAll<Document>(STORES.documents)
     docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    set({ documents: docs, loading: false, ready: true })
+
+    set((s) =>
+      sameDocuments(s.documents, docs)
+        ? { loading: false, ready: true }
+        : { documents: docs, loading: false, ready: true },
+    )
   },
 
   rename: async (id, title) => {
