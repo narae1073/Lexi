@@ -425,23 +425,39 @@ Supabase 기본 메일 서버는 시간당 발송 횟수 제한이 크고 팀 �
 실제 사용자 주소로는 메일이 가지 않으므로 그대로 두면 로그인이 영영 안 된다.
 
 1. **Resend 계정** (resend.com) — 무료 티어 월 3,000통. 초기 사용자 전부 충분.
-2. Resend → Domains → 새 도메인 추가. 예: `mail.lexi.app`
-   - DNS TXT·MX 레코드가 나온다. 도메인 DNS에 그대로 넣는다.
-   - 레코드 추가 후 상태가 `Verified` 가 될 때까지 몇 분~몇십 분 걸린다.
-3. Resend → API Keys → `re_...` 키 생성.
-4. **Supabase** → Project Settings → Authentication → **Email**
+2. Resend → Domains → Add Domain 에 발신자 도메인을 넣는다.
+   - **서브도메인을 쓰면 루트를 앱 호스팅에 남길 수 있다.**
+   - 이 프로젝트의 선택: **`send.achijaser.date`**
+   - Resend 가 사용자에게 발송 확인을 요구할 수 있다(자신에게 한 통 보내기).
+     내 계정의 메일 주소를 입력하면 되고, 거절해도 발송 자체는 가능하다.
+3. Resend 가 알려 주는 레코드를 Cloudflare DNS 에 그대로 넣는다.
+   - 표준적으로 세 건이다: SPF(TXT) · DKIM(CNAME `resend._domainkey.…`) · MX
+   - 리전에 따라 값이 달라지므로 Resend 화면의 값을 그대로 복사한다.
+   - 넣었는지 확인하려면: `npm run verify:email -- send.achijaser.date`
+4. Resend 화면의 상태가 `Verified` 가 될 때까지 기다린다. 몇 분~몇십 분 걸린다.
+5. Resend → API Keys → **Sending access** 용 `re_...` 키 생성.
+6. **Supabase** → Project Settings → Authentication → **Email**
    - Enable Email Provider: 켬
    - SMTP Host: `smtp.resend.com`
-   - SMTP Port: `465`
+   - SMTP Port: `465` (587 을 쓰면 Enable TLS 를 켠다)
    - SMTP User: `resend`
    - SMTP Password: 위의 `re_...` 키
-   - (포트 587을 쓰는 경우 Enable TLS 를 켠다)
-5. **Supabase** → Authentication → URL Configuration
-   - Site URL: 배포 주소 (예: `https://lexi.app`)
-   - Redirect URLs: 로컬 주소와 배포 주소 `/settings`
-6. 다시 로그인 화면에서 링크 받기를 눌러 메일이 오는지 확인한다.
+7. **Supabase** → Authentication → URL Configuration
+   - Site URL: 앱 주소 (예: `https://achijaser.date`)
+   - **Redirect URLs** 에 다음을 **직접 추가한다** — 안 넣으면 메일은 와도
+     링크를 눌렀을 때 "redirect URL not allowed" 로 떨어진다.
+     ```
+     http://localhost:5173/settings     ← 로컬 개발용 (기본 허용됨)
+     https://<앱 주소>/settings
+     ```
+8. 로그인 화면에서 링크 받기를 눌러 메일이 오는지 확인한다.
+   **딱 한 번만 누른다** — 기본 서버든 커스텀 SMTP 든 시간당 발송량 제한이 있다.
 
 로그인 링크가 열리면 `/settings` 로 돌아온다 (`auth.ts` 의 `emailRedirectTo`).
+
+**네이버 등, 메일함은 외부 발신 메일을 조용히 버리는 경우가 실제로 있다.**
+발송은 성공하는데 안 도착하면 그 사이일 수 있다. 도착 여부를 확인할 때는
+Gmail 같은 주소로 먼저 시험한다.
 
 ### 10.2 Google 로그인 — 필요할 때만
 

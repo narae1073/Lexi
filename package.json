@@ -12,6 +12,7 @@
     "test": "vitest run",
     "e2e": "node e2e/run-all.mjs",
     "verify:rls": "node e2e/verify-rls.mjs",
+    "verify:email": "node e2e/verify-email-setup.mjs",
     "test:unit": "vitest run"
   },
   "dependencies": {
