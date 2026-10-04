@@ -101,6 +101,7 @@ export const ko: Dictionary = {
   sync: {
     pending: '저장 대기 중',
     syncing: '저장 중…',
+    synced: '저장됨',
     failed: '저장 실패',
   },
   account: {

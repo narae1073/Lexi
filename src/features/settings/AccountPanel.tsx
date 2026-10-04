@@ -5,7 +5,7 @@ import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { useAuthStore } from '../../app/stores/auth'
 import { useSyncStore } from '../../app/stores/sync'
-import { usePendingSummary } from '../../app/stores/sync'
+import { usePendingSummary, useSyncStatus } from '../../app/stores/sync'
 import { useTranslation } from '../../app/stores/settings'
 
 /**
@@ -29,6 +29,8 @@ export function AccountPanel() {
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
   const syncError = useSyncStore((s) => s.error)
   const pending = usePendingSummary()
+  const notice = useSyncStore((s) => s.notice)
+  const shown = useSyncStatus(status, notice, pending.count)
   const syncNow = useSyncStore((s) => s.syncNow)
 
   const [email, setEmail] = useState('')
@@ -70,8 +72,20 @@ export function AccountPanel() {
         <dl className="mt-3 space-y-1 text-xs">
           <div className="flex items-center justify-between gap-3">
             <dt className="text-ink-muted">{t('account.syncStatus')}</dt>
-            <dd className={status === 'error' ? 'text-status-unknown' : 'text-ink'}>
-              {t(`account.status.${status}`)}
+            {/*
+              살아 있는 상태를 그대로 보여 주면 사람이 판단할 수 없다.
+              자동 동기화가 돌 때마다 up to date / syncing 이 1초마다 번갈아 바뀌어
+              뭘 봐도 답이 나오지 않았다. 조용히 지낸 뒤의 결과만 말한다 — 실패와
+              밀린 것은 끝까지 말한다.
+            */}
+            <dd className={shown === 'failed' ? 'text-status-unknown' : 'text-ink'}>
+              {shown === 'failed'
+                ? t('sync.failed')
+                : shown === 'pending'
+                  ? t('sync.pending')
+                  : shown === 'syncing'
+                    ? t('sync.syncing')
+                    : t('account.status.synced')}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -80,8 +94,7 @@ export function AccountPanel() {
               {lastSyncedAt ? new Date(lastSyncedAt).toLocaleTimeString() : '—'}
             </dd>
           </div>
-          {/* 마지막 동기화 시각만으로는 지금 것이 올라갔는지 알 수 없다 */}
-          {/* 설정 화면은 사용자가 일부러 확인하러 온 곳이다 — 무엇이 얼마나 밀렸는지 말한다 */}
+          {/* 여기선 무엇이 얼마나 밀렸는지 전부 말한다 — 일부러 확인하러 온 곳이다 */}
           {pending.dirty && (
             <div className="flex items-center justify-between gap-3">
               <dt className="text-ink-muted">{t('account.pending')}</dt>

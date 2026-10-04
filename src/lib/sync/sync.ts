@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { STORES, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { STORES, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
 import type { Document, WordStatus } from '../../types'
@@ -77,15 +77,63 @@ export async function readLocal(): Promise<{
   }
 }
 
-/** 병합 결과를 로컬에 쓴다 */
+/**
+ * 병합 결과를 로컬에 쓴다.
+ *
+ * **이미 같은 것은 다시 쓰지 않는다.**
+ *
+ * 동기화는 병합 결과를 통째로 되돌려 쓴다. 그대로 쓰면 매번 모든 문서와 단어 상태를
+ * 다시 저장하게 되고, 저장이 곧 '아직 서버에 못 갔다' 는 신호가 되므로 동기화가
+ * '밀렸다' 고 영영 알리는 상태에 놓인다 — 실제로는 다 올라간 뒤에도 'Not synced yet'
+ * 이 사라지지 않는 원인이었다.
+ *
+ * 같은 것을 다시 쓰는 일은 없는데, 저장은 조용해야 할 곳에 시끄러웠다.
+ */
+/**
+ * 저장된 것과 같으면 건드리지 않는다 — 조용해야 할 곳에 시끄러움을 두지 않는다.
+ */
+async function idbPutIfChanged<T>(
+  store: (typeof STORES)[keyof typeof STORES],
+  value: T,
+): Promise<void> {
+  const key = idbKeyOf(store, value)
+  if (key === undefined) {
+    await idbPut(store, value)
+    return
+  }
+  const stored = await idbGet<T>(store, key)
+  if (stored !== undefined && JSON.stringify(stored) === JSON.stringify(value)) return
+  await idbPut(store, value)
+}
+
+/**
+ * 저장소의 주키를 만들어 낸다.
+ *
+ * 문서는 'id', 단어 상태는 [languageCode, lemma] 다. 저장소가 늘어날 때마다 여기만
+ * 늘리면 된다 — 그래야 '같은 것' 을 저장소의 원래 규칙대로 판단할 수 있다.
+ */
+function idbKeyOf(
+  store: (typeof STORES)[keyof typeof STORES],
+  value: unknown,
+): IDBValidKey | undefined {
+  if (store === STORES.documents) return (value as { id?: IDBValidKey }).id
+  if (store === STORES.wordStates) {
+    const state = value as { languageCode?: string; lemma?: string }
+    return state.languageCode !== undefined && state.lemma !== undefined
+      ? [state.languageCode, state.lemma]
+      : undefined
+  }
+  return undefined
+}
+
 export async function writeLocal(
   documents: Document[],
   wordStates: (WordStateRecord & { status: WordStatus })[],
   occurrences: WordOccurrence[],
 ): Promise<void> {
   await Promise.all([
-    ...documents.map((doc) => idbPut(STORES.documents, doc)),
-    ...wordStates.map((state) => idbPut(STORES.wordStates, state)),
+    ...documents.map((doc) => idbPutIfChanged(STORES.documents, doc)),
+    ...wordStates.map((state) => idbPutIfChanged(STORES.wordStates, state)),
   ])
 
   // 등장 기록은 문서 단위로 갈아끼운다 — 일부만 덮으면 옛 표기가 남는다

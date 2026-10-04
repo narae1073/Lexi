@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { create } from 'zustand'
 
 import { useAuthStore, onAuthChanged } from './auth'
@@ -7,7 +7,9 @@ import { useLanguagesStore } from './languages'
 import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
 import { createSyncScheduler } from './syncScheduler'
+import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } from './syncVisibility'
 import { onLocalWrite } from '../../lib/storage/localDb'
+import { STORES } from '../../lib/storage/localDb'
 import { supabase } from '../../lib/supabase/client'
 import { SyncUnavailable, pushOccurrences, readLocal, syncOnce } from '../../lib/sync/sync'
 
@@ -46,6 +48,12 @@ export type SyncState = {
    * 성공했을 때 '보낸 것'만큼만 빼야 남은 것이 정확히 남는다.
    */
   pendingByStore: Record<string, number>
+  /**
+   * 말할 시간. 자동 동기화는 조용히 하되, 사람이 한 행동의 결과는 잠깐 알려 준다.
+   *
+   * 단어 상태를 바꾸거나 '지금 동기화' 를 눌렀을 때만 생기고, 저장이 끝나면 곧 조용해진다.
+   */
+  notice: SyncNotice | null
 }
 
 /** 합쳐진 밀린 개수 */
@@ -65,9 +73,12 @@ export const useSyncStore = create<SyncState>((set) => ({
   error: null,
   dirty: false,
   pendingByStore: {},
+  notice: null,
 
   syncNow: async () => {
     if (!useAuthStore.getState().user) return
+    // 사람이 누른 것이다 — 결과를 알려야 한다
+    useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
     await run(set)
   },
 
@@ -126,6 +137,8 @@ async function run(set: Setter) {
         status: 'synced' as SyncStatus,
         lastSyncedAt: new Date().toISOString(),
         error: null,
+        // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
+        notice: markSynced(s.notice, Date.now()),
         // 다 밀었다 — 이제 서버와 같다
         dirty: pendingCount(pendingByStore) > 0,
         pendingByStore,
@@ -181,10 +194,15 @@ export function useCloudSync() {
     })
 
     const unsubscribe = onLocalWrite((store) => {
-      // 저장은 끝났는데 서버는 아직 모른다 — 이 순간이 바로 '진도가 사라진' 상태다
       useSyncStore.setState((s) => ({
         dirty: true,
         pendingByStore: { ...s.pendingByStore, [store]: (s.pendingByStore[store] ?? 0) + 1 },
+        // 단어 상태를 바꿨을 때만 말한다 — 문서를 열거나 제목을 바꾸는 것으로는
+        // 알리지 않는다. 잃어버렸다고 느낀 것은 진도였고, 나머지는 조용히 보내도 된다
+        notice:
+          store === STORES.wordStates
+            ? { until: Date.now() + NOTICE_MS, synced: false }
+            : s.notice,
       }))
       scheduler.notify()
     })
@@ -231,7 +249,35 @@ export function useCloudSync() {
 }
 
 /**
- * 설정 화면용 — 무엇이 얼마��� 밀렸는지 정확히 말해야 하므로 전부 센다.
+ * 지금 무엇을 말할 것인가 — 사람이 있는 자리에서.
+ *
+ * 시간이 지나면 조용해진 것을 다시 그려야 '조용해지는 순간' 이 보인다. 읽는 동안의
+ * 표시와 같은 규칙을 쓰되, 사람이 직접 확인하러 왔으니 실패와 밀린 것은 끝까지 말한다.
+ */
+export function useSyncStatus(
+  status: SyncStatus,
+  notice: SyncNotice | null,
+  pending: number,
+): StatusKind {
+  // 이미 조용해진 알림. 같은 알림이면 계속 조용하다 — 새 알림이 서면 다시 말하고.
+  const [expired, setExpired] = useState<SyncNotice | null>(null)
+  const active = notice !== null && expired !== notice
+
+  // 시간을 그릴 때 부르지 않는다 — 언제 조용해질지는 여기서 한 번 정하고 결과만 넘긴다
+  useEffect(() => {
+    if (!notice) return
+    const handle = setTimeout(
+      () => setExpired(notice),
+      Math.max(0, notice.until - Date.now() + 50),
+    )
+    return () => clearTimeout(handle)
+  }, [notice])
+
+  return statusKind({ status, pending, noticeActive: active })
+}
+
+/**
+ * 설정 화면용 — 무엇이 얼마나 밀렸는지 정확히 말해야 하므로 전부 센다.
  *
  * 읽는 동안의 표시와 다르다. 거긴 사용자가 일부러 확인하러 오지 않으니 조용해야 하고,
  * 여기는 온 사람이 '지금 무엇이 밀렸나' 를 묻는 곳이다.

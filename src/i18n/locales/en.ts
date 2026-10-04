@@ -102,6 +102,7 @@ export const en = {
   sync: {
     pending: 'Not synced yet',
     syncing: 'Saving…',
+    synced: 'Saved',
     failed: 'Save failed',
   },
   account: {
