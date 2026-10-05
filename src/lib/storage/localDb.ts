@@ -199,23 +199,42 @@ export async function replaceOccurrences<T>(
   })
 }
 
+/**
+ * 인덱스에서 그 값을 가진 것을 모두 지운다.
+ *
+ * **트랜잭션을 직접 연다.** `tx()` 로 돌리면 안 된다 — `tx()` 는 `run()` 이 돌려준
+ * 요청에 `onsuccess` 를 다시 붙이는데, 여기가 필요한 커서의 동작을 그대로 덮어쓴다.
+ * 덮어써진 쪽이 실행되지 않으므로 **아무것도 지워지지 않고 조용히 성공한 것처럼 보인다.**
+ *
+ * 실제로 그랬다: 완전 삭제한 문서의 등장 기록이 저장소에 그대로 남았고, 그래서
+ * 단어장에도 남았다.
+ */
 export function idbDeleteByIndex(
   store: StoreName,
   index: string,
   key: IDBValidKey,
 ): Promise<void> {
-  return tx<void>(store, 'readwrite', (s) => {
-    const req = s.index(index).openKeyCursor(IDBKeyRange.only(key))
-    req.onsuccess = () => {
-      const cursor = req.result
-      if (cursor) {
-        s.delete(cursor.primaryKey)
-        cursor.continue()
-      }
-    }
-    // KeyCursor 에 delete 가 없으므로 결과를 그대로 돌려준다
-    return req as unknown as IDBRequest<void>
-  }).then(() => undefined)
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction(store, 'readwrite')
+        const objectStore = transaction.objectStore(store)
+        const req = objectStore.index(index).openKeyCursor(IDBKeyRange.only(key))
+        req.onsuccess = () => {
+          const cursor = req.result
+          if (!cursor) return
+          // KeyCursor 에 delete 가 없으므로 본 저장소로 지운다
+          objectStore.delete(cursor.primaryKey)
+          cursor.continue()
+        }
+        transaction.oncomplete = () => {
+          queueMicrotask(() => notifyLocalWrite(store))
+          resolve()
+        }
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }),
+  )
 }
 
 export function idbGetAllByIndex<T>(

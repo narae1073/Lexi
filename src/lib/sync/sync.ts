@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { STORES, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { purgedDocumentIds } from '../storage/purged'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
 import type { Document, WordStatus } from '../../types'
@@ -193,12 +194,23 @@ export async function syncOnce({
   const words = mergeWordStates(local.wordStates, remote.wordStates)
   const languages = mergeLanguages(localLanguages, remote.languages)
 
+  /**
+   * 이 기기에서 완전 삭제한 문서는 서버 것이 남아 있어도 받지 않는다.
+   *
+   * 삭제 요청과 이 조회가 겹치면 지운 문서가 그대로 내려온다. 병합은 그걸 되살리고,
+   * 다음 동기화는 되살아난 것을 서버에 다시 올린다 — 지운 문서가 영구히 되돌아온다.
+   */
+  const purged = purgedDocumentIds()
+  const liveRemote = remote.documents.filter((d) => !purged.includes(d.id))
+  const liveOccurrences = remote.occurrences.filter((o) => !purged.includes(o.document_id))
+  const remoteDocs = liveRemote
+
   // 등장 기록은 다른 기기에서 만든 문서가 섞이므로, 문서별로 붙인다
   const localDocs = new Map(local.documents.map((d) => [d.id, d]))
   const pulledOccurrences: WordOccurrence[] = []
-  for (const group of groupOccurrences(remote.occurrences)) {
+  for (const group of groupOccurrences(liveOccurrences)) {
     const doc =
-      remote.documents.find((d) => d.id === group.documentId) ?? localDocs.get(group.documentId)
+      remoteDocs.find((d) => d.id === group.documentId) ?? localDocs.get(group.documentId)
     // 문서를 모르면 예문을 붙일 곳이 없다 — 본문이 없는 기록은 쓸 필요가 없다
     if (doc) pulledOccurrences.push(occurrenceFromRows(group.rows, doc))
   }
@@ -210,7 +222,9 @@ export async function syncOnce({
     ...local.occurrences.filter((o) => !pulledIds.has(`${o.documentId}::${o.lemma}`)),
   ]
 
-  const mergedDocuments = mergeDocuments(local.documents, remote.documents)
+  const mergedDocuments = mergeDocuments(local.documents, remoteDocs)
+    // 로컬에 남은 지운 문서가 있어도 서버로 다시 올리지 않는다
+    .filter((d) => !purged.includes(d.id))
 
   const mergedWords = words.merged.map((record) => withStatus(record))
 
@@ -224,7 +238,7 @@ export async function syncOnce({
    * 보낸 모든 문서의 '최근 본 시각' 이 같은 시각이 되어, 목록의 날짜가 전부
    * 같아지고 정렬도 무의미해진다. 실제로 그랬다.
    */
-  const remoteById = new Map(remote.documents.map((d) => [d.id, d]))
+  const remoteById = new Map(remoteDocs.map((d) => [d.id, d]))
   const documentsToPush = mergedDocuments.filter((doc) => {
     const theirs = remoteById.get(doc.id)
     // 새 문서

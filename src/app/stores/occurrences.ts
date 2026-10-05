@@ -1,6 +1,14 @@
 import { create } from 'zustand'
 
-import { STORES, idbDeleteByIndex, idbGetAll, idbGetAllByIndex, idbPut, replaceOccurrences } from '../../lib/storage/localDb'
+import {
+  STORES,
+  idbDelete,
+  idbDeleteByIndex,
+  idbGetAll,
+  idbGetAllByIndex,
+  idbPut,
+  replaceOccurrences,
+} from '../../lib/storage/localDb'
 import { isCapitalisedPosition, tokenize } from '../../features/reader/tokenizer'
 import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
 import type { Document, LanguageCode } from '../../types'
@@ -242,7 +250,14 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
   forgetDocument: async (documentId) => {
     await idbDeleteByIndex(STORES.wordOccurrences, 'documentId', documentId)
-    await idbDeleteByIndex(STORES.documentMeta, 'documentId', documentId)
+    /**
+     * documentMeta 는 주키가 documentId 다 — 같은 이름의 인덱스가 없다.
+     *
+     * 인덱스로 지우면 NotFoundError 가 나고, 그 뒤 코드가 아예 실행되지 않아
+     * **기억 속 목록이 갱신되지 않았다.** 완전 삭제한 문서의 단어가 단어장에 그대로
+     * 남았다 — 새로고침해야 사라졌다.
+     */
+    await idbDelete(STORES.documentMeta, documentId)
     set((s) => {
       const recorded = { ...s.recorded }
       delete recorded[documentId]

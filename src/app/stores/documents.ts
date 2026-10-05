@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { markPurged } from '../../lib/storage/purged'
 import { deleteDocumentRemote } from '../../lib/sync/sync'
 import { useAuthStore } from './auth'
 import { useOccurrencesStore } from './occurrences'
@@ -33,7 +34,7 @@ type DocumentsState = {
   trash: (id: string) => Promise<void>
   /** 휴지통에서 되살린다 */
   restore: (id: string) => Promise<void>
-  /** 되돌릴 수 없��� 지운다 — 등장 기록도 함께 사라진다 */
+  /** 되돌릴 수 없는 것을 지운다 — 등장 기록도 함께 사라진다 */
   purge: (id: string) => Promise<void>
 }
 
@@ -134,11 +135,32 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
     })
   },
 
-  /** 되돌릴 수 없��� 지운다 */
+  /** 되돌릴 수 없는 것을 지운다 */
+  /**
+   * 되돌릴 수 없는 것을 지운다.
+   *
+   * **화면에서 먼저 뺀다.** 예전엔 저장을 다 끝낸 뒤 화면에서 뺐는데, 중간 한 단계가
+   * 실패하면 그 뒤를 아예 실행하지 않아 눌렀는데도 남아 있었다 — 새로고침해야 사라졌다.
+   * 누른 즉시 사라져야 하고, 저장은 그다음에 따라잡으면 된다.
+   *
+   * 지웠다고 기억해 두는 것도 여기서 한다 — 동기화가 서버를 읽는 사이에 삭제 요청이
+   * 도착하지 않았으면 지운 문서가 그대로 돌아온다 (purged.ts).
+   */
   purge: async (id) => {
-    await idbDelete(STORES.documents, id)
-    await useOccurrencesStore.getState().forgetDocument(id)
+    markPurged(id)
     set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
+
+    try {
+      await idbDelete(STORES.documents, id)
+    } catch (error) {
+      console.error('문서 저장 지우기 실패', error)
+    }
+
+    try {
+      await useOccurrencesStore.getState().forgetDocument(id)
+    } catch (error) {
+      console.error('등장 기록 지우기 실패', error)
+    }
 
     const user = useAuthStore.getState().user
     if (user) {
