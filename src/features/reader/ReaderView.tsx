@@ -26,7 +26,7 @@ import {
   type SelectionTrace,
 } from './selectionDebug'
 import { SelectionDebugPanel } from './SelectionDebugPanel'
-import { isSentenceInitial, segmentAt, tokenize } from './tokenizer'
+import { isCapitalisedPosition, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
 
@@ -114,7 +114,7 @@ export function ReaderView({ doc }: { doc: Document }) {
     return resolveLemmasFromWords(
       words.map((w) => ({
         text: w.text,
-        sentenceInitial: isSentenceInitial(doc.rawText, sentences, w.start, w.sentenceIndex),
+        sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
       })),
       doc.languageCode,
     )

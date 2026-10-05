@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { sentenceAt, sentencesInRange, joinSentences } from './selection'
-import { computeSentences, isSentenceInitial, tokenize } from './tokenizer'
+import { computeSentences, isCapitalisedPosition, tokenize } from './tokenizer'
 
 const TEXT = 'First one. Second one! Third one? Tail without end'
 const sentences = computeSentences(TEXT)
@@ -83,12 +83,12 @@ describe('문장 인덱스 연속성 (빈 줄 뒤 조회가 어긋나지 않게)
   })
 })
 
-describe('isSentenceInitial', () => {
+describe('isCapitalisedPosition', () => {
   it('문장 첫 단어를 recognizes 한다 (앞 공백이 있어도)', () => {
     const text = 'One two. Three four.'
     const { segments, sentences } = tokenize(text, 'en')
     const words = segments.filter((s) => s.type === 'word')
-    const initial = words.filter((w) => w.type === 'word' && isSentenceInitial(text, sentences, w.start, w.sentenceIndex))
+    const initial = words.filter((w) => w.type === 'word' && isCapitalisedPosition(text, sentences, w.start, w.sentenceIndex))
     expect(initial.map((w) => (w.type === 'word' ? w.text : ''))).toEqual(['One', 'Three'])
   })
 
@@ -97,6 +97,6 @@ describe('isSentenceInitial', () => {
     const { segments, sentences } = tokenize(text, 'en')
     const two = segments.find((s) => s.type === 'word' && s.text === 'two')
     if (two?.type !== 'word') throw new Error('없음')
-    expect(isSentenceInitial(text, sentences, two.start, two.sentenceIndex)).toBe(false)
+    expect(isCapitalisedPosition(text, sentences, two.start, two.sentenceIndex)).toBe(false)
   })
 })

@@ -10,8 +10,12 @@ import { normalizeLemma } from './tokenizer'
  *   may(동사) 와 May(5월) → may
  * 어느 쪽이든 "모름"으로 표시하면 반대쪽까지 "모름" 이 된다.
  *
- * 규칙: **문장 첫머리가 아닌 위치에도 대문자 표기로 쓰였다면 그것은 서로 다른 단어로 본다.**
- * 문장 첫머리의 대문자는 철자 규칙(orthography)일 뿐 단어의 차이가 아니기 때문이다.
+ * 규칙: **위치에서 온 것이 아닌 곳에도 대문자 표기로 쓰였다면 그것은 서로 다른 단어로 본다.**
+ * 첫머리의 대문자는 철자 규칙(orthography)일 뿐 단어의 차이가 아니기 때문이다.
+ *
+ * '위치에서 온 대문자' 는 문장 첫머리뿐만이 아니다 — 콜론·세미콜론·여는 괄호·여는
+ * 따옴표·대시 뒤에도 온다. 이 앱의 `isCapitalisedPosition` 이 그 자리들을 센다.
+ * 세지 않으면 `Voici : Pour …` 의 Pour 가 고유명사로 굳어 `pour` 와 갈라진다.
  *   "The house" + "the dog"      → The 는 첫머리 전용 → the 로 합쳐짐  ✓
  *   "US and us"                  → US 가 중간에도 나옴 → 서로 다른 단어   ✓
  *   "May is warm. I may go."     → may 로 합쳐짐 (오병합 — §한계 참조)
@@ -30,7 +34,7 @@ import { normalizeLemma } from './tokenizer'
  *
  * 규칙을 바꿀 때마다 올린다 (PLAN.md — 표기 규칙 변경 시).
  */
-export const LEMMA_VERSION = 3
+export const LEMMA_VERSION = 4
 
 export type SurfaceUsage = {
   surface: string

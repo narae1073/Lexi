@@ -6,11 +6,6 @@
  * 세어진다 — 배우는 사람에게 둘은 같은 말이다.
  */
 
-const FR = `J'aime d'été et l'eau.
-D'abord, d'Artagnan est arrivé.
-Le chat dort et n'est paspressé.
-L'été est chaud cette année.`
-
 export async function run(ctx) {
   await ctx.enrollLanguage('French')
 

@@ -15,6 +15,18 @@ const WORD_BODY_RE = /[\p{L}\p{M}\p{N}]/u
 /** 어절을 이어붙이는 아포스트로피 — don't, it's 처럼 언제나 한 단어다. */
 const APOSTROPHES = new Set(["'", '’', 'ʼ'])
 
+/**
+ * 이 문자 앞에서 새 문장자�� 대문자를 시작한다.
+ *
+ * 문장 안에서도 대문자를 강제하는 문자들이 있다 — 위치에서 온 대문자를 여기서 걸러 낸다.
+ */
+const CAPITALISES_AFTER = new Set([
+  ':', ';', '!', '?',
+  '(', '[', '{',
+  '«', '“', '‘', '"', "'",
+  '—', '–', '―',
+])
+
 /** 하이픈·대시 계열 */
 const HYPHENS = new Set(['-', '‐', '‑', '‒', '–', '—', '―'])
 
@@ -59,12 +71,26 @@ export function computeSentences(text: string): Sentence[] {
 }
 
 /**
- * 이 단어가 문장의 첫 단어인가.
+ * 이 위치의 대문자는 **위치에서 온 것인가.**
+ *
+ * 문장 첫머리의 대문자와 고유명사의 대문자는 눈으로 보면 같다. 구별하는 유일한
+ * 무료 신호는 '같은 문서에 소문자 표기가 있는가' 다 — 그래서 '위치에서 온 대문자' 와
+ * '문장 한가운데의 대문자' 를 나눌 수밖에 없다.
+ *
+ * 그런데 '문장 중간' 이라고 하면 사실이 좀 다르다. 문장 안에서도 대문자를 강제하는
+ * 문자가 있다 — 콜론, 세미콜론, 여는 괄호, 여는 따옴표, 대시.
+ *   Voici : Pour Understand.
+ *   « Pour Understand » dit-il.
+ * 이 `Pour` 는 첫 단어도 아니 고유명사도 아니다. 위치에서 온 대문자다.
+ * 이걸 '문장 중간' 으로 세면 `Pour` 와 `pour` 가 갈라지고, 같은 말이 두 단어로 세어진다.
+ *
+ * 그래서 뒤로 거슬러 올라가 **대문자를 유발하는 문자** 를 찾는다. 그게 없으면 문장
+ * 한가운데서 대문자 — 그것은 고유명사의 유일한 증거로 남긴다 (US, Paris, Apple).
  *
  * 문장 경계는 앞쪽 공백을 포함하므로 (예: " The us in …") 단순히 시작 오프셋을
  * 비교하면 안 된다 — 그 사이에 공백만 있는지 확인해야 한다.
  */
-export function isSentenceInitial(
+export function isCapitalisedPosition(
   text: string,
   sentences: Sentence[],
   wordStart: number,
@@ -72,8 +98,17 @@ export function isSentenceInitial(
 ): boolean {
   const sentence = sentences.find((s) => s.index === sentenceIndex)
   if (!sentence) return false
-  if (wordStart <= sentence.start) return wordStart === sentence.start
-  return text.slice(sentence.start, wordStart).trim().length === 0
+
+  // 뒤로 공백을 건너뛴다
+  let at = wordStart - 1
+  while (at >= sentence.start && /\s/u.test(text[at] ?? '')) at--
+
+  if (at < sentence.start) return true
+
+  // 문장 경계는 앞쪽 공백을 포함하므로, 여기까지 왔다면 첫 단어다
+  if (at + 1 <= sentence.start) return true
+
+  return CAPITALISES_AFTER.has(text[at])
 }
 
 function findSentenceEnd(text: string, from: number): number {
