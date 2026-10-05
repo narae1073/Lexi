@@ -1,7 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { STORES, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds } from '../storage/purged'
+import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
 import type { Document, WordStatus } from '../../types'
@@ -10,8 +12,6 @@ import { mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } fro
 import {
   documentFromRow,
   documentToRow,
-  groupOccurrences,
-  occurrenceFromRows,
   occurrenceToRows,
   wordStateFromRow,
   wordStateToRow,
@@ -205,22 +205,26 @@ export async function syncOnce({
   const liveOccurrences = remote.occurrences.filter((o) => !purged.includes(o.document_id))
   const remoteDocs = liveRemote
 
-  // 등장 기록은 다른 기기에서 만든 문서가 섞이므로, 문서별로 붙인다
-  const localDocs = new Map(local.documents.map((d) => [d.id, d]))
-  const pulledOccurrences: WordOccurrence[] = []
-  for (const group of groupOccurrences(liveOccurrences)) {
-    const doc =
-      remoteDocs.find((d) => d.id === group.documentId) ?? localDocs.get(group.documentId)
-    // 문서를 모르면 예문을 붙일 곳이 없다 — 본문이 없는 기록은 쓸 필요가 없다
-    if (doc) pulledOccurrences.push(occurrenceFromRows(group.rows, doc))
-  }
+  /**
+   * 이 기기에서 **현재 규칙으로 다시 계산한** 문서.
+   *
+   * 서버에 옛 표기 규칙이 만든 기록이 남아 있고, 동기화는 그것을 매번 다시 넣어준다.
+   * 새 규칙에서 나오지 않는 키는 같은 키로 덮어써지지 않으므로 살아남는다 — 목록과
+   * 본문이 서로 다른 진도를 보인다 (mergeOccurrences.ts).
+   */
+  const meta = await idbGetAll<{ documentId: string; lemmaVersion: number }>(STORES.documentMeta)
+    .catch(() => [] as { documentId: string; lemmaVersion: number }[])
+  const recomputed = new Set(
+    meta.filter((m) => m.lemmaVersion === LEMMA_VERSION).map((m) => m.documentId),
+  )
 
-  // 이 기기에만 있는 등장 기록 (문서를 아직 안 열어 기록이 덜 된 경우)
-  const pulledIds = new Set(pulledOccurrences.map((o) => `${o.documentId}::${o.lemma}`))
-  const mergedOccurrences = [
-    ...pulledOccurrences,
-    ...local.occurrences.filter((o) => !pulledIds.has(`${o.documentId}::${o.lemma}`)),
-  ]
+  const occurrences = mergeOccurrences(
+    local.occurrences,
+    liveOccurrences,
+    recomputed,
+    [...local.documents, ...remoteDocs],
+    new Set(purged),
+  )
 
   const mergedDocuments = mergeDocuments(local.documents, remoteDocs)
     // 로컬에 남은 지운 문서가 있어도 서버로 다시 올리지 않는다
@@ -228,7 +232,7 @@ export async function syncOnce({
 
   const mergedWords = words.merged.map((record) => withStatus(record))
 
-  await writeLocal(mergedDocuments, mergedWords, mergedOccurrences)
+  await writeLocal(mergedDocuments, mergedWords, occurrences)
 
   /**
    * 바뀐 문서만 보낸다.

@@ -227,16 +227,22 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       })
     }
 
-    // 계산에 사용한 규칙을 기억해 둔다 — 다음에 이 규칙이 바뀌면 다시 계산된다
-    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
-      () => {},
-    )
-
     const recordedAt = Date.now()
     const records = [...byLemma.values()]
       .map((record) => ({ ...record, recordedAt }))
       .sort(sortByPosition)
     await replaceOccurrences(doc.id, records)
+
+    /**
+     * 계산을 기억한다 — 다음에 이 규칙이 바뀌면 다시 계산된다.
+     *
+     * **기억은 저장을 마친 뒤에 남긴다.** meta 는 '이 문서는 이 규칙으로 계산되어
+     * 있다' 는 약속이라서, 약속을 먼저 남기고 저장이 실패하면 그 문서는 영영 '최신' 으로만
+     * 보인다 — 다시 계산되지 않는다. 순서가 규칙의 일부다.
+     */
+    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
+      () => {},
+    )
 
     set((s) => {
       const byLanguage = mergeByLanguage(s.byLanguage, doc.languageCode, doc.id, records)
