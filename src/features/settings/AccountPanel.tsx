@@ -139,11 +139,16 @@ export function AccountPanel() {
           </div>
         </dl>
         {/*
-          진도가 있는데 '보냈다' 가 0 이면 그 기기의 변경이 서버에 가지 않은 것이다.
-          그 상태를 숨기지 않고 그대로 보여 준다.
+          **아직 못 보낸 변경이 있는지** 로 말한다.
+
+          예전엔 '보낸 진도가 0' 이면 경고를 냈다. 그런데 그건 **대부분 정상 상태**다 —
+          새로 보낼 것이 없는 동기화마다 울린다. 잘못 울린 경고는 경고가 아니게 된다.
+          판단할 것은 '보낸 것' 이 아니라 '아직 안 나간 것' 이다.
         */}
-        {report !== null && report.pushed === 0 && (
-          <p className="text-status-unsure mt-2 text-xs">{t('account.nothingSent')}</p>
+        {pending.dirty && pending.count > 0 && (
+          <p className="text-status-unsure mt-2 text-xs">
+            {t('account.notSentYet', { count: pending.count })}
+          </p>
         )}
 
         {syncError && <p className="text-status-unknown mt-2 text-xs break-words">{syncError}</p>}

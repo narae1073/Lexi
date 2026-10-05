@@ -19,7 +19,12 @@ type WordStatesStore = {
     status: WordStatus,
     surface?: string,
   ) => void
-  loadLanguage: (languageCode: LanguageCode) => Promise<void>
+  /**
+   * 이 언어의 상태를 읽는다.
+   *
+   * `force` 는 **동기화가 방금 써 넣은 것을 화면에 반영할 때** 쓴다.
+   */
+  loadLanguage: (languageCode: LanguageCode, options?: { force?: boolean }) => Promise<void>
   getStatus: (languageCode: LanguageCode, lemma: string) => WordStatus | undefined
 }
 
@@ -62,8 +67,17 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
    * 전부 "미표시" 로 보이던 문제가 정확히 그것이다. 앱 시작 시 배운 언어 전체에
    * 대해 호출되므로 문서를 따로 열 필요가 없다.
    */
-  loadLanguage: async (languageCode) => {
-    if (get().loaded[languageCode]) return
+  /**
+   * 앱 시작 시 배운 언어 전체에 대해 호출되므로 문서를 따로 열 필요가 없다.
+   *
+   * 그런데 **한 번만 읽는다.** 동기화는 이 시점 뒤에 병합 결과를 IndexedDB 에 써 넣는데,
+   * 여기서는 다시 읽지 않는다. 그래서 다른 기기에서 받은 진도가 서버와 IndexedDB 에는
+   * 있는데 화면에는 없다 — 새로고침을 한 번 더 해야 보였던 이유가 이것이다.
+   *
+   * 그래서 동기화 뒤에는 `force` 로 한 번 더 읽는다.
+   */
+  loadLanguage: async (languageCode, options) => {
+    if (!options?.force && get().loaded[languageCode]) return
 
     const rows = await idbGetAllByIndex<WordState & { surface?: string }>(
       STORES.wordStates,

@@ -142,8 +142,14 @@ async function run(set: Setter) {
     const documents = useDocumentsStore.getState()
     await documents.load()
 
+    /**
+     * 방금 써 넣은 병합 결과를 화면에 반영한다.
+     *
+     * force 없이 부르면 이미 읽은 언어라 아무것도 하지 않는다 — 그러면 다른 기기에서 온
+     * 진도가 IndexedDB 에만 있고 화면에 없다. 사용자가 새로고침을 한 번 더 해야 보게 된다.
+     */
     const wordStates = useWordStatesStore.getState()
-    await Promise.all(languages.map((code) => wordStates.loadLanguage(code)))
+    await Promise.all(languages.map((code) => wordStates.loadLanguage(code, { force: true })))
 
     const occurrences = useOccurrencesStore.getState()
     await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
