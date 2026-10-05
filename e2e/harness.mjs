@@ -202,16 +202,33 @@ class Ctx {
   }
 
   /** 배울 언어를 골라 온보딩을 통과한다 (label 은 languages.ts 의 label) */
+  /**
+   * 언어를 골라 온보딩을 끝낸다.
+   *
+   * 언어를 하나 골라도 넘어가지 않는다 — 여러 개를 고를 수 있어야 하기 때문이다.
+   * 그래서 '마치는' 버튼을 눌러야 한다. 고르는 동안에도 저장은 되므로 여기서
+   * 넘어가지 않으면 첫 화면에서 계단식으로 튕겨 나간다.
+   */
   async enrollLanguage(label) {
     await this.waitForOnboarding(label)
     const picked = await this.#eval(`(() => {
-      const b = [...document.querySelectorAll('button')].find(x =>
-        x.className.includes('rounded-xl') && x.innerText.includes(${JSON.stringify(label)}));
+      const b = [...document.querySelectorAll('ul li button')].find(x =>
+        x.innerText.includes(${JSON.stringify(label)}));
       if (!b) return false;
       b.click();
       return true;
     })()`)
     if (!picked) throw new Error(`배울 언어 카드를 찾지 못함: ${label}`)
+    await sleep(300)
+
+    const done = await this.#eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x =>
+        /Start with these|시작하기/.test(x.innerText));
+      if (!b || b.disabled) return false;
+      b.click();
+      return true;
+    })()`)
+    if (!done) throw new Error('온보딩을 마치는 버튼을 찾지 못함')
     await sleep(600)
   }
 
@@ -220,8 +237,8 @@ class Ctx {
     await this.clickSelector('a[href="/languages"]')
     await sleep(500)
     const picked = await this.#eval(`(() => {
-      const b = [...document.querySelectorAll('button')].find(x =>
-        x.className.includes('rounded-xl') && x.innerText.includes(${JSON.stringify(label)}));
+      const b = [...document.querySelectorAll('ul li button')].find(x =>
+        x.innerText.includes(${JSON.stringify(label)}));
       if (!b) return false;
       b.click();
       return true;

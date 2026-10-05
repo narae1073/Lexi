@@ -123,7 +123,13 @@ export default function App() {
     }
   }, [enrolled, loadOccurrences, loadWordStates])
 
-  // 온보딩 완료 전에는 언어 선택 화면으로 보낸다 (plan.txt 5줄)
+  /**
+   * 온보딩 완료 전에는 언어 선택 화면을 보여 준다 (plan.txt 5줄).
+   *
+   * 여기서 다음 화면으로 넘어가지 않는다 — 언어를 몇 개 고르든 마치는 버튼을 눌러야
+   * 끝난다. 고르는 중에도 저장은 되므로 하나를 눌렀다 계단식으로 튕겨 나가면
+   * "한 개밖에 못 고르나" 로 보인다.
+   */
   if (!ready) return <LanguagePicker />
 
   return (

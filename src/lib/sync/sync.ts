@@ -22,6 +22,8 @@ export type SyncReport = {
   pushed: number
   pulled: number
   documents: number
+  /** 병합된 배운 언어 — 호출한 쪽이 이 기기에 채택해야 한다 */
+  languages: string[]
 }
 
 /**
@@ -244,6 +246,7 @@ export async function syncOnce({
     pushed: words.pushOnly.length,
     pulled: words.pullOnly.length,
     documents: mergedDocuments.length,
+    languages,
   }
 }
 

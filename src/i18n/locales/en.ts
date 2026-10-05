@@ -12,7 +12,13 @@ export const en = {
     wordbook: 'Wordbook',
   },
 
+  langs: {
+    mine: 'Languages I study',
+    others: 'Not studying',
+    all: 'You are studying every supported language.',
+  },
   onboarding: {
+    doneCount: 'Start with these ({count})',
     title: 'Choose what you want to learn',
     hint: 'Pick the languages you are studying. You can add more later.',
     selectAtLeastOne: 'Choose at least one language',

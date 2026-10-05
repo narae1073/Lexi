@@ -11,7 +11,13 @@ export const ko: Dictionary = {
     wordbook: '단어장',
   },
 
+  langs: {
+    mine: '내가 배우는 언어',
+    others: '배우지 않는 언어',
+    all: '모든 언어를 배우고 있습니다.',
+  },
   onboarding: {
+    doneCount: '{count}개로 시작하기',
     title: '배울 언어 선택',
     hint: '공부하고 있는 언어를 고르세요. 나중에 추가할 수 있습니다.',
     selectAtLeastOne: '언어를 1개 이상 고르세요',

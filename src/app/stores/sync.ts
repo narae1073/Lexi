@@ -11,6 +11,7 @@ import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } f
 import { onLocalWrite } from '../../lib/storage/localDb'
 import { STORES } from '../../lib/storage/localDb'
 import { supabase } from '../../lib/supabase/client'
+import type { LanguageCode } from '../../types'
 import { SyncUnavailable, pushOccurrences, readLocal, syncOnce } from '../../lib/sync/sync'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
@@ -107,7 +108,20 @@ async function run(set: Setter) {
 
   try {
     const languages = useLanguagesStore.getState().enrolled
-    await syncOnce({ userId: user.id, languages })
+    const report = await syncOnce({ userId: user.id, languages })
+
+    /**
+     * 계정의 언어를 그대로 채택한다.
+     *
+     * 배운 언어는 계정에 묶여 있다 — 폰에서 프랑스어를 추가하고 노트북에서 보면 거기에도
+     * 있어야 한다. 병합은 합집합이므로 이 기기에서 고르지 않은 언어도 함께 온다.
+     *
+     * 새 기기에서 로그인하면 이 순간 온보딩도 끝난 것으로 본다 — 같은 선택을 다시
+     * 하지 않게 하는 것이 그 이유다.
+     */
+    if (report.languages.length > 0) {
+      useLanguagesStore.getState().adopt(report.languages as LanguageCode[])
+    }
 
     // 받은 내용을 화면 스토어에 불어넣는다 — 안 하면 기록은 있어도 안 보인다
     const documents = useDocumentsStore.getState()

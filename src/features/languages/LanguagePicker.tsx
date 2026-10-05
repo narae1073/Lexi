@@ -6,12 +6,26 @@ import { AppLanguageSwitcher } from '../settings/AppLanguageSwitcher'
 /**
  * 배울 언어를 고르는 화면 (plan.txt 5줄).
  * 사전이 지원하는 전체 언어를 넣지 않고 화이트리스트만 노출한다.
+ *
+ * **여러 개를 한 번에 고른다.** 한 개를 고르는 순간 다음 화면으로 넘어가면 고르는
+ * 중에도 저장이 되므로 — 첫 화면에서 하나를 눌렀다 계단식으로 튕겨 나가게 된다.
+ * 그래서 마칠 때를 누른다.
+ *
+ * **내가 배우는 언어 / 배우지 않는 언어** 로 나눈다. 지금 무엇을 배우는지 한눈에
+ * 들어야 어떤 것을 더 배울지 고를 수 있다 — 한 목록에 섞이면 지금 하는 것과 새로
+ * 고르는 것이 구분되지 않는다.
  */
 export function LanguagePicker({ onDone }: { onDone?: () => void }) {
   const t = useTranslation()
-  const languageName = useLanguageName()
   const enrolled = useLanguagesStore((s) => s.enrolled)
-  const toggle = useLanguagesStore((s) => s.toggle)
+  const ready = useLanguagesStore((s) => s.ready)
+  const finish = useLanguagesStore((s) => s.finish)
+
+  const mine = SUPPORTED_LANGUAGES.filter((lang) => enrolled.includes(lang.code))
+  const others = SUPPORTED_LANGUAGES.filter((lang) => !enrolled.includes(lang.code))
+
+  /** 첫 화면에서는 마치는 버튼이 항상 있어야 한다 — 어디서 끝낼지 있어야 한다 */
+  const showDone = Boolean(onDone) || !ready
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -23,41 +37,77 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
         <AppLanguageSwitcher />
       </div>
 
-      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {SUPPORTED_LANGUAGES.map((lang) => {
-          const active = enrolled.includes(lang.code)
-          return (
-            <li key={lang.code}>
-              <button
-                type="button"
-                onClick={() => toggle(lang.code)}
-                aria-pressed={active}
-                className={`flex w-full flex-col gap-0.5 rounded-xl border px-4 py-3 text-left transition ${
-                  active
-                    ? 'border-accent bg-accent text-accent-ink'
-                    : 'border-line bg-surface hover:border-line'
-                }`}
-              >
-                <span className="text-sm font-medium">{languageName(lang.code)}</span>
-                <span className={`text-xs ${active ? 'text-ink-muted' : 'text-ink-muted'}`}>
-                  {lang.nativeLabel}
-                </span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
+      {/* 지금 배우는 언어 — 비어 있으면 이 섹션 자체가 없다. 빈 제목을 남기면
+          '아무것도 없다' 와 '아직 안 골랐다' 가 구분되지 않는다 */}
+      {mine.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-ink-muted mb-2 text-xs font-medium">{t('langs.mine')}</h2>
+          <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {mine.map((lang) => (
+              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} active />
+            ))}
+          </ul>
+        </section>
+      )}
 
-      {onDone && (
+      <section>
+        {mine.length > 0 && (
+          <h2 className="text-ink-muted mb-2 text-xs font-medium">{t('langs.others')}</h2>
+        )}
+        {others.length === 0 ? (
+          <p className="text-ink-muted text-sm">{t('langs.all')}</p>
+        ) : (
+          <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {others.map((lang) => (
+              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} active={false} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {showDone && (
         <button
           type="button"
-          onClick={onDone}
+          onClick={() => {
+            if (finish()) onDone?.()
+          }}
           disabled={enrolled.length === 0}
           className="mt-6 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-ink disabled:opacity-30"
         >
-          {enrolled.length === 0 ? t('onboarding.selectAtLeastOne') : t('onboarding.done')}
+          {enrolled.length === 0 ? t('onboarding.selectAtLeastOne') : t('onboarding.doneCount', { count: enrolled.length })}
         </button>
       )}
     </section>
+  )
+}
+
+function LanguageButton({
+  code,
+  label,
+  active,
+}: {
+  code: (typeof SUPPORTED_LANGUAGES)[number]['code']
+  label: string
+  active: boolean
+}) {
+  const languageName = useLanguageName()
+  const toggle = useLanguagesStore((s) => s.toggle)
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => toggle(code)}
+        aria-pressed={active}
+        className={`flex w-full flex-col gap-0.5 rounded-xl border px-4 py-3 text-left transition ${
+          active
+            ? 'border-accent bg-accent text-accent-ink'
+            : 'border-line bg-surface hover:border-line'
+        }`}
+      >
+        <span className="text-sm font-medium">{languageName(code)}</span>
+        <span className="text-ink-muted text-xs">{label}</span>
+      </button>
+    </li>
   )
 }
