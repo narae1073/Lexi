@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { create } from 'zustand'
 
-import { useAuthStore, onAuthChanged } from './auth'
+import { useAuthStore } from './auth'
 import { useDocumentsStore } from './documents'
 import { useLanguagesStore } from './languages'
 import { useOccurrencesStore } from './occurrences'
@@ -230,11 +230,15 @@ export function useCloudSync() {
     }
   }, [user, syncQuietly])
 
-  useEffect(() => onAuthChanged(() => {
-    // 로그인·로그아웃 어느 쪽이든 곧바로 반영한다
-    void syncQuietly()
-  }), [syncQuietly])
-
+  /**
+   * 로그인·로그아웃을 모두 여기서 받는다.
+   *
+   * 예전에는 `onAuthStateChange` 안에서 직접 돌렸다. 두 가지 문제가 있었다 —
+   * 세션 이벤트를 구독하는 안에서 supabase 를 다시 부르는 것은 교착 위험이 있고,
+   * 그때는 스토어의 `user` 가 아직 null 이라 첫 동기화가 아무것도 하지 못했다.
+   *
+   * 이제 auth 스토어가 세션을 따라가므로 `user` 가 바뀌는 것만 보면 된다.
+   */
   useEffect(() => {
     if (!user) return
     void syncQuietly()

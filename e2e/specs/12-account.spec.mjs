@@ -38,7 +38,7 @@ export async function run(ctx) {
     linkAlternative: [...panel.querySelectorAll('button')].some(b => /email link instead|링크로 받기/.test(b.innerText)),
     warning: (panel.innerText.match(/default browser|기본 브라우저/) ?? []).length > 0,
     /** 자릿수는 서버 설정이다 — 화면이 특정 자릿수를 말하면 안 된다 */
-    digitClaim: panel.innerText.match(/\d\s?-?\s?(?:digits?|자리)/)?.[0] ?? null,
+    digitClaim: panel.innerText.match(/[0-9] ?-? ?(?:digits?|자리)/)?.[0] ?? null,
     google: [...panel.querySelectorAll('button')].some(b => b.innerText.includes('Continue with Google')),
     hint: panel.innerText.includes('Without an account everything stays on this device.'),
   }`)

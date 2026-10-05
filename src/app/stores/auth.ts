@@ -133,7 +133,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (token.length < CODE_MIN_DIGITS) return false
     set({ error: null })
 
-    const { error } = await supabase.auth.verifyOtp({
+    const { data, error } = await supabase.auth.verifyOtp({
       email,
       token,
       type: 'email',
@@ -143,7 +143,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ error: error.message })
       return false
     }
-    set({ code: '', codeSent: false })
+
+    /**
+     * 세션을 스토어에 바로 반영한다.
+     *
+     * 세션 이벤트(subscription)만 믿으면 화면이 한 박자 뒤따른다. 사용자는 버튼을
+     * 눌렀는데 아무 변화가 없어 '안 되는가' 로 오해하고 새로고침한다 — 실제로는
+     * 성공했는데 화면이 그 사실을 알려주지 않은 셈이다.
+     */
+    set({ user: data.user ?? null, code: '', codeSent: false, error: null })
     return true
   },
 
@@ -193,3 +201,34 @@ export function onAuthChanged(handler: (user: User | null) => void): () => void 
   })
   return () => data.subscription.unsubscribe()
 }
+
+/**
+ * 세션 이벤트가 스토어에 무엇을 해야 하는지 — 순수 판단으로 꺼내 둔다.
+ *
+ * 같은 사용자면 아무것도 하지 않는다. 세션은 토큰이 갱신될 때마다 불리므로 같은 사람에
+ * 대해 상태를 새로 만들면 그것만으로 화면이 다시 그려진다 — 로그인 화면이 떠 있는
+ * 동안에는 오히려 곤란하다.
+ */
+export function applySessionUser<T extends { user: User | null }>(
+  state: T,
+  next: User | null,
+): Pick<T, 'user'> | T {
+  if (state.user?.id === next?.id) return state
+  return { ...state, user: next }
+}
+
+/**
+ * 세션이 바뀌면 스토어의 user 를 갱신한다.
+ *
+ * **회귀**: 이 구독이 있는 곳은 동기화뿐이었고, 거기서도 `user` 를 읽기만 했다.
+ * 세션이 갱신되어도 스토어의 `user` 는 null 로 남았다 — 로그인 화면이 그대로였고,
+ * 로그인 직후 첫 동기화가 `user` 가 null 이라 조용히 돌아갔다. 새로고침해야 '성공했구나'
+ * 를 알게 되는 이유가 이것이었다.
+ *
+ * 앱이 처음부터 끝까지 한 화면이고 supabase 클라이언트는 앱과 함께 살므로,
+ * 모듈 한 번만 구독하면 된다. 화면 어디서 로그인하든(번호·Google·링크) 여기와 상관없이
+ * `user` 가 따라온다.
+ */
+onAuthChanged((user) => {
+  useAuthStore.setState((s) => applySessionUser(s, user))
+})
