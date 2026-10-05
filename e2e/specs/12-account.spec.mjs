@@ -33,13 +33,16 @@ export async function run(ctx) {
   await openSettings(ctx)
   const state = await inAccount(ctx, `return {
     email: !!panel.querySelector('input[type="email"]'),
-    send: [...panel.querySelectorAll('button')].some(b => b.innerText.trim() === 'Send link'),
+    send: [...panel.querySelectorAll('button')].some(b => /email link instead|링크로 받기/.test(b.innerText.trim())),
+    code: [...panel.querySelectorAll('button')].some(b => /Get a code|번호 받기/.test(b.innerText)),
+    linkAlternative: [...panel.querySelectorAll('button')].some(b => /email link instead|링크로 받기/.test(b.innerText)),
+    warning: (panel.innerText.match(/default browser|기본 브라우저/) ?? []).length > 0,
     google: [...panel.querySelectorAll('button')].some(b => b.innerText.includes('Continue with Google')),
     hint: panel.innerText.includes('Without an account everything stays on this device.'),
   }`)
   ctx.check('계정 영역이 보인다', state !== null, 'Account & sync')
   ctx.check('메일 입력칸이 있다', state?.email === true, `input[type=email] ${state?.email}`)
-  ctx.check('링크 받기 버튼이 있다', state?.send === true, `Send link ${state?.send}`)
+  ctx.check('링크 방식이 보조로 남아 있다', state?.send === true, `링크 ${state?.send}`)
   // Google provider 는 아직 안 켰으므로 버튼을 숨긴다. 켜기 전 배포하면
   // 누가 눌렀을 때 실패한다 — 설정이 안 된 기능을 미리 보여주지 않는다.
   ctx.check('Google 로그인 버튼은 설정 전이라 숨겨져 있다', state?.google === false, `Google ${state?.google}`)
@@ -47,7 +50,7 @@ export async function run(ctx) {
 
   const disabledWhenEmpty = await inAccount(
     ctx,
-    `return [...panel.querySelectorAll('button')].find(b => b.innerText.trim() === 'Send link').disabled`,
+    `return [...panel.querySelectorAll('button')].find(b => /email link instead|링크로 받기/.test(b.innerText.trim())).disabled`,
   )
   ctx.check('빈 주소로는 보낼 수 없다', disabledWhenEmpty === true, `disabled ${disabledWhenEmpty}`)
 
@@ -65,7 +68,7 @@ export async function run(ctx) {
 
   await ctx.page.evaluate(`(() => {
     const panel = [...document.querySelectorAll('p')].find(p => p.innerText.trim() === 'Account & sync').parentElement;
-    [...panel.querySelectorAll('button')].find(b => b.innerText.trim() === 'Send link').click();
+    [...panel.querySelectorAll('button')].find(b => /email link instead|링크로 받기/.test(b.innerText.trim())).click();
     return true;
   })()`)
   // 성공하면 "메일 확인" 안내, 실패하면 오류 문장이 떠야 한다.

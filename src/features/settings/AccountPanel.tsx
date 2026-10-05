@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { authErrorKeyOrMessage } from '../../lib/authError'
 import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
-import { useAuthStore } from '../../app/stores/auth'
+import { CODE_LENGTH, useAuthStore } from '../../app/stores/auth'
 import { useSyncStore } from '../../app/stores/sync'
 import { usePendingSummary, useSyncStatus } from '../../app/stores/sync'
 import { useTranslation } from '../../app/stores/settings'
@@ -21,6 +21,11 @@ export function AccountPanel() {
   const linkSent = useAuthStore((s) => s.linkSent)
   const authError = useAuthStore((s) => s.error)
   const sendMagicLink = useAuthStore((s) => s.sendMagicLink)
+  const sendEmailCode = useAuthStore((s) => s.sendEmailCode)
+  const verifyEmailCode = useAuthStore((s) => s.verifyEmailCode)
+  const codeSent = useAuthStore((s) => s.codeSent)
+  const code = useAuthStore((s) => s.code)
+  const setCode = useAuthStore((s) => s.setCode)
   const signInWithGoogle = useAuthStore((s) => s.signInWithGoogle)
   const signOut = useAuthStore((s) => s.signOut)
   const clearError = useAuthStore((s) => s.clearError)
@@ -122,6 +127,55 @@ export function AccountPanel() {
       <p className="text-sm font-medium">{t('account.title')}</p>
       <p className="text-ink-muted mt-1 text-xs">{t('account.hint')}</p>
 
+      {/*
+        인증번호 방식이 주된 길이다. 링크를 열면 OS 가 기본 브라우저로 넘겨 버리고,
+        이 앱은 브라우저마다 세션이 따로라 원래 쓰던 브라우저로 돌아오지 않는다.
+        번호는 주소를 한 번도 열지 않으니 어디서 시작했든 그 브라우저에서 끝난다.
+      */}
+      {codeSent ? (
+        <div className="mt-3">
+          <p className="text-ink-muted mb-1.5 text-xs">{t('account.codeSent')}</p>
+          <div className="flex gap-2">
+            <input
+              value={code}
+              onChange={(event) => {
+                const next = event.target.value.replace(/\D/g, '').slice(0, CODE_LENGTH)
+                setCode(next)
+                if (authError) clearError()
+                // 6자리가 모이면 곧바로 확인한다 — 확인 버튼을 한 번 더 누를 이유가 없다
+                if (next.length === CODE_LENGTH && email.trim() !== '') {
+                  setBusy(true)
+                  void verifyEmailCode(email.trim()).finally(() => setBusy(false))
+                }
+              }}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder={t('account.codePlaceholder')}
+              aria-label={t('account.codePlaceholder')}
+              className="border-line focus:border-accent min-w-0 flex-1 rounded-lg border px-3 py-1.5 text-sm tracking-widest tabular-nums outline-none"
+            />
+            <button
+              type="button"
+              disabled={busy || code.length !== CODE_LENGTH}
+              onClick={() => {
+                setBusy(true)
+                void verifyEmailCode(email.trim()).finally(() => setBusy(false))
+              }}
+              className="rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm text-accent-ink disabled:opacity-40"
+            >
+              {t('account.codeVerify')}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => clearError()}
+            className="text-ink-muted hover:text-ink mt-2 text-[10px] underline"
+          >
+            {t('account.useLinkInstead')}
+          </button>
+        </div>
+      ) : (
+        <>
       <div className="mt-3 flex gap-2">
         <input
           type="email"
@@ -139,13 +193,30 @@ export function AccountPanel() {
           disabled={busy || email.trim() === ''}
           onClick={() => {
             setBusy(true)
-            void sendMagicLink(email.trim()).finally(() => setBusy(false))
+            void sendEmailCode(email.trim()).finally(() => setBusy(false))
           }}
-          className="rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm text-accent-ink disabled:opacity-40"
+          className="shrink-0 rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm text-accent-ink disabled:opacity-40"
         >
-          {t('account.sendLink')}
+          {t('account.sendCode')}
         </button>
       </div>
+
+      {/* 링크가 필요한 경우를 위한 보조 길 — 기본 브라우저에서 열면 그 브라우저에만
+          로그인되므로 그대로 두고 이유를 밝힌다 */}
+      <button
+        type="button"
+        disabled={busy || email.trim() === ''}
+        onClick={() => {
+          setBusy(true)
+          void sendMagicLink(email.trim()).finally(() => setBusy(false))
+        }}
+        className="text-ink-muted hover:text-ink mt-2 text-[10px] underline disabled:opacity-40"
+      >
+        {t('account.sendLinkInstead')}
+      </button>
+      <p className="text-ink-muted mt-1 text-[10px]">{t('account.linkWarning')}</p>
+        </>
+      )}
 
       {/*
         Google provider 를 Supabase 콘솔에서 켜기 전에 배포하면 누가 눌렀을 때

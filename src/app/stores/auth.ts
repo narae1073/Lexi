@@ -3,6 +3,9 @@ import { create } from 'zustand'
 import { supabase } from '../../lib/supabase/client'
 import type { User } from '@supabase/supabase-js'
 
+/** 인증번호 길이 — Supabase 가 보내는 번호는 6자리다 */
+export const CODE_LENGTH = 6
+
 export type AuthState = {
   /** 로그인한 사용자. 없으면 로컬 전용으로 동작한다 */
   user: User | null
@@ -10,10 +13,17 @@ export type AuthState = {
   restoring: boolean
   /** 로그인 링크를 보냈는지 (매직링크) */
   linkSent: boolean
+  /** 인증번호를 보냈는지 */
+  codeSent: boolean
+  /** 입력을 받은 인증번호 */
+  code: string
   /** 사람이 읽을 수 있는 오류. 로그인 실패를 조용히 삼키면 안 된다 */
   error: string | null
   restore: () => Promise<void>
   sendMagicLink: (email: string) => Promise<boolean>
+  sendEmailCode: (email: string) => Promise<boolean>
+  verifyEmailCode: (email: string) => Promise<boolean>
+  setCode: (code: string) => void
   signInWithGoogle: () => Promise<boolean>
   signOut: () => Promise<void>
   clearError: () => void
@@ -25,10 +35,12 @@ export type AuthState = {
  * 이 앱의 약속은 "텍스트를 넣어 배우는 것" 이고, 계정은 그 학습을 기기 사이에서
  * 이어가는 수단일 뿐이다. 로그인 화면에서 막히면 사용자는 앱을 쓸 수 없게 된다.
  */
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   restoring: true,
   linkSent: false,
+  codeSent: false,
+  code: '',
   error: null,
 
   /** 세션 변화는 밖(onAuthChanged) 에서 구독한다 — 여기서는 초기 확인만 한다 */
@@ -64,6 +76,64 @@ export const useAuthStore = create<AuthState>((set) => ({
     return true
   },
 
+  /**
+   * 인증번호�� 보낸다 — 링크를 열지 않는다.
+   *
+   * **왜 이게 필요한가**
+   *
+   * 메일 앱에서 링크를 누르면 그 링크를 처리할 앱을 OS가 고른다. 기본 브라우저가
+   * 파이어폭스면 파이어폭스로 열린다. 웹에서 그 선택을 막을 방법은 없다.
+   *
+   * 더 중요한 것은 **세션이 브라우저마다 다르다** 는 점이다. 이 앱은 세션을
+   * localStorage 에 두므로, 링크를 연 브라우저에서만 로그인된다. 다른 브라우저에서
+   * 로그인했다고 원래 쓰던 브라우저로 넘어오지 않는다.
+   *
+   * 번호를 직접 입력하면 주소를 한 번도 열지 않는다. 어떤 브라우저에서 시작했는지
+   * 상관없이 그 브라우저에서 끝난다.
+   *
+   * 전제: Supabase 의 Magic Link 템플릿에 `{{ .Token }}` 이 들어 있어야 메일이
+   * 링크가 아니라 6자리 번호를 담는다. 템플릿을 고치지 않으면 이 경로는 끝나지
+   * 않는다 (매직 링크가 그대로 발송된다).
+   */
+  sendEmailCode: async (email) => {
+    if (!supabase) return false
+    set({ error: null, codeSent: false, code: '' })
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    })
+
+    if (error) {
+      set({ error: error.message })
+      return false
+    }
+    set({ codeSent: true })
+    return true
+  },
+
+  setCode: (code) => set({ code }),
+
+  verifyEmailCode: async (email) => {
+    if (!supabase) return false
+    const token = get().code.trim()
+    if (token.length !== CODE_LENGTH) return false
+    set({ error: null })
+
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'email',
+    })
+
+    if (error) {
+      set({ error: error.message })
+      return false
+    }
+    set({ code: '', codeSent: false })
+    return true
+  },
+
   signInWithGoogle: async () => {
     if (!supabase) return false
     set({ error: null })
@@ -88,10 +158,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   signOut: async () => {
     if (!supabase) return
     await supabase.auth.signOut()
-    set({ user: null, linkSent: false, error: null })
+    set({ user: null, linkSent: false, codeSent: false, code: '', error: null })
   },
 
-  clearError: () => set({ error: null, linkSent: false }),
+  clearError: () => set({ error: null, linkSent: false, code: '' }),
 }))
 
 /**
