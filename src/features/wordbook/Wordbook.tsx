@@ -16,6 +16,8 @@ import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
 import type { WordbookGroup } from './buildWordbook'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
+import { WordStatusChart } from './WordStatusChart'
+import { countsFromGroups } from './statusChart'
 import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
@@ -122,6 +124,15 @@ export function Wordbook() {
             : t('wordbook.summary', { count: entries.length })}
         </p>
       </header>
+
+      {/*
+        지금 보고 있는 범위의 통계를 먼저 보여 준다. 목록 아래에 두면 아래까지 스크롤한
+        뒤에야 '얼마나 남았지' 를 알게 되는데, 그 판단이 먼저여야 고르기 시작할 수 있다.
+        범위가 좁혀져 있으면 그 범위의 통계가 된다 — 같은 화면에서 다른 말을 하지 않는다.
+      */}
+      <div className="mb-4">
+        <WordStatusChart counts={countsFromGroups(grouped)} />
+      </div>
 
       {enrolled.length > 1 && (
         <div className="mb-4 flex flex-wrap gap-2">

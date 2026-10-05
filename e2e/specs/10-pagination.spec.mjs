@@ -7,8 +7,14 @@ Tell us the truth about that company.
 Our friend read three long books this week.
 Please write a letter to your teacher soon.`
 
-/** 목록 항목(li) 개수 */
-const itemCount = (ctx) => ctx.page.evaluate(`document.querySelectorAll('li').length`)
+/**
+ * 목록 항목 개수.
+ *
+ * 단어 목록만 센다 — 페이지 전체의 `li` 를 세면 차트 설명이나 다른 목록까지 더해진다.
+ * 화면에 목록이 하나뿐이라고 가정하면, 다른 목록이 하나 더 생기는 순간 조용히 틀린다.
+ */
+const LIST = 'ul.divide-y > li'
+const itemCount = (ctx) => ctx.page.evaluate(`document.querySelectorAll('${LIST}').length`)
 
 /** 페이지 번호 버튼이 보이는지 */
 const pageButtonsVisible = (ctx) =>
@@ -85,7 +91,7 @@ export async function run(ctx) {
   const placement = await ctx.page.evaluate(`(() => {
     const select = document.querySelector('select');
     const nav = document.querySelector('nav[aria-label]');
-    const list = document.querySelector('li');
+    const list = document.querySelector('ul.divide-y > li');
     if (!select || !list) return null;
     const sy = select.getBoundingClientRect().bottom;
     return { aboveList: sy <= list.getBoundingClientRect().top, navHasSelect: !!nav?.querySelector('select') };
