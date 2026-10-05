@@ -36,6 +36,7 @@ export function AccountPanel() {
   const pending = usePendingSummary()
   const notice = useSyncStore((s) => s.notice)
   const shown = useSyncStatus(status, notice, pending.count)
+  const report = useSyncStore((s) => s.report)
   const syncNow = useSyncStore((s) => s.syncNow)
 
   const [email, setEmail] = useState('')
@@ -117,7 +118,35 @@ export function AccountPanel() {
           {t('account.syncNow')}
         </button>
 
-        {syncError && <p className="text-status-unknown mt-2 text-xs">{syncError}</p>}
+        {/*
+          마지막 동기화가 무엇을 했는지.
+
+          기기마다 진도가 다를 때 '왜 이 기기만 최신이냐' 를 설명하려면, 이 기기가
+          서버에 무엇을 보내고 무엇을 받았는지 **보여야** 한다. 없으면 추측만 된다.
+        */}
+        <dl className="mt-3 space-y-1 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-ink-muted">{t('account.sent')}</dt>
+            <dd className="text-ink tabular-nums">{report?.pushed ?? '—'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-ink-muted">{t('account.received')}</dt>
+            <dd className="text-ink tabular-nums">{report?.pulled ?? '—'}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-ink-muted">{t('account.documents')}</dt>
+            <dd className="text-ink tabular-nums">{report?.documents ?? '—'}</dd>
+          </div>
+        </dl>
+        {/*
+          진도가 있는데 '보냈다' 가 0 이면 그 기기의 변경이 서버에 가지 않은 것이다.
+          그 상태를 숨기지 않고 그대로 보여 준다.
+        */}
+        {report !== null && report.pushed === 0 && (
+          <p className="text-status-unsure mt-2 text-xs">{t('account.nothingSent')}</p>
+        )}
+
+        {syncError && <p className="text-status-unknown mt-2 text-xs break-words">{syncError}</p>}
       </div>
     )
   }

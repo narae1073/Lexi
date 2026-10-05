@@ -128,6 +128,10 @@ export const ko: Dictionary = {
     signOut: '로그아웃',
     syncNow: '지금 동기화',
     syncStatus: '동기화',
+    sent: '마지막에 보낸 진도',
+    received: '마지막에 받은 진도',
+    documents: '이 기기의 문서',
+    nothingSent: '진도가 있는데 서버로 보내진 것이 0입니다. 이 기기의 변경이 서버에 가지 않았습니다.',
     lastSynced: '마지막 동기화',
     pending: '서버 반영',
     errorRateLimit:

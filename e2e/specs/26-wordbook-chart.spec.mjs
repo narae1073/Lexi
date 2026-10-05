@@ -59,7 +59,7 @@ export async function run(ctx) {
     }));
     const legend = [...bar.parentElement.querySelectorAll('li')].map(li => ({
       label: li.querySelector('.whitespace-nowrap')?.innerText ?? '',
-      text: li.innerText.replace(/\s+/g, ' ').trim(),
+      text: li.innerText.replace(/ +/g, ' ').trim(),
     }));
     const legendHtml = bar.parentElement.querySelector('ul li')?.outerHTML ?? '';
     return { label: bar.getAttribute('aria-label'), segments, legend, legendHtml, barHeight: Math.round(bar.getBoundingClientRect().height) };

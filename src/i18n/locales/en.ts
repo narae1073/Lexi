@@ -129,6 +129,10 @@ export const en = {
     signOut: 'Sign out',
     syncNow: 'Sync now',
     syncStatus: 'Sync',
+    sent: 'Progress last sent',
+    received: 'Progress last received',
+    documents: 'Documents on this device',
+    nothingSent: 'There is progress, but nothing was sent to the server. Changes on this device have not left it.',
     lastSynced: 'Last synced',
     pending: 'On server',
     errorRateLimit:

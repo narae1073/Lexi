@@ -50,9 +50,29 @@ export function withStatus(
   return { ...record, status: record.status ?? fallback }
 }
 
-/** ISO 문자열 비교 — 문자열이 곧 시간순이므로 형식을 바꿀 필요가 없다 */
-function isNewer(a: string, b: string): boolean {
-  return a > b
+/**
+ * 이쪽이 더 늦은가.
+ *
+ * **문자열로 비교하지 않는다.** 이 기기는 `2026-10-04T21:00:00.000Z` 를 쓰고,
+ * 서버(Postgres timestamptz)는 `2026-10-04T21:00:00+00:00` 를 준다 — 같은 시각인데
+ * 문자열은 다르다. 같은 자리에서 `+`(0x2B) 와 `.`(0x2E) 가 갈라지므로 **문자열 비교는
+ * 형식에 따라 어느 쪽이 이기는지가 뒤집힌다.** 형식이 바뀌면 사용자가 직접 고른 상태가
+ * 조용히 사라진다 — 서버가 더 늦다고 잘못 판단되면 그 기기의 변경이推送되지 않는다.
+ *
+ * 시각으로 비교한다. 해석할 수 없으면 **'더 늦지 않다' 고 본다.** 모르는 것을 알고 있다고
+ * 말하지 않기 때문이다. 또 이쪽이 지는 쪽이므로, 해석 실패는 서버에 밀어 넣는 쪽으로
+ * 흐른다 — 기기 안에만 남는 쪽이 아니다.
+ */
+export function isNewer(a: string, b: string): boolean {
+  const left = Date.parse(a)
+  const right = Date.parse(b)
+  if (Number.isNaN(left) || Number.isNaN(right)) return false
+  return left > right
+}
+
+/** ISO 형식이 섞여도 되는 비교를 문서 쪽에도 쓴다 */
+export function newerThan(a: string, b: string): boolean {
+  return isNewer(a, b)
 }
 
 export function mergeWordStates(
@@ -112,7 +132,7 @@ function pickWinner(mine: WordStateRecord, theirs: WordStateRecord): WordStateRe
     lemma: mine.lemma,
     status: statusSource.status,
     seenCount: Math.max(mine.seenCount, theirs.seenCount),
-    firstSeenAt: mine.firstSeenAt <= theirs.firstSeenAt ? mine.firstSeenAt : theirs.firstSeenAt,
+    firstSeenAt: isNewer(mine.firstSeenAt, theirs.firstSeenAt) ? theirs.firstSeenAt : mine.firstSeenAt,
     lastSeenAt: isNewer(mine.lastSeenAt, theirs.lastSeenAt) ? mine.lastSeenAt : theirs.lastSeenAt,
   }
 }

@@ -8,7 +8,7 @@ import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
 import type { Document, WordStatus } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
-import { mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
+import { isNewer, mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
 import {
   documentFromRow,
   documentToRow,
@@ -254,7 +254,7 @@ export async function syncOnce({
     // 휴지통 상태가 달라졌다 — 버리거나 되살린 것을 서버도 알아야 한다
     if ((theirs.deletedAt ?? null) !== (doc.deletedAt ?? null)) return true
     // 이 기기에서 더 늦게 열었다
-    return doc.updatedAt > theirs.updatedAt
+    return isNewer(doc.updatedAt, theirs.updatedAt)
   })
 
   // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
@@ -273,7 +273,7 @@ export function mergeDocuments(local: Document[], remote: Document[]): Document[
   const byId = new Map(remote.map((d) => [d.id, d]))
   for (const doc of local) {
     const theirs = byId.get(doc.id)
-    if (!theirs || doc.updatedAt > theirs.updatedAt) byId.set(doc.id, doc)
+    if (!theirs || isNewer(doc.updatedAt, theirs.updatedAt)) byId.set(doc.id, doc)
   }
   return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
@@ -283,6 +283,19 @@ export function mergeDocuments(local: Document[], remote: Document[]): Document[
  *
  * 전부 다시 보내면 RLS 통과는 하지만 다른 기기의 변경과 부딪힐 수 있고,
  * 불필요한 쓰기로更新时间가 어긋난다.
+ */
+/**
+ * 서버로 보낸다.
+ *
+ * **표마다 독립적으로 보내고, 진도를 가장 먼저 보낸다.**
+ *
+ * 예전엔 언어 → 문서 → 단어 상태 순서로 한 번에 보내고, 앞이 실패하면 뒤를 아예
+ * 실행하지 않았다. 문서 한 줄이 서버 규칙에 걸리면 **사용자가 직접 고른 단어 상태가
+ * 서버로 나가지 않았다.** 기기 안에만 남고, 다른 기기는 서버의 옛 상태를 받아 본다.
+ * 사용자가 보는 증상은 '이 기기만 최신이고 나머지는 옛것' 이었다.
+ *
+ * 진도가 문서에 지는 일은 없어야 한다. 실패한 표가 있으면 모아서 한 번에 알린다 —
+ * 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
  */
 export async function push({
   userId,
@@ -297,30 +310,48 @@ export async function push({
   documents: Document[]
   words: WordStateRecord[]
 }): Promise<void> {
-  if (languages.length > 0) {
-    const { error } = await db
-      .from('user_languages')
-      .upsert(
-        languages.map((language_code) => ({ user_id: userId, language_code })),
-        { onConflict: 'user_id,language_code', ignoreDuplicates: true },
-      )
-    if (error) throw error
+  const failures: string[] = []
+
+  type SendResult = { error: { message: string } | null }
+  const send = async (table: string, run: () => PromiseLike<SendResult>) => {
+    try {
+      const { error } = await run()
+      if (error) failures.push(`${table}: ${error.message}`)
+    } catch (error) {
+      failures.push(`${table}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  // 진도 먼저 — 문서가 실패해도 이것은 나가야 한다
+  if (words.length > 0) {
+    await send('word_states', () =>
+      db
+        .from('word_states')
+        .upsert(words.map((w) => wordStateToRow(userId, withStatus(w))), {
+          onConflict: 'user_id,language_code,lemma',
+        }),
+    )
   }
 
   if (documents.length > 0) {
-    const { error } = await db
-      .from('documents')
-      .upsert(documents.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' })
-    if (error) throw error
+    await send('documents', () =>
+      db.from('documents').upsert(documents.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' }),
+    )
   }
 
-  if (words.length > 0) {
-    const { error } = await db
-      .from('word_states')
-      .upsert(words.map((w) => wordStateToRow(userId, withStatus(w))), {
-        onConflict: 'user_id,language_code,lemma',
-      })
-    if (error) throw error
+  if (languages.length > 0) {
+    await send('user_languages', () =>
+      db
+        .from('user_languages')
+        .upsert(
+          languages.map((language_code) => ({ user_id: userId, language_code })),
+          { onConflict: 'user_id,language_code', ignoreDuplicates: true },
+        ),
+    )
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`서버 저장 실패 — ${failures.join(' / ')}`)
   }
 }
 

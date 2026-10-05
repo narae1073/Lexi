@@ -12,7 +12,13 @@ import { onLocalWrite } from '../../lib/storage/localDb'
 import { STORES } from '../../lib/storage/localDb'
 import { supabase } from '../../lib/supabase/client'
 import type { LanguageCode } from '../../types'
-import { SyncUnavailable, pushOccurrences, readLocal, syncOnce } from '../../lib/sync/sync'
+import {
+  SyncUnavailable,
+  pushOccurrences,
+  readLocal,
+  syncOnce,
+  type SyncReport,
+} from '../../lib/sync/sync'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
@@ -55,6 +61,14 @@ export type SyncState = {
    * 단어 상태를 바꾸거나 '지금 동기화' 를 눌렀을 때만 생기고, 저장이 끝나면 곧 조용해진다.
    */
   notice: SyncNotice | null
+  /**
+   * 마지막 동기화가 무엇을 했는지 — 사람이 읽을 수 있는 기록.
+   *
+   * 기계가 아니라 사람이 보라고 만드는 자리다. 기기마다 진도가 다른 것을 설명하라는
+   * 질문에 답하려면 '이 기기가 서버에 무엇을 보냈고 무엇을 받았는지' 가 화면에 있어야
+   * 한다 — 없으면 추측만 된다.
+   */
+  report: SyncReport | null
 }
 
 /** 합쳐진 밀린 개수 */
@@ -75,6 +89,7 @@ export const useSyncStore = create<SyncState>((set) => ({
   dirty: false,
   pendingByStore: {},
   notice: null,
+  report: null,
 
   syncNow: async () => {
     if (!useAuthStore.getState().user) return
@@ -153,6 +168,7 @@ async function run(set: Setter) {
         error: null,
         // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
         notice: markSynced(s.notice, Date.now()),
+        report,
         // 다 밀었다 — 이제 서버와 같다
         dirty: pendingCount(pendingByStore) > 0,
         pendingByStore,
@@ -167,6 +183,7 @@ async function run(set: Setter) {
     }
     set({
       status: 'error',
+      report: null,
       error: error instanceof Error ? error.message : String(error),
       // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다
       dirty: true,
