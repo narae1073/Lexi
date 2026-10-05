@@ -3,8 +3,20 @@ import { create } from 'zustand'
 import { supabase } from '../../lib/supabase/client'
 import type { User } from '@supabase/supabase-js'
 
-/** 인증번호 길이 — Supabase 가 보내는 번호는 6자리다 */
-export const CODE_LENGTH = 6
+/**
+ * 인증번호 자릿수는 **고정하지 않는다.**
+ *
+ * Supabase 가 보내는 번호 길이는 서버 설정 `mailer_otp_length` 다. 기본은 6이지만
+ * 바꾸는 곳이 있고, 이 프로젝트는 8이었다. 클라이언트가 6을 박아두면 메일은 8자리가
+ * 오는데 앱은 6자리를 요구해 인증이 실패한다 — 서버 설정을 고치기 전까지는 답이 없다.
+ *
+ * 서버 설정은 앱 밖이다. 앱은 받은 숫자를 그대로 넘기고 서버가 맞다고 판단하게 한다.
+ * 길이를 아는 척하지 않는 편이 틀렸을 때 조용히 실패하는 것보다 낫다.
+ */
+/** 이보다 짧으면 사람이 입력한 게 아니다 */
+export const CODE_MIN_DIGITS = 4
+/** 입력창이 받아들일 상한 — 안전망일 뿐, 8자리는 당연히 들어와야 한다 */
+export const CODE_MAX_DIGITS = 12
 
 export type AuthState = {
   /** 로그인한 사용자. 없으면 로컬 전용으로 동작한다 */
@@ -116,8 +128,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   verifyEmailCode: async (email) => {
     if (!supabase) return false
-    const token = get().code.trim()
-    if (token.length !== CODE_LENGTH) return false
+    // 숫자만 남기고 — 자릿수는 서버가 정한다
+    const token = get().code.replace(/\D/g, '')
+    if (token.length < CODE_MIN_DIGITS) return false
     set({ error: null })
 
     const { error } = await supabase.auth.verifyOtp({

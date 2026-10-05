@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { authErrorKeyOrMessage } from '../../lib/authError'
 import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
-import { CODE_LENGTH, useAuthStore } from '../../app/stores/auth'
+import { CODE_MAX_DIGITS, CODE_MIN_DIGITS, useAuthStore } from '../../app/stores/auth'
 import { useSyncStore } from '../../app/stores/sync'
 import { usePendingSummary, useSyncStatus } from '../../app/stores/sync'
 import { useTranslation } from '../../app/stores/settings'
@@ -139,16 +139,20 @@ export function AccountPanel() {
             <input
               value={code}
               onChange={(event) => {
-                const next = event.target.value.replace(/\D/g, '').slice(0, CODE_LENGTH)
-                setCode(next)
+                setCode(event.target.value.replace(/\D/g, '').slice(0, CODE_MAX_DIGITS))
                 if (authError) clearError()
-                // 6자리가 모이면 곧바로 확인한다 — 확인 버튼을 한 번 더 누를 이유가 없다
-                if (next.length === CODE_LENGTH && email.trim() !== '') {
-                  setBusy(true)
-                  void verifyEmailCode(email.trim()).finally(() => setBusy(false))
-                }
+              }}
+              // 붙여넣으면 곧바로 확인한다 — 자릿수를 모르므로 여기서 판단하지 않는다
+              onPaste={() => {
+                setTimeout(() => {
+                  if (email.trim() !== '') {
+                    setBusy(true)
+                    void verifyEmailCode(email.trim()).finally(() => setBusy(false))
+                  }
+                }, 0)
               }}
               inputMode="numeric"
+              maxLength={CODE_MAX_DIGITS}
               autoComplete="one-time-code"
               placeholder={t('account.codePlaceholder')}
               aria-label={t('account.codePlaceholder')}
@@ -156,7 +160,7 @@ export function AccountPanel() {
             />
             <button
               type="button"
-              disabled={busy || code.length !== CODE_LENGTH}
+              disabled={busy || code.replace(/\D/g, '').length < CODE_MIN_DIGITS}
               onClick={() => {
                 setBusy(true)
                 void verifyEmailCode(email.trim()).finally(() => setBusy(false))
