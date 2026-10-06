@@ -10,9 +10,9 @@ import type { WordStateRecord } from './merge'
  * 이 변환만 한 곳에 모아 두면 스키마가 바뀌어도 여기만 고치면 된다.
  */
 
-type WordStateRow = Database['public']['Tables']['word_states']['Row']
-type DocumentRow = Database['public']['Tables']['documents']['Row']
-type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Row']
+export type WordStateRow = Database['public']['Tables']['word_states']['Row']
+export type DocumentRow = Database['public']['Tables']['documents']['Row']
+export type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Row']
 
 /**
  * 서버에 보낼 때는 Insert 모양(자동 채번 열 없음)으로 만든다.
@@ -163,4 +163,4 @@ export function groupOccurrences(rows: OccurrenceKey[]): OccurrenceGroup[] {
   return [...grouped.values()]
 }
 
-export type { DocumentRow, OccurrenceInsert, OccurrenceKey, WordStateInsert, WordStateRow }
+export type { OccurrenceInsert, OccurrenceKey, WordStateInsert }

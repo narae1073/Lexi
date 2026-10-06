@@ -15,6 +15,9 @@ import {
   occurrenceToRows,
   wordStateFromRow,
   wordStateToRow,
+  type DocumentRow,
+  type OccurrenceRow,
+  type WordStateRow,
 } from './mapping'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
@@ -168,23 +171,83 @@ export async function writeLocal(
   }
 }
 
+/**
+ * 한 번의 요청으로 오는 행 수.
+ *
+ * 서버(Supabase/PostgREST)는 한 요청당 이만큼까지만 돌려준다. 여기서 잘린 만큼은
+ * **없는 것처럼 보인다** — 실제로는 서버에 있는데 이 기기가 받지 못한 것이다.
+ */
+const PAGE_SIZE = 1000
+
+/** 안전망 — 페이지를无数히 받지 않도록 */
+const MAX_ROWS = 200_000
+
+/**
+ * 한 사용자의 행을 **끝까지** 읽는다.
+ *
+ * 순서를 고정하지 않으면 페이지를 나눠 읽을 때 행이 중복되거나 건너뛴다 — 서버가 정해 둔
+ * 순서는 보장되지 않으므로, '다음 1000개' 가 무엇인지를 우리가 정해야 한다.
+ */
+async function fetchAll<T>(
+  db: SupabaseClient<Database>,
+  table: 'user_languages' | 'documents' | 'word_states' | 'word_occurrences',
+  userId: string,
+  order: string,
+  columns = '*',
+): Promise<T[]> {
+  const rows: T[] = []
+  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
+    // 반환 타입은 호출부가 T 로 정한다 — 여긴 '한 사용자의 행을 끝까지 읽는다' 만 한다
+    const result = await (db as never as {
+      from: (t: string) => {
+        select: (c: string) => {
+          eq: (column: string, value: string) => {
+            order: (column: string, opts: { ascending: boolean }) => {
+              range: (from: number, to: number) => PromiseLike<{
+                data: unknown[] | null
+                error: { message: string } | null
+              }>
+            }
+          }
+        }
+      }
+    })
+      .from(table)
+      .select(columns)
+      .eq('user_id', userId)
+      .order(order, { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+
+    const { data, error } = result as { data: unknown[] | null; error: { message: string } | null }
+    if (error) throw error
+    rows.push(...((data ?? []) as T[]))
+    // 한 페이지가 덜 찼으면 끝이다 — 다음 페이지가 없다
+    if ((data ?? []).length < PAGE_SIZE) break
+  }
+  return rows
+}
+
 export async function pull(userId: string, db: SupabaseClient<Database> = client()) {
-  const [languages, documents, wordStates, occurrences] = await Promise.all([
-    db.from('user_languages').select('language_code').eq('user_id', userId),
-    db.from('documents').select('*').eq('user_id', userId),
-    db.from('word_states').select('*').eq('user_id', userId),
-    db.from('word_occurrences').select('*').eq('user_id', userId),
+  /**
+   * 모든 표를 끝까지 읽는다.
+   *
+   * 예전엔 한 번씩만 읽었다. 서버는 한 요청당 1000행까지만 주므로, **1000개를 넘는
+   * 단어 상태는 이 기기로 영영 오지 않았다.** 화면에는 '서버에 1000개' 라고Shows —
+   * 실제로는 그 이상인데 잘린 것이었다. 그 숫자를 믿은 나는 '서버에 다 있다' 고
+   * 잘못 읽었다.
+   */
+  const [languageRows, documents, wordStates, occurrences] = await Promise.all([
+    fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
+    fetchAll<DocumentRow>(db, 'documents', userId, 'id'),
+    fetchAll<WordStateRow>(db, 'word_states', userId, 'lemma'),
+    fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id'),
   ])
 
-  for (const result of [languages, documents, wordStates, occurrences]) {
-    if (result.error) throw result.error
-  }
-
   return {
-    languages: (languages.data ?? []).map((r) => r.language_code),
-    documents: (documents.data ?? []).map(documentFromRow),
-    wordStates: (wordStates.data ?? []).map(wordStateFromRow),
-    occurrences: occurrences.data ?? [],
+    languages: languageRows.map((r) => r.language_code),
+    documents: documents.map(documentFromRow),
+    wordStates: wordStates.map(wordStateFromRow),
+    occurrences: occurrences as OccurrenceRow[],
   }
 }
 
@@ -299,7 +362,14 @@ export async function syncOnce({
     languages,
     serverWords: remote.wordStates.length,
     serverDocuments: remote.documents.length,
-    localWords: local.wordStates.length,
+    /**
+     * **이번 사이클을 마친 뒤** 이 기기에 있는 수.
+     *
+     * 받기 전 숫자를 그대로 쓰면, 새 기기가 단어 2500개를 받은 직후에도
+     * '서버 2500 / 이 기기 0' 이라고 말한다 — 실제로는 방금 다 받았다. 숫자가
+     * 상황을 설명하지 않으면 숫자를 믿는 사람이 아무것도 모른다.
+     */
+    localWords: mergedWords.length,
     occurrencePush,
   }
 }
