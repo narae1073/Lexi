@@ -124,48 +124,65 @@ export function AccountPanel() {
           기기마다 진도가 다를 때 '왜 이 기기만 최신이냐' 를 설명하려면, 이 기기가
           서버에 무엇을 보내고 무엇을 받았는지 **보여야** 한다. 없으면 추측만 된다.
         */}
-        <dl className="mt-3 space-y-1 text-xs">
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-ink-muted">{t('account.sent')}</dt>
-            <dd className="text-ink tabular-nums">{report?.pushed ?? '—'}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-ink-muted">{t('account.received')}</dt>
-            <dd className="text-ink tabular-nums">{report?.pulled ?? '—'}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-ink-muted">{t('account.documents')}</dt>
-            <dd className="text-ink tabular-nums">{report?.documents ?? '—'}</dd>
-          </div>
-          {/*
-            **서버에 진도가 있는가** 가 두 가지를 가른다.
-
-            0 이면 이 기기의 변경이 서버에 가지 않았다. 0 이 아닌데 이 기기에 없는 것이면
-            서버에는 있고 화면에만 안 보이는 것이다 — 고쳐야 할 곳이 완전히 다르다.
-          */}
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-ink-muted">{t('account.onServer')}</dt>
-            <dd
-              className={
-                (report?.serverWords ?? 0) === 0 ? 'text-status-unknown tabular-nums' : 'text-ink tabular-nums'
-              }
-            >
-              {report ? `${report.serverWords} / 이 기기 ${report.localWords}` : '—'}
-            </dd>
-          </div>
-        </dl>
         {/*
-          **아직 못 보낸 변경이 있는지** 로 말한다.
+          숫자의 **단위**를 밝힌다.
 
-          예전엔 '보낸 진도가 0' 이면 경고를 냈다. 그런데 그건 **대부분 정상 상태**다 —
-          새로 보낼 것이 없는 동기화마다 울린다. 잘못 울린 경고는 경고가 아니게 된다.
-          판단할 것은 '보낸 것' 이 아니라 '아직 안 나간 것' 이다.
+          '진도 1000' 은 무엇을 센 것인지 알 수 없다 — 단어 수인지, 등장 횟수인지,
+          저장 횟수인지. 서로 다른 문제로 이어지므로 모호하게 두지 않는다.
         */}
-        {pending.dirty && pending.count > 0 && (
-          <p className="text-status-unsure mt-2 text-xs">
-            {t('account.notSentYet', { count: pending.count })}
-          </p>
-        )}
+        <div className="mt-4 border-t border-line pt-3">
+          <p className="text-sm font-medium">{t('account.syncTitle')}</p>
+          <p className="text-ink-muted mt-1 text-xs">{t('account.syncHint')}</p>
+
+          <dl className="mt-2 space-y-1 text-xs">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.sent')}</dt>
+              <dd className="text-ink tabular-nums">
+                {report?.pushed ?? '—'}
+                <span className="text-ink-muted ml-1 text-[10px]">{t('account.sentHint')}</span>
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.received')}</dt>
+              <dd className="text-ink tabular-nums">
+                {report?.pulled ?? '—'}
+                <span className="text-ink-muted ml-1 text-[10px]">{t('account.receivedHint')}</span>
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.onServer')}</dt>
+              <dd
+                className={
+                  (report?.serverWords ?? 0) === 0
+                    ? 'text-status-unknown tabular-nums'
+                    : 'text-ink tabular-nums'
+                }
+              >
+                {report ? `${report.serverWords} / ${report.localWords}` : '—'}
+                <span className="text-ink-muted ml-1 text-[10px]">{t('account.onServerHint')}</span>
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.documents')}</dt>
+              <dd className="text-ink tabular-nums">
+                {report?.documents ?? '—'}
+                <span className="text-ink-muted ml-1 text-[10px]">{t('account.documentsHint')}</span>
+              </dd>
+            </div>
+            {/* 저장 횟수 기준이다 — 단어 수가 아니므로 라벨이 다르다 */}
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-ink-muted">{t('account.pending')}</dt>
+              <dd className="text-ink tabular-nums">
+                {pending.count}
+                <span className="text-ink-muted ml-1 text-[10px]">{t('account.pendingHint')}</span>
+              </dd>
+            </div>
+          </dl>
+
+          {report !== null && report.pushed === 0 && report.pulled === 0 && (
+            <p className="text-ink-muted mt-2 text-xs">{t('account.nothingSent')}</p>
+          )}
+        </div>
 
         {syncError && <p className="text-status-unknown mt-2 text-xs break-words">{syncError}</p>}
       </div>
