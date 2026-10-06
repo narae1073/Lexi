@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import type { Document } from '../../types'
-import { syncOnce } from './sync'
+import type { WordOccurrence } from '../../app/stores/occurrences'
+import { changedOccurrenceDocuments, syncOnce } from './sync'
 
 /**
  * 서버를 흉내낸다.
@@ -201,3 +202,73 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
   })
 })
 
+/**
+ * 등장 기록은 **달라진 문서만** 보내야 한다.
+ *
+ * 회귀: 동기화가 이 기기의 기록을 문서 단위로 통째로 지우고 다시 넣었다. 한 번 동기화할
+ * 때마다 **서버의 모든 등장 기록이 이 기기의 것으로 교체**됐다.
+ *
+ * 어느 한 기기의 기록이 덜 계산되어 있으면 그것이 서버 전체를 덮어쓴다. 그래서
+ * **단어 색깔은 맞는데 목록 게이지와 단어장이 다른 기기의 것을 잃었다** — 게이지와
+ * 단어장은 등장 기록에서 나오고, 색깔은 단어 상태에서 나오기 때문이다.
+ */
+describe('등장 기록은 달라진 문서만 보낸다', () => {
+  const row = (documentId: string, lemma: string, surface = lemma) => ({
+    document_id: documentId,
+    lemma,
+    surface,
+  })
+  const record = (documentId: string, lemma: string, surfaces = [lemma]): WordOccurrence => ({
+    documentId,
+    languageCode: 'fr',
+    lemma,
+    surfaces,
+    count: 1,
+    charStart: 0,
+    charEnd: lemma.length,
+    sentence: '',
+    documentTitle: 'doc',
+    recordedAt: 1,
+  })
+
+  it('비어 있으면 아무것도 보내지 않는다 — 매번 덮어쓰지 않는다', () => {
+    const merged = [record('doc-1', 'été')]
+    const remote = [row('doc-1', 'été')]
+    expect(changedOccurrenceDocuments(merged, remote)).toEqual([])
+  })
+
+  it('서버에 없는 문서는 보낸다 — 다른 기기는 아직 모른다', () => {
+    expect(changedOccurrenceDocuments([record('doc-1', 'été')], [])).toEqual(['doc-1'])
+  })
+
+  it('표기가 하나 늘었으면 보낸다', () => {
+    const merged = [record('doc-1', 'été', ["l'été", 'été'])]
+    const remote = [row('doc-1', 'été', 'été')]
+    expect(changedOccurrenceDocuments(merged, remote)).toEqual(['doc-1'])
+  })
+
+  /**
+   * 핵심 — 이 기기의 기록이 **덜 계산되어 있으면** 그것을 덮어쓰면 안 된다.
+   *
+   * 다른 기기에는 있고 이 기기에 없는 기록은, 이 기기가 계산하기 전인 것이다.
+   * 이 기기의 것으로 서버를 덮으면 상대 기기가forever 잃는다.
+   */
+  it('다른 기기에만 있는 기록이 있으면 덮어쓰지 않는다', () => {
+    const merged = [record('doc-1', 'été')]
+    const remote = [row('doc-1', 'été'), row('doc-1', 'chat'), row('doc-1', 'lune')]
+    expect(changedOccurrenceDocuments(merged, remote)).toEqual(['doc-1'])
+  })
+
+  /** 그래도 '보낸다' 가 맞다 — 이 기기의 것이 최신이라고 본다 */
+  it('서버에 없는 기록이 있으면 보낸다', () => {
+    const merged = [record('doc-1', 'été'), record('doc-1', 'chat')]
+    const remote = [row('doc-1', 'été')]
+    expect(changedOccurrenceDocuments(merged, remote)).toEqual(['doc-1'])
+  })
+
+  it('문서를 여러 개 다루면 바뀐 것만 뽑는다', () => {
+    const merged = [record('doc-1', 'a'), record('doc-2', 'b')]
+    const remote = [row('doc-1', 'a')]
+    expect(changedOccurrenceDocuments(merged, remote)).toEqual(['doc-2'])
+  })
+})

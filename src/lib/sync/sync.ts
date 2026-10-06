@@ -36,6 +36,12 @@ export type SyncReport = {
   serverDocuments: number
   /** 이 기기에 지금 있는 단어 상태 수 */
   localWords: number
+  /**
+   * 서버와 달라져서 **등장 기록을 다시 보내야 하는** 문서.
+   *
+   * 비어 있으면 아무것도 보내지 않는다.
+   */
+  occurrencePush: string[]
 }
 
 /**
@@ -268,6 +274,21 @@ export async function syncOnce({
     return isNewer(doc.updatedAt, theirs.updatedAt)
   })
 
+  /**
+   * 등장 기록은 **달라진 문서만** 보낸다.
+   *
+   * 예전엔 이 기기의 기록을 문서 단위로 통째로 지우고 다시 넣었다. 한 번 동기화할 때마다
+   * 서버의 모든 등장 기록이 이 기기의 것으로 교체된다.
+   *
+   * 그 결과가Coc Jordan 보이는 것이었다 — 어느 기기의 기록이 덜 계산되어 있으면 그것이
+   * 서버 전체를 덮어쓴다. 그래서 **단어 색깔(`byKey`)은 맞는��**데 **목록 게이지와
+   * 단어장은 다른 기기의 것을 잃었다** — 게이지와 단어장은 기록에서 나오고 색깔은 상태에서
+   * 나오기 때문이다.
+   *
+   * 같으면 보내지 않는다. 기록은 문서를 열 때 다시 쓰이므로, 바뀐 것만 보내면 충분하다.
+   */
+  const occurrencePush = changedOccurrenceDocuments(occurrences, remote.occurrences)
+
   // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
   await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly })
 
@@ -279,6 +300,7 @@ export async function syncOnce({
     serverWords: remote.wordStates.length,
     serverDocuments: remote.documents.length,
     localWords: local.wordStates.length,
+    occurrencePush,
   }
 }
 
@@ -311,6 +333,53 @@ export function mergeDocuments(local: Document[], remote: Document[]): Document[
  * 진도가 문서에 지는 일은 없어야 한다. 실패한 표가 있으면 모아서 한 번에 알린다 —
  * 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
  */
+/**
+ * 서버와 달라진 등장 기록의 문서를 찾는다 — **서버가 없는 문서도 '달라진 것'** 이다.
+ *
+ * 서���에 없는 문서를 굳이 '같다' 고 보면, 그 기기는 아무것도 안 보내고 다른 기기는 계속
+ * 옛 것을 갖게 된다.
+ */
+export function changedOccurrenceDocuments(
+  merged: WordOccurrence[],
+  remoteRows: ReadonlyArray<{ document_id: string; lemma: string; surface: string }>,
+): string[] {
+  const remoteKey = new Map<string, Set<string>>()
+  for (const row of remoteRows) {
+    const key = `${row.document_id}::${row.lemma}::${row.surface}`
+    const set = remoteKey.get(row.document_id)
+    if (set) set.add(key)
+    else remoteKey.set(row.document_id, new Set([key]))
+  }
+
+  const localKey = new Map<string, Set<string>>()
+  for (const record of merged) {
+    for (const surface of record.surfaces) {
+      const key = `${record.documentId}::${record.lemma}::${surface}`
+      const set = localKey.get(record.documentId)
+      if (set) set.add(key)
+      else localKey.set(record.documentId, new Set([key]))
+    }
+  }
+
+  const documentIds = new Set([...localKey.keys(), ...remoteKey.keys()])
+  const changed: string[] = []
+  for (const id of documentIds) {
+    const mine = localKey.get(id) ?? new Set()
+    const theirs = remoteKey.get(id) ?? new Set()
+    if (mine.size !== theirs.size) {
+      changed.push(id)
+      continue
+    }
+    for (const key of mine) {
+      if (!theirs.has(key)) {
+        changed.push(id)
+        break
+      }
+    }
+  }
+  return changed
+}
+
 export async function push({
   userId,
   db,
@@ -370,14 +439,27 @@ export async function push({
 }
 
 /** 등장 기록은 문서를 통째로 다시 보낸다 — 일부만 갱신하면 옛 표기가 남는다 */
+/**
+ * 등장 기록을 문서 단위로 통째로 보낸다 — 일부만 갱신하면 옛 표기가 남는다.
+ *
+ * `onlyDocumentIds` 를 주면 **그 문서만** 보낸다. 아무 것도 안 주면 보낸다.
+ *
+ * 이 제한이 없으면 문제가 크다 — 아래 주석.
+ */
 export async function pushOccurrences(
   userId: string,
   records: WordOccurrence[],
   db: SupabaseClient<Database> = client(),
+  onlyDocumentIds?: readonly string[],
 ): Promise<void> {
   if (records.length === 0) return
 
-  const documentIds = [...new Set(records.map((r) => r.documentId))]
+  const allDocumentIds = [...new Set(records.map((r) => r.documentId))]
+  const documentIds = onlyDocumentIds
+    ? allDocumentIds.filter((id) => onlyDocumentIds.includes(id))
+    : allDocumentIds
+  if (documentIds.length === 0) return
+
   const { error: deleteError } = await db
     .from('word_occurrences')
     .delete()
@@ -385,7 +467,10 @@ export async function pushOccurrences(
     .in('document_id', documentIds)
   if (deleteError) throw deleteError
 
-  const rows = records.flatMap((record) => occurrenceToRows(userId, record))
+  const rows = records
+    .filter((record) => documentIds.includes(record.documentId))
+    .flatMap((record) => occurrenceToRows(userId, record))
+  if (rows.length === 0) return
   // 서버는 표기 하나당 한 줄이라 묶음 제한을 넘지 않도록 잘라 보낸다
   for (let i = 0; i < rows.length; i += 500) {
     const { error } = await db.from('word_occurrences').insert(rows.slice(i, i + 500))
