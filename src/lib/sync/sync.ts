@@ -25,6 +25,17 @@ export type SyncReport = {
   documents: number
   /** 병합된 배운 언어 — 호출한 쪽이 이 기기에 채택해야 한다 */
   languages: string[]
+  /**
+   * **서버에 지금 있는** 단어 상태와 문서 수.
+   *
+   * 기기마다 진도가 다를 때 이 숫자가 가감을 알려 준다. 0 이면 이 기기의 변경이
+   * 서버에 가지 않은 것이고, 0 이 아니면서 이 기기에 없는 것이면 **화면에만 안 보이는**
+   * 것이다 — 방향이 완전히 다르다.
+   */
+  serverWords: number
+  serverDocuments: number
+  /** 이 기기에 지금 있는 단어 상태 수 */
+  localWords: number
 }
 
 /**
@@ -265,6 +276,9 @@ export async function syncOnce({
     pulled: words.pullOnly.length,
     documents: mergedDocuments.length,
     languages,
+    serverWords: remote.wordStates.length,
+    serverDocuments: remote.documents.length,
+    localWords: local.wordStates.length,
   }
 }
 

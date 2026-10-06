@@ -137,6 +137,22 @@ export function AccountPanel() {
             <dt className="text-ink-muted">{t('account.documents')}</dt>
             <dd className="text-ink tabular-nums">{report?.documents ?? '—'}</dd>
           </div>
+          {/*
+            **서버에 진도가 있는가** 가 두 가지를 가른다.
+
+            0 이면 이 기기의 변경이 서버에 가지 않았다. 0 이 아닌데 이 기기에 없는 것이면
+            서버에는 있고 화면에만 안 보이는 것이다 — 고쳐야 할 곳이 완전히 다르다.
+          */}
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-ink-muted">{t('account.onServer')}</dt>
+            <dd
+              className={
+                (report?.serverWords ?? 0) === 0 ? 'text-status-unknown tabular-nums' : 'text-ink tabular-nums'
+              }
+            >
+              {report ? `${report.serverWords} / 이 기기 ${report.localWords}` : '—'}
+            </dd>
+          </div>
         </dl>
         {/*
           **아직 못 보낸 변경이 있는지** 로 말한다.

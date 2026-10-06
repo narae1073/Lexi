@@ -133,6 +133,7 @@ export const ko: Dictionary = {
     documents: '이 기기의 문서',
     nothingSent: '진도가 있는데 서버로 보내진 것이 0입니다. 이 기기의 변경이 서버에 가지 않았습니다.',
     notSentYet: '아직 서버에 못 올린 변경 {count}개',
+    onServer: '서버 / 이 기기 진도',
     lastSynced: '마지막 동기화',
     pending: '서버 반영',
     errorRateLimit:

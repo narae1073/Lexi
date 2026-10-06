@@ -134,6 +134,7 @@ export const en = {
     documents: 'Documents on this device',
     nothingSent: 'There is progress, but nothing was sent to the server. Changes on this device have not left it.',
     notSentYet: '{count} change(s) not sent to the server yet',
+    onServer: 'Server / this device',
     lastSynced: 'Last synced',
     pending: 'On server',
     errorRateLimit:
