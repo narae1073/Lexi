@@ -19,6 +19,7 @@ export function WordPopover({
   languageCode,
   anchor,
   onTranslateSentence,
+  startWithDictionary = false,
   onClose,
 }: {
   segment: Extract<Segment, { type: 'word' }>
@@ -28,12 +29,19 @@ export function WordPopover({
   anchor: HTMLElement | null
   /** 이 단어가 속한 문장을 바로 번역한다 — 드래그 없이 하는 길 */
   onTranslateSentence?: () => void
+  /**
+   * 사전부터 보여준다.
+   *
+   * 단어장에서 들어오면 '사전 보기' 를 한 번 더 누르게 하지 않는다 — 같은 박스를
+   * 사전이 열린 상태로 보여준다. 문서에서는 기존처럼 닫힌 상태로 시작한다.
+   */
+  startWithDictionary?: boolean
   onClose: () => void
 }) {
   const t = useTranslation()
   const current = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.status)
   const setStatus = useWordStatesStore((s) => s.setStatus)
-  const [showDictionary, setShowDictionary] = useState(false)
+  const [showDictionary, setShowDictionary] = useState(startWithDictionary)
 
   return (
     <Popover

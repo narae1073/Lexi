@@ -80,7 +80,7 @@ export async function run(ctx) {
     await sleep(500)
     return ctx.page.evaluate(`(() => {
       return [...document.querySelectorAll('li')]
-        .map(li => li.querySelector('span')?.innerText?.trim() ?? '')
+        .map(li => li.querySelector('[data-wordbook-lemma]')?.innerText?.trim() ?? '')
         .filter(Boolean);
     })()`)
   }

@@ -23,7 +23,7 @@ export async function run(ctx) {
   const list = await ctx.page.evaluate(`(() => {
     const items = [...document.querySelectorAll('li')].filter(li => li.querySelector('button[role], button[aria-pressed]'));
     return items.map(li => ({
-      lemma: li.querySelector('span')?.innerText ?? '',
+      lemma: li.querySelector('[data-wordbook-lemma]')?.innerText ?? '',
       sentence: li.querySelectorAll('p')[0]?.innerText ?? '',
     }));
   })()`)
@@ -32,6 +32,36 @@ export async function run(ctx) {
     list[0] ? JSON.stringify(list[0].sentence.slice(0, 46)) : '')
   ctx.check('US 와 us 가 서로 다른 항목이다', list.some((i) => i.lemma === 'US') && list.some((i) => i.lemma === 'us'),
     list.map((i) => i.lemma).join(', '))
+
+  // ── 단어 제목·예문을 누르면 문서와 같은 사전 박스가 열린다 ──
+  const openedTitle = await ctx.page.evaluate(`(() => {
+    const btn = document.querySelector('[data-wordbook-lemma="apple"]');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`)
+  ctx.check('단어 제목을 찾을 수 있다', openedTitle === true, 'apple')
+  await ctx.waitFor(`!!document.querySelector('[role="dialog"]')`, '단어장 사전')
+  const titleBox = await ctx.popover()
+  ctx.check('단어장에서도 같은 사전 박스가 열린다',
+    /○|◐|●/.test(titleBox?.text ?? '') && (titleBox?.buttons ?? []).includes('Hide'),
+    (titleBox?.buttons ?? []).join(', '))
+  await ctx.pressEscape()
+
+  const openedExample = await ctx.page.evaluate(`(() => {
+    const btn = [...document.querySelectorAll('[data-wordbook-example]')]
+      .find((b) => b.textContent === 'ate');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`)
+  ctx.check('예문의 단어를 찾을 수 있다', openedExample === true, 'ate')
+  await ctx.waitFor(`!!document.querySelector('[role="dialog"]')`, '예문 사전')
+  const exampleBox = await ctx.popover()
+  ctx.check('예문의 단어도 같은 사전 박스가 열린다',
+    /○|◐|●/.test(exampleBox?.text ?? '') && (exampleBox?.buttons ?? []).includes('Hide'),
+    (exampleBox?.buttons ?? []).join(', '))
+  await ctx.pressEscape()
 
   // ── 상태 변경 → 해당 탭으로 옮겨간다 ──
   const beforeUnknown = Number(counts[3])
@@ -51,7 +81,7 @@ export async function run(ctx) {
   })()`)
   await sleep(400)
   const searched = await ctx.page.evaluate(`(() => {
-    const words = [...document.querySelectorAll('li')].map(li => li.querySelector('span')?.innerText ?? '');
+    const words = [...document.querySelectorAll('li')].map(li => li.querySelector('[data-wordbook-lemma]')?.innerText ?? '');
     return { count: words.length, words };
   })()`)
   ctx.check('검색이 걸린다', searched.words.includes('US') && searched.words.includes('us'),
