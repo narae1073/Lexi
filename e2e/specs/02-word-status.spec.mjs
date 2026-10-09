@@ -13,6 +13,9 @@ export async function run(ctx) {
   ctx.check('○ ◐ ● 세 상태 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('New'))), popover?.buttons.join(' '))
   ctx.check('사전 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('Dictionary'))))
 
+  // 아직 아무 표시도 안 한 참 색 — 별을 누르면 unsure 가 되므로 미리 잰다
+  const trulyUnmarked = await colorOf(ctx, 'apple')
+
   // ── 즐겨찾기 ☆/★ — 제목 오른쪽, 상태와 독립 ──
   let star = await starState(ctx)
   ctx.check('제목 오른쪽에 빈 별이 있다', star?.star === '☆' && star?.pressed === 'false', JSON.stringify(star))
@@ -32,6 +35,22 @@ export async function run(ctx) {
   const unknownColor = await colorOf(ctx, 'apple')
   ctx.check('● 선택 시 색이 바뀐다', unmarkedColor !== unknownColor,
     `미표시 ${unmarkedColor} → ${unknownColor}`)
+
+  // ── 켜진 버튼을 한 번 더 누르면 표시가 없어진다 ──
+  await ctx.clickWord('apple')
+  await sleep()
+  await ctx.setStatus('New')
+  // 색 전이가 끝날 때까지 기다린다 — 중간값을 읽으면 같은 색도 다르게 보인다
+  await sleep(800)
+  const backToUnmarked = await colorOf(ctx, 'apple')
+  ctx.check('같은 버튼을 다시 누르면 미표시로 돌아간다', backToUnmarked === trulyUnmarked,
+    `모름 ${unknownColor} → 미표시 ${backToUnmarked}`)
+  await ctx.pressEscape()
+
+  // 아래 단계가 apple=● 임을 가정하므로 되돌려 놓는다
+  await ctx.clickWord('apple')
+  await sleep()
+  await ctx.setStatus('New')
   await ctx.pressEscape()
 
   // 같은 표기가 반복된 다른 위치도 함께 칠해진다 (전역 상태)

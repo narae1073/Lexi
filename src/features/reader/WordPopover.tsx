@@ -44,6 +44,7 @@ export function WordPopover({
   const favorite = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.favorite ?? false)
   const starColor = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.starColor)
   const setStatus = useWordStatesStore((s) => s.setStatus)
+  const clearStatus = useWordStatesStore((s) => s.clearStatus)
   const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
   const setStarColor = useWordStatesStore((s) => s.setStarColor)
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
@@ -115,7 +116,12 @@ export function WordPopover({
             <button
               key={status}
               type="button"
-              onClick={() => setStatus(languageCode, lemma, status, segment.text)}
+              // 켜진 버튼을 한 번 더 누르면 표시를 없앤다 — 미표시로 돌아가는 길이다
+              onClick={() =>
+                active
+                  ? clearStatus(languageCode, lemma)
+                  : setStatus(languageCode, lemma, status, segment.text)
+              }
               aria-pressed={active}
               aria-label={t(`status.${status}`)}
               title={t(`status.${status}`)}

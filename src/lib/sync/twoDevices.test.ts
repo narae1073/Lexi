@@ -35,6 +35,19 @@ function memoryServer(rowCap = 1000) {
       const filters: Record<string, unknown> = {}
       const range = { from: 0, to: Infinity }
       let orderColumn = ''
+      // 실제 클라이언트처럼 delete().eq() 체이닝을 받는다 — 실행은 await 때다
+      let deleting = false
+
+      const matches = (row: Record<string, unknown>): boolean => {
+        for (const [k, v] of Object.entries(filters)) {
+          if (k.startsWith('__in__')) {
+            if (!(v as unknown[]).includes(row[k.slice('__in__'.length)])) return false
+            continue
+          }
+          if (row[k] !== v) return false
+        }
+        return true
+      }
 
       const query = {
         select: () => query,
@@ -64,31 +77,18 @@ function memoryServer(rowCap = 1000) {
           }
           return { data: null, error: null }
         },
-        delete: async () => {
-          const inKey = Object.keys(filters).find((k) => k.startsWith('__in__'))
-          const inValues = (filters[inKey!] ?? []) as unknown[]
-          const inColumn = inKey?.slice('__in__'.length)
-          tables[table] = tables[table].filter((row) => {
-            if (inColumn && !inValues.includes(row[inColumn])) return true
-            for (const [k, v] of Object.entries(filters)) {
-              if (k.startsWith('__in__')) continue
-              if (row[k] !== v) return true
-            }
-            return false
-          })
-          return { data: null, error: null }
+        delete: () => {
+          deleting = true
+          return query
         },
-        then: async (resolve: (value: { data: unknown[]; error: null }) => unknown) => {
-          let rows = tables[table].filter((row) => {
-            for (const [k, v] of Object.entries(filters)) {
-              if (k.startsWith('__in__')) {
-                if (!(v as unknown[]).includes(row[k.slice('__in__'.length)])) return false
-                continue
-              }
-              if (row[k] !== v) return false
-            }
-            return true
-          })
+        then: async (resolve: (value: { data: unknown[] | null; error: null }) => unknown) => {
+          // 지우기는 await 때 실행된다 — 필터가 뒤에 붙기 때문이다
+          if (deleting) {
+            tables[table] = tables[table].filter((row) => !matches(row))
+            return resolve({ data: null, error: null })
+          }
+
+          let rows = tables[table].filter(matches)
 
           // 순서를 명시하지 않으면 페이지가 겹치고 빠진다 — 우리가 정해야 한다
           if (orderColumn) {
@@ -227,6 +227,47 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
     await useWordStatesStore.getState().loadLanguage('fr', { force: true })
 
     expect(useWordStatesStore.getState().byKey['fr::été']?.status).toBe('known')
+  })
+
+  /**
+   * 표시를 없애면 서버 행도 지워지고 다른 기기에도 전해진다.
+   *
+   * 없앤 것을 upsert 하면 'unsure' 로 굳어 되살아난다. 그래서 상태 없는 행은
+   * 지우기로 간다. 지운 뒤에는 조용해야 한다 — 매번 지우기를 보내면
+   * '보낸 단어' 숫자가 거짓말을 한다.
+   */
+  it('A 기기가 없앤 표시는 B 기기에서도 없어진다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.wordStates, { ...wordState('été'), status: 'known' })
+    await sync(server)
+    expect(server.count('word_states')).toBe(1)
+
+    // A 기기에서 표시를 없앤다 — clearStatus 와 같은 모양(상태만 뺀다)
+    const stored = await idbGetAll<Record<string, unknown>>(STORES.wordStates)
+    const row = stored.find((r) => r['lemma'] === 'été')
+    if (!row) throw new Error('기록이 없다')
+    const { status: _removed, ...kept } = row
+    await idbPut(STORES.wordStates, {
+      ...kept,
+      lastSeenAt: '2026-10-07T00:00:00.000Z',
+    })
+
+    const report = await sync(server)
+    expect(server.count('word_states')).toBe(0)
+    // 지운 것은 '보낸 단어' 가 아니다
+    expect(report.pushed).toBe(0)
+
+    // A 기기가 한 번 더 돌려도 조용하다 — 지우기 무한 반복이 없다
+    const reportA2 = await sync(server)
+    expect(reportA2.pushed).toBe(0)
+    expect(server.count('word_states')).toBe(0)
+
+    // B 기기: 로컬에 아무것도 없다
+    await clearLocalWords()
+    const reportB = await sync(server)
+    expect(reportB.pulled).toBe(0)
+    expect(await idbGetAll(STORES.wordStates)).toHaveLength(0)
   })
 
   /** 별도 서버를 타야 한다 — 이 기기에서만 빛나면 반쪽이다 */

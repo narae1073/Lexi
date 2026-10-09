@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import { STORES, idbGetAllByIndex, idbPut } from '../../lib/storage/localDb'
+import { STORES, idbGet, idbGetAllByIndex, idbPut } from '../../lib/storage/localDb'
 import type { LanguageCode, WordState, WordStatus } from '../../types'
 import { randomStarAngle, randomStarColor } from '../../features/reader/favoriteStar'
 import { STAR_COLOR_DEFAULT } from './settings'
@@ -21,6 +21,14 @@ type WordStatesStore = {
     status: WordStatus,
     surface?: string,
   ) => void
+  /**
+   * 표시를 없앤다 — 같은 버튼을 한 번 더 누른 것이다.
+   *
+   * 행은 남긴다. 별·읽은 기록이 같은 행에 있으므로 행까지 지우면 별이 함께
+   * 사라진다. 상태만 빼고 시각을 새로 찍으면, 동기화에서 '늦게 없앤 쪽' 이
+   * 이겨 서버 행도 지워진다. 다시 표시하면 그때부터 새 기록이다.
+   */
+  clearStatus: (languageCode: LanguageCode, lemma: string) => void
   /**
    * 즐겨찾기 ☆/★.
    *
@@ -80,6 +88,34 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
       console.error('단어 상태 저장 실패', error)
     })
+  },
+
+  clearStatus: (languageCode, lemma) => {
+    const key = wordKey(languageCode, lemma)
+    const previous = get().byKey[key]
+    // 표시한 적이 없으면 없앨 것도 없다
+    if (previous?.status === undefined) return
+    const timestamp = new Date().toISOString()
+
+    const { status: _removed, ...kept } = previous
+    const next = { ...kept, lastSeenAt: timestamp }
+    set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+
+    // 저장된 행에서 상태만 뺀다 — 별·읽은 기록·별 시각은 그대로 둔다.
+    // lastSeenAt 을 새로 찍어야 동기화에서 이 '없앰' 이 이긴다.
+    void (async () => {
+      try {
+        const stored = await idbGet<WordState>(STORES.wordStates, [languageCode, lemma])
+        if (!stored) {
+          await idbPut(STORES.wordStates, next)
+          return
+        }
+        const { status: _dropped, ...rest } = stored
+        await idbPut(STORES.wordStates, { ...rest, lastSeenAt: timestamp })
+      } catch (error) {
+        console.error('단어 표시 없애기 실패', error)
+      }
+    })()
   },
 
   toggleFavorite: (languageCode, lemma, surface) => {

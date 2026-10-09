@@ -54,7 +54,13 @@ export type Document = {
 export type WordState = {
   lemma: string
   languageCode: LanguageCode
-  status: WordStatus
+  /**
+   * 사용자가 고른 상태. 없으면 미표시.
+   *
+   * 표시를 없애도 행은 남긴다 — 별·읽은 기록이 같은 행에 있으므로, 상태를
+   * 지운다고 행까지 지우면 별이 함께 사라진다. 서버에는 없는 상태로 둔다.
+   */
+  status?: WordStatus
   seenCount: number
   firstSeenAt: string
   lastSeenAt: string

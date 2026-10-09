@@ -66,8 +66,14 @@ describe('mergeWordStates — 어느 쪽을 이기는가', () => {
 
 describe('mergeWordStates — push / pull 대상', () => {
   it('로컬에만 있는 단어는 서버로 보낸다', () => {
-    const { pushOnly, pullOnly } = mergeWordStates([rec({ lemma: 'apple' })], [])
+    const { pushOnly, pullOnly } = mergeWordStates([rec({ lemma: 'apple', status: 'known' })], [])
     expect(pushOnly.map((r) => r.lemma)).toEqual(['apple'])
+    expect(pullOnly).toEqual([])
+  })
+
+  it('상태 없는 행은 서버에 없어도 보내지 않는다 — 지울 것이 없다', () => {
+    const { pushOnly, pullOnly } = mergeWordStates([rec({ lemma: 'apple' })], [])
+    expect(pushOnly).toEqual([])
     expect(pullOnly).toEqual([])
   })
 
@@ -94,6 +100,50 @@ describe('mergeWordStates — push / pull 대상', () => {
     const { pushOnly, pullOnly } = mergeWordStates(both, both)
     expect(pushOnly).toEqual([])
     expect(pullOnly).toEqual([])
+  })
+})
+
+/**
+ * 표시를 없애면 서버 행도 지워진다.
+ *
+ * 없앤 것을 upsert 하면 NOT NULL 없는 상태가 'unsure' 로 굳어져, 없앴는데
+ * 모름으로 되살아난다. 그래서 상태 없는 행은 push 에서 지우기로 간다.
+ * 반대로 서버에만 있는 행은 건드리지 않는다 — 본 적 없는 단어를 지울 수는 없다.
+ */
+describe('mergeWordStates — 표시 없애기', () => {
+  it('늦게 없앤 쪽이 이긴다 — 상태가 달라도 시각이 답이다', () => {
+    const local = [rec({ lemma: 'apple', lastSeenAt: T2 })] // 상태 없음 = 없앰
+    const remote = [rec({ lemma: 'apple', status: 'known', lastSeenAt: T1 })]
+    const { merged, pushOnly } = mergeWordStates(local, remote)
+    expect(find(merged, 'apple')?.status).toBeUndefined()
+    // 지우라고 서버에 알려야 한다
+    expect(pushOnly.map((r) => r.lemma)).toEqual(['apple'])
+    expect(pushOnly[0]?.status).toBeUndefined()
+  })
+
+  it('옛날에 없앤 것은 서버가 이긴다 — 늦게 표시한 쪽이 정답이다', () => {
+    const local = [rec({ lemma: 'apple', lastSeenAt: T1 })]
+    const remote = [rec({ lemma: 'apple', status: 'known', lastSeenAt: T2 })]
+    const { merged } = mergeWordStates(local, remote)
+    expect(find(merged, 'apple')?.status).toBe('known')
+  })
+
+  it('지운 뒤에는 조용하다 — 매번 지우기를 보내지 않는다', () => {
+    // 서버에 행이 없는데 로컬에만 상태 없는 행: 보낼 것도 지울 것도 없다
+    const { pushOnly } = mergeWordStates([rec({ lemma: 'apple' })], [])
+    expect(pushOnly).toEqual([])
+  })
+
+  it('별은 없애도 남는다 — 상태만 빠지고 행은 산다', () => {
+    const local = [
+      rec({ lemma: 'apple', lastSeenAt: T2, favorite: true, favoriteUpdatedAt: T2 }),
+    ]
+    const remote = [
+      rec({ lemma: 'apple', status: 'known', lastSeenAt: T1, favorite: false, favoriteUpdatedAt: T1 }),
+    ]
+    const merged = find(mergeWordStates(local, remote).merged, 'apple')
+    expect(merged?.status).toBeUndefined()
+    expect(merged?.favorite).toBe(true)
   })
 })
 
@@ -156,8 +206,7 @@ describe('mergeWordStates — 즐겨찾기', () => {
   })
 
   /** 꾸밈은 별의 시각을 이긴 쪽의 것을 함께 쓴다 — 별과 따로 겨루면 기울기만 다른 별이 된다 */
-  it('별의 기울기와 색은 별을 이긴 쪽을 따라간다', () => {
-    const local = [
+  it('별의 기울기와 색은 별을 이긴 쪽을 따라간다', () => {    const local = [
       rec({
         lemma: 'apple',
         favorite: false,

@@ -97,7 +97,12 @@ export function mergeWordStates(
     const theirs = remoteByKey.get(key)
 
     if (!theirs) {
-      // 여기만 남았다
+      // 여기만 남았다. 상태까지 없으면 보낼 것이 없다 — 서버에 없는 것을
+      // 지울 수는 없으므로, 매번 지우기 요청을 보내지 않는다.
+      if (mine.status === undefined) {
+        merged.push(mine)
+        continue
+      }
       pushOnly.push(mine)
       merged.push(mine)
       continue
