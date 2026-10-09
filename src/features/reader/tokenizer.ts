@@ -12,6 +12,9 @@ import { getLanguage } from '../../lib/languages'
 const WORD_START_RE = /[\p{L}\p{N}]/u
 const WORD_BODY_RE = /[\p{L}\p{M}\p{N}]/u
 
+/** 글자 — 숫자는 단어가 되기에 모자라다 */
+const HAS_LETTER_RE = /\p{L}/u
+
 /** 어절을 이어붙이는 아포스트로피 — don't, it's 처럼 언제나 한 단어다. */
 const APOSTROPHES = new Set(["'", '’', 'ʼ'])
 
@@ -289,14 +292,25 @@ export function tokenize(text: string, languageCode: LanguageCode): TokenizeResu
       segments.push({ type: 'text', start: cursor, end: start, text: text.slice(cursor, start) })
     }
     const surface = text.slice(start, end)
-    segments.push({
-      type: 'word',
-      start,
-      end,
-      text: surface,
-      lemma: normalizeLemma(surface, languageCode),
-      sentenceIndex: sentenceIndexAt(start),
-    })
+    /**
+     * 숫자만으로는 단어가 되지 않는다.
+     *
+     * 2026, 3.14 같은 것은 어휘가 아니라 클릭해도 상태·사전·단어장에 들 이유가
+     * 없다. 글자가 하나라도 있어야 단어다 — 1st, COVID-19 같은 혼합은 단어로
+     * 남는다. 유니코드 십진수(아라비아-인디 숫자 등)도 글자가 없으면 같다.
+     */
+    if (!HAS_LETTER_RE.test(surface)) {
+      segments.push({ type: 'text', start, end, text: surface })
+    } else {
+      segments.push({
+        type: 'word',
+        start,
+        end,
+        text: surface,
+        lemma: normalizeLemma(surface, languageCode),
+        sentenceIndex: sentenceIndexAt(start),
+      })
+    }
     cursor = end
   }
 

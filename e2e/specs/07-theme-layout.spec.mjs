@@ -63,6 +63,8 @@ export async function run(ctx) {
   // ── 표시 안 한 단어는 아는 단어보다 옅게 보인다 ──
   // 'wire' 를 아는 단어로 만든다 (Ubiquitous 는 위에서 ● 로 칠했다)
   await openDocument(ctx)
+  // 3.14 의 숫자는 단어가 아니라 팝오버가 열리지 않는다
+  ctx.check('숫자는 단어가 아니다', (await ctx.clickWord('3')) === false && (await ctx.popover()) === null)
   await ctx.clickWord('wire')
   await sleep()
   await ctx.setStatus('Know')

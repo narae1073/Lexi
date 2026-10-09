@@ -31,7 +31,23 @@ describe('단어 분절 — 영어', () => {
   })
 
   it('문자와 숫자를 함께 다룬다', () => {
-    expect(words('en', 'COVID-19 hit in 2020')).toEqual(['COVID-19', 'hit', 'in', '2020'])
+    expect(words('en', 'COVID-19 hit in 2020')).toEqual(['COVID-19', 'hit', 'in'])
+  })
+
+  /**
+   * 아라비아 숫자는 단어가 아니다.
+   *
+   * 2026, 3.14 같은 것은 어휘가 아니라 클릭해도 상태·사전·단어장에 들 이유가
+   * 없다. 글자가 하나라도 있어야 단어다.
+   */
+  it('숫자만으로는 단어가 되지 않는다', () => {
+    expect(words('en', 'In 2026 I saw 3 birds')).toEqual(['In', 'I', 'saw', 'birds'])
+    expect(words('en', 'Pi is 3.14')).toEqual(['Pi', 'is'])
+    expect(words('en', '100%')).toEqual([])
+  })
+
+  it('글자와 섞인 숫자는 단어로 남는다', () => {
+    expect(words('en', 'COVID-19 came 1st')).toEqual(['COVID-19', 'came', '1st'])
   })
 
   it('세그먼트가 원문 전체를 빈틈없이 덮는다', () => {

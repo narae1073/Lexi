@@ -34,7 +34,7 @@ import { normalizeLemma } from './tokenizer'
  *
  * 규칙을 바꿀 때마다 올린다 (PLAN.md — 표기 규칙 변경 시).
  */
-export const LEMMA_VERSION = 4
+export const LEMMA_VERSION = 5
 
 export type SurfaceUsage = {
   surface: string
