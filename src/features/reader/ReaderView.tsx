@@ -32,6 +32,7 @@ import { isCapitalisedPosition, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
 import { WordWithStar } from './WordWithStar'
+import { useJapaneseUpgrade } from './japanese'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -84,10 +85,21 @@ export function ReaderView({ doc }: { doc: Document }) {
   const t = useTranslation()
   const languageName = useLanguageName()
 
-  const { segments, sentences } = useMemo(
+  const base = useMemo(
     () => tokenize(doc.rawText, doc.languageCode),
     [doc.rawText, doc.languageCode],
   )
+
+  /**
+   * 일본어는 형태소 분석기로 업그레이드한다.
+   *
+   * 처음엔 Intl 경로(base)로 그리고, lindera 가 준비되는 순간 다시 그린다 —
+   * 10MB 사전을 기다리게 하지 않는다. 준비 전후의 lemma 가 다를 수 있어
+   * lemmaFor 는 업그레이드 표를 먼저 본다.
+   */
+  const jaUpgrade = useJapaneseUpgrade(doc.rawText, doc.languageCode)
+  const segments = jaUpgrade?.segments ?? base.segments
+  const sentences = jaUpgrade?.sentences ?? base.sentences
 
   const byKey = useWordStatesStore((s) => s.byKey)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
@@ -136,9 +148,37 @@ export function ReaderView({ doc }: { doc: Document }) {
 
   /** 세그먼트의 대표 lemma */
   const lemmaFor = useCallback(
-    (segment: WordSegment) => lemmaOf.get(segment.text) ?? segment.lemma,
-    [lemmaOf],
+    (segment: WordSegment) =>
+      jaUpgrade?.lemmaByStart.get(segment.start) ?? lemmaOf.get(segment.text) ?? segment.lemma,
+    [jaUpgrade, lemmaOf],
   )
+
+  /**
+   * 형태소 분석기가 준비되면 등장 기록을 다시 계산한다.
+   *
+   * Intl 로 기록된 일본어 문서는 옛 분절 그대로 남아, 본문(업그레이드됨)과
+   * 단어장이 다른 단어를 보게 된다. 준비된 뒤에 이 문서를 다시 계산하면
+   * 본문과 기록이 같은 말을 한다.
+   */
+  const refreshStale = useOccurrencesStore((s) => s.refreshStaleDocuments)
+  useEffect(() => {
+    if (!jaUpgrade) return
+    let cancelled = false
+    const run = async () => {
+      // 앱 시작 시점의 전체 재계산과 겹치면 밀린다 — 끝날 때까지 기다렸다가 한다.
+      // 바쁘다고 그냥 돌아가면 Intl 기록이 남아 본문과 단어장이 다른 말을 한다.
+      for (let attempt = 0; attempt < 40 && !cancelled; attempt++) {
+        const done = await refreshStale([doc])
+        if (done > 0) return
+        if (!useOccurrencesStore.getState().refreshing) return
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [jaUpgrade, doc, refreshStale])
 
   useEffect(() => {
     void loadWordStates(doc.languageCode)

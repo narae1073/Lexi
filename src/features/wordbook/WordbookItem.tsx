@@ -9,6 +9,7 @@ import {
   type WordStatus,
 } from '../../types'
 import { WordPopover } from '../reader/WordPopover'
+import { useJapaneseUpgrade } from '../reader/japanese'
 import { isCapitalisedPosition, tokenize } from '../reader/tokenizer'
 import { resolveLemmasFromWords } from '../reader/surfaceLemma'
 import type { WordbookEntry } from './buildWordbook'
@@ -52,9 +53,20 @@ export function WordbookItem({
    * 예문은 문장 하나이므로 그 안에서만 본다 — 문서 전체의 표기 분포를 볼 수 없어
    * US/us 같은 경계는 문서와 다르게 갈릴 수 있다. 그래도 누른 표기는 그대로 사전에
    * 보내므로 조회 자체는 정확하다.
+   *
+   * 일본어는 문서와 같은 업그레이드를 쓴다 — 본문이 lindera 인데 예문만 Intl 이면
+   * 같은 단어를 다른 lemma 로 보게 된다.
    */
+  const jaUpgrade = useJapaneseUpgrade(entry.sentence ?? '', languageCode)
   const sentenceTokens = useMemo(() => {
     if (!entry.sentence) return null
+    if (jaUpgrade) {
+      return {
+        segments: jaUpgrade.segments,
+        lemmaOf: jaUpgrade.lemmaByStart,
+        keyedByStart: true as const,
+      }
+    }
     const { segments, sentences } = tokenize(entry.sentence, languageCode)
     const lemmaOf = resolveLemmasFromWords(
       segments
@@ -70,8 +82,8 @@ export function WordbookItem({
         })),
       languageCode,
     )
-    return { segments, lemmaOf }
-  }, [entry.sentence, languageCode])
+    return { segments, lemmaOf, keyedByStart: false as const }
+  }, [entry.sentence, languageCode, jaUpgrade])
 
   const openDictionary = (segment: WordSegment, lemma: string, anchor: HTMLElement) => {
     setDictionaryTarget({ segment, lemma, anchor })
@@ -109,7 +121,9 @@ export function WordbookItem({
                 onClick={(event) =>
                   openDictionary(
                     segment,
-                    sentenceTokens.lemmaOf.get(segment.text) ?? segment.lemma,
+                    sentenceTokens.keyedByStart
+                      ? (sentenceTokens.lemmaOf.get(segment.start) ?? segment.lemma)
+                      : (sentenceTokens.lemmaOf.get(segment.text) ?? segment.lemma),
                     event.currentTarget,
                   )
                 }

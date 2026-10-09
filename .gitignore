@@ -26,3 +26,7 @@ dist-ssr
 # 로컬 개발 산출물
 supabase/.temp
 supabase/.branches
+
+# 형태소 사전 원본 — 용량이 크므로 저장소에 넣지 않는다.
+# 빌드·배포 전에 `npm run dict:ja` 로 내려받는다.
+public/dicts

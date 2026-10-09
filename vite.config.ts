@@ -4,6 +4,11 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // lindera-wasm 은 esbuild 가 미리 묶지 않게 — wasm 을 통째로 삼키려다 깨진다.
+  // 어차피 일본어 문서를 열 때 동적 import 로 따로 받아 온다.
+  optimizeDeps: {
+    exclude: ['lindera-wasm-bundler'],
+  },
   plugins: [
     react(),
     tailwindcss(),

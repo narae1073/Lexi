@@ -10,8 +10,13 @@ import {
   replaceOccurrences,
 } from '../../lib/storage/localDb'
 import { isCapitalisedPosition, tokenize } from '../../features/reader/tokenizer'
+import {
+  ensureJapaneseTokenizer,
+  isJapaneseReady,
+  segmentJapanese,
+} from '../../features/reader/japanese'
 import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
-import type { Document, LanguageCode } from '../../types'
+import type { Document, LanguageCode, Segment, Sentence } from '../../types'
 
 /**
  * 단어가 문서에서 실제로 등장한 기록.
@@ -121,6 +126,29 @@ export function sameOccurrences(a: WordOccurrence[] | undefined, b: WordOccurren
   })
 }
 
+/** 문서의 분절 — 일본어는 형태소 분석기가 준비되면 그것으로 한다 */
+async function segmentForRecord(doc: Document): Promise<{
+  segments: Segment[]
+  sentences: Sentence[]
+  /** lindera 경로에서만 있다 — 시작 오프셋 → 원형 */
+  lemmaByStart?: Map<number, string>
+  segmenter: 'lindera' | 'intl'
+}> {
+  if (doc.languageCode === 'ja') {
+    // 문서를 여는 길목이다 — 사용자가 일본어를 보고 있으므로 사전을 받아도 된다.
+    // 실패하면 Intl 로 폴백한다. 기록이 늦어질 뿐 열리지 않는 일은 없다.
+    try {
+      await ensureJapaneseTokenizer()
+    } catch {
+      /* 폴백 */
+    }
+    const upgrade = segmentJapanese(doc.rawText)
+    if (upgrade) return { ...upgrade, segmenter: 'lindera' as const }
+  }
+  const { segments, sentences } = tokenize(doc.rawText, doc.languageCode)
+  return { segments, sentences, segmenter: 'intl' as const }
+}
+
 export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   byLanguage: {},
   occurrences: [],
@@ -159,18 +187,28 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     if (get().refreshing) return 0
     set({ refreshing: true })
 
-    const meta = await idbGetAll<{ documentId: string; lemmaVersion: number }>(
+    const meta = await idbGetAll<{ documentId: string; lemmaVersion: number; segmenter?: string }>(
       STORES.documentMeta,
     ).catch(() => [])
-    const known = new Map(meta.map((m) => [m.documentId, m.lemmaVersion]))
-    const stale = docs.filter((doc) => known.get(doc.id) !== LEMMA_VERSION)
+    const known = new Map(meta.map((m) => [m.documentId, m]))
+    /**
+     * 일본어는 분절기까지 본다 — Intl 로 기록됐는데 lindera 가 준비됐으면 다시 계산한다.
+     * 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게 하면 모바일 데이터를
+     * 사용자가 보지도 않은 일본어에 쓰게 된다.
+     */
+    const stale = docs.filter(
+      (doc) =>
+        known.get(doc.id)?.lemmaVersion !== LEMMA_VERSION ||
+        (doc.languageCode === 'ja' &&
+          isJapaneseReady() &&
+          known.get(doc.id)?.segmenter !== 'lindera'),
+    )
 
     try {
+      // meta 는 recordDocument 가 쓴다 — 여기서 또 쓰면 분절기 기록이 지워져
+      // 일본어 문서가 매번 '낡은 것' 으로 남아 영영 다시 계산된다.
       for (const doc of stale) {
         await get().recordDocument(doc, true)
-        await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
-          () => {},
-        )
       }
       return stale.length
     } finally {
@@ -181,14 +219,16 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   recordDocument: async (doc, force = false) => {
     if (!force && get().recorded[doc.id]) return
 
-    const { segments, sentences } = tokenize(doc.rawText, doc.languageCode)
+    const { segments, sentences, lemmaByStart, segmenter } = await segmentForRecord(doc)
     const words = segments.filter((s) => s.type === 'word')
     if (words.length === 0) {
       // 단어가 없는 문서도 '확인했다' 고 기억한다 — 안 하면 목록을 열 때마다
       // 영영 낫지 않은 문서를 다시 훑는다. 본문은 늘지 않으므로 다시 볼 이유가 없다.
-      await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
-        () => {},
-      )
+      await idbPut(STORES.documentMeta, {
+        documentId: doc.id,
+        lemmaVersion: LEMMA_VERSION,
+        segmenter,
+      }).catch(() => {})
       set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
       return
     }
@@ -207,7 +247,8 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     type Draft = Omit<WordOccurrence, 'recordedAt'>
     const byLemma = new Map<string, Draft>()
     for (const word of words) {
-      const lemma = lemmaOf.get(word.text) ?? word.lemma
+      // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
+      const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
       const existing = byLemma.get(lemma)
       if (existing) {
         existing.count += 1
@@ -240,9 +281,11 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
      * 있다' 는 약속이라서, 약속을 먼저 남기고 저장이 실패하면 그 문서는 영영 '최신' 으로만
      * 보인다 — 다시 계산되지 않는다. 순서가 규칙의 일부다.
      */
-    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: LEMMA_VERSION }).catch(
-      () => {},
-    )
+    await idbPut(STORES.documentMeta, {
+      documentId: doc.id,
+      lemmaVersion: LEMMA_VERSION,
+      segmenter,
+    }).catch(() => {})
 
     set((s) => {
       const byLanguage = mergeByLanguage(s.byLanguage, doc.languageCode, doc.id, records)
