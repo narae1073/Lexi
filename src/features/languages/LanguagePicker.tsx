@@ -106,7 +106,12 @@ function LanguageButton({
         }`}
       >
         <span className="text-sm font-medium">{languageName(code)}</span>
-        <span className="text-ink-muted text-xs">{label}</span>
+        {/*
+          선택된 카드의 바탕은 강조색이다 — 표면용 옅은 글자색을 그대로 쓰면 묻힌다.
+          선택 상태에서는 강조색 위의 글자색을 쓴다. 테마마다 강조색 위 글자색을
+          따로 정해 두었으므로 모든 테마에서 읽힌다.
+        */}
+        <span className={`text-xs ${active ? 'text-accent-ink' : 'text-ink-muted'}`}>{label}</span>
       </button>
     </li>
   )

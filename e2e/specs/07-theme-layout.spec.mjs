@@ -4,10 +4,11 @@ const THEMES = ['White', 'Sepia', 'Matcha', 'Latte', 'Black', 'Monaspace', 'Drac
 const TEXT = `Ubiquitous smartphones changed communication.
 Dr. Smith measured 3.14 metres of wire.`
 
-/** WCAG 상대 휘도 대비 */
+/** WCAG 상대 휘도 대비 — 빌드가 #ffffff 를 #fff 로 줄이므로 세 자리도 받는다 */
 function contrast(fg, bg) {
   const lum = (hex) => {
-    const v = hex.replace('#', '')
+    let v = hex.replace('#', '')
+    if (v.length === 3) v = [...v].map((c) => c + c).join('')
     const [r, g, b] = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) / 255)
     const f = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
@@ -132,6 +133,7 @@ export async function run(ctx) {
         bg: pick('--t-bg'),
         ink: pick('--t-ink'),
         accent: pick('--t-accent'),
+        accentInk: pick('--t-accent-ink'),
         unknown: pick('--t-status-unknown'),
         unsure: pick('--t-status-unsure'),
         chrome: document.querySelector('meta[name="theme-color"]')?.content,
@@ -141,6 +143,8 @@ export async function run(ctx) {
     const ratios = {
       ink: contrast(probe.ink, probe.bg),
       accent: contrast(probe.accent, probe.bg),
+      // 선택된 카드·버튼의 글자색 — 언어 선택 화면의 자막이 묻히던 회귀
+      accentInk: contrast(probe.accentInk, probe.accent),
       unknown: contrast(probe.unknown, probe.bg),
       unsure: contrast(probe.unsure, probe.bg),
     }
@@ -148,10 +152,11 @@ export async function run(ctx) {
 
     const expectedId = label.toLowerCase().replace(/ /g, '-')
     ctx.check(
-      `${label.padEnd(11)} 대비 본문 ${ratios.ink.toFixed(2)} · 강조 ${ratios.accent.toFixed(2)} · 모름 ${ratios.unknown.toFixed(2)} · 헷갈림 ${ratios.unsure.toFixed(2)}`,
+      `${label.padEnd(11)} 대비 본문 ${ratios.ink.toFixed(2)} · 강조 ${ratios.accent.toFixed(2)} · 강조글자 ${ratios.accentInk.toFixed(2)} · 모름 ${ratios.unknown.toFixed(2)} · 헷갈림 ${ratios.unsure.toFixed(2)}`,
       probe.theme === expectedId &&
         ratios.ink >= 4.5 &&
         ratios.accent >= 3 &&
+        ratios.accentInk >= 4.5 &&
         ratios.unknown >= 4.5 &&
         ratios.unsure >= 3,
       `data-theme=${probe.theme}`,

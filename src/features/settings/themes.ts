@@ -50,7 +50,7 @@ export const THEMES: readonly Theme[] = [
     id: 'matcha',
     label: 'Matcha',
     dark: false,
-    swatch: { bg: '#eaf2e2', bar: '#4f8a3d', dot: '#74806a' },
+    swatch: { bg: '#eaf2e2', bar: '#488037', dot: '#74806a' },
     chromeColor: '#eaf2e2',
   },
   {
