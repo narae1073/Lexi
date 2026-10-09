@@ -24,6 +24,7 @@ const state = (lemma: string, status: WordStatus): WordState => ({
   seenCount: 1,
   firstSeenAt: '2026-01-01',
   lastSeenAt: '2026-01-01',
+  favorite: false,
 })
 
 describe('buildWordbook', () => {

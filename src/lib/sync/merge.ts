@@ -23,6 +23,10 @@ export type WordStateRecord = {
   seenCount: number
   firstSeenAt: string
   lastSeenAt: string
+  /** 즐겨찾기. 상태와 독립이라 별도 시각으로 병합한다 */
+  favorite: boolean
+  /** 별을 마지막으로 붙이거나 뗀 시각 — 늦은 쪽의 별이 이긴다 */
+  favoriteUpdatedAt: string
 }
 
 export type MergeOutcome<T> = {
@@ -134,6 +138,35 @@ function pickWinner(mine: WordStateRecord, theirs: WordStateRecord): WordStateRe
     seenCount: Math.max(mine.seenCount, theirs.seenCount),
     firstSeenAt: isNewer(mine.firstSeenAt, theirs.firstSeenAt) ? theirs.firstSeenAt : mine.firstSeenAt,
     lastSeenAt: isNewer(mine.lastSeenAt, theirs.lastSeenAt) ? mine.lastSeenAt : theirs.lastSeenAt,
+    ...pickFavorite(mine, theirs),
+  }
+}
+
+/**
+ * 별은 상태와 따로 병합한다.
+ *
+ * 행 전체를 '늦은 쪽이 이긴다' 로 하면 이런 일이 생긴다: A 기기에서 별을 뗐는데
+ * B 기기에서 상태를 바꾸면 B 행이 더 늦어 별이 되살아난다. 사용자가 직접
+ * 뗀 별이 돌아오면 앱이 말을 안 듣는 것처럼 보인다.
+ *
+ * 그래서 별은 별의 시각으로만 겨룬다. 동률이면 합집합(OR) — 둘 다 모르는 사이에
+ * 붙인 별을 잃는 쪽보다, 해제 한 번 더 누르는 쪽이 싸다.
+ */
+function pickFavorite(
+  mine: WordStateRecord,
+  theirs: WordStateRecord,
+): Pick<WordStateRecord, 'favorite' | 'favoriteUpdatedAt'> {
+  if (isNewer(mine.favoriteUpdatedAt, theirs.favoriteUpdatedAt)) {
+    return { favorite: mine.favorite, favoriteUpdatedAt: mine.favoriteUpdatedAt }
+  }
+  if (isNewer(theirs.favoriteUpdatedAt, mine.favoriteUpdatedAt)) {
+    return { favorite: theirs.favorite, favoriteUpdatedAt: theirs.favoriteUpdatedAt }
+  }
+  return {
+    favorite: mine.favorite || theirs.favorite,
+    favoriteUpdatedAt: isNewer(mine.favoriteUpdatedAt, theirs.favoriteUpdatedAt)
+      ? mine.favoriteUpdatedAt
+      : theirs.favoriteUpdatedAt,
   }
 }
 
@@ -143,7 +176,9 @@ function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
     a.status === b.status &&
     a.seenCount === b.seenCount &&
     a.firstSeenAt === b.firstSeenAt &&
-    a.lastSeenAt === b.lastSeenAt
+    a.lastSeenAt === b.lastSeenAt &&
+    a.favorite === b.favorite &&
+    a.favoriteUpdatedAt === b.favoriteUpdatedAt
   )
 }
 

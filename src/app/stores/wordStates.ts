@@ -20,6 +20,14 @@ type WordStatesStore = {
     surface?: string,
   ) => void
   /**
+   * 즐겨찾기 ☆/★.
+   *
+   * 상태와 독립이다 — 별을 붙인다고 상태가 바뀌지 않고, 상태를 바꾼다고 별이
+   * 떨어지지 않는다. 별의 시각을 따로 찍어 두 기기가 달라도 '늦게 누른 쪽' 이
+   * 이긴다.
+   */
+  toggleFavorite: (languageCode: LanguageCode, lemma: string, surface?: string) => void
+  /**
    * 이 언어의 상태를 읽는다.
    *
    * `force` 는 **동기화가 방금 써 넣은 것을 화면에 반영할 때** 쓴다.
@@ -50,6 +58,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       lastSeenAt: timestamp,
+      // 상태만 바꿨다고 별이 떨어지면 안 된다 — 별은 별의 길로 간다
+      favorite: previous?.favorite ?? false,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -57,6 +67,33 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     if (previous?.status === status) return
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
       console.error('단어 상태 저장 실패', error)
+    })
+  },
+
+  toggleFavorite: (languageCode, lemma, surface) => {
+    const key = wordKey(languageCode, lemma)
+    const previous = get().byKey[key]
+    const timestamp = new Date().toISOString()
+
+    const next: WordState = {
+      lemma,
+      languageCode,
+      status: previous?.status ?? 'unsure',
+      seenCount: previous?.seenCount ?? 1,
+      firstSeenAt: previous?.firstSeenAt ?? timestamp,
+      lastSeenAt: previous?.lastSeenAt ?? timestamp,
+      favorite: !(previous?.favorite ?? false),
+    }
+
+    set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+
+    // 별을 누른 것은 진도다 — 다음 동기화에 실어 보낸다
+    void idbPut(STORES.wordStates, {
+      ...next,
+      surface,
+      favoriteUpdatedAt: timestamp,
+    }).catch((error) => {
+      console.error('즐겨찾기 저장 실패', error)
     })
   },
 

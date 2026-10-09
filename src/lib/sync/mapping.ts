@@ -53,6 +53,8 @@ export function wordStateToRow(
     seen_count: record.seenCount,
     first_seen_at: record.firstSeenAt,
     last_seen_at: record.lastSeenAt,
+    is_favorite: record.favorite,
+    favorite_updated_at: record.favoriteUpdatedAt,
   }
 }
 
@@ -64,6 +66,9 @@ export function wordStateFromRow(row: WordStateRow): WordStateRecord & { status:
     seenCount: row.seen_count,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
+    // 마이그레이션 이전 행에는 서버 기본값이 들어 있다
+    favorite: row.is_favorite ?? false,
+    favoriteUpdatedAt: row.favorite_updated_at ?? row.last_seen_at,
   }
 }
 

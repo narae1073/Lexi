@@ -14,6 +14,8 @@ function rec(over: Partial<WordStateRecord> & { lemma: string }): WordStateRecor
     seenCount: 1,
     firstSeenAt: T0,
     lastSeenAt: T0,
+    favorite: false,
+    favoriteUpdatedAt: T0,
     ...over,
   }
 }
@@ -106,6 +108,49 @@ describe('mergeWordStates — 합성 필드', () => {
     const merged = find(mergeWordStates(local, remote).merged, 'apple')
     expect(merged?.firstSeenAt).toBe(T0)
     expect(merged?.lastSeenAt).toBe(T2)
+  })
+})
+
+/**
+ * 별은 상태와 따로 병합한다.
+ *
+ * 행 전체를 '늦은 쪽이 이긴다' 로 하면 이런 일이 생긴다: A 기기에서 별을 뗐는데
+ * B 기기에서 상태를 바꾸면 B 행이 더 늦어 별이 되살아난다. 사용자가 직접
+ * 뗀 별이 돌아오면 앱이 말을 안 듣는 것처럼 보인다.
+ */
+describe('mergeWordStates — 즐겨찾기', () => {
+  it('별의 시각이 늦은 쪽이 이긴다', () => {
+    const local = [rec({ lemma: 'apple', favorite: true, favoriteUpdatedAt: T2 })]
+    const remote = [rec({ lemma: 'apple', favorite: false, favoriteUpdatedAt: T1 })]
+    expect(find(mergeWordStates(local, remote).merged, 'apple')?.favorite).toBe(true)
+  })
+
+  it('별을 뗀 것이 늦으면 상태 변경에 묻히지 않는다', () => {
+    // A: 별을 뗐다 (T2). B: 상태를 바꾸고 별은 옛날 그대로 true (T0).
+    // B 행이 상태 시각으로는 더 늦어도 별은 A 것이 이겨야 한다.
+    const local = [
+      rec({ lemma: 'apple', status: 'known', lastSeenAt: T1, favorite: false, favoriteUpdatedAt: T2 }),
+    ]
+    const remote = [
+      rec({ lemma: 'apple', status: 'unknown', lastSeenAt: T2, favorite: true, favoriteUpdatedAt: T0 }),
+    ]
+    const merged = find(mergeWordStates(local, remote).merged, 'apple')
+    expect(merged?.status).toBe('unknown')
+    expect(merged?.favorite).toBe(false)
+  })
+
+  it('별의 시각이 같으면 합집합 — 붙인 별을 잃지 않는다', () => {
+    const local = [rec({ lemma: 'apple', favorite: true, favoriteUpdatedAt: T1 })]
+    const remote = [rec({ lemma: 'apple', favorite: false, favoriteUpdatedAt: T1 })]
+    expect(find(mergeWordStates(local, remote).merged, 'apple')?.favorite).toBe(true)
+  })
+
+  it('별만 바뀌어도 서버에 보낸다', () => {
+    const local = [rec({ lemma: 'apple', status: 'known', favorite: true, favoriteUpdatedAt: T2 })]
+    const remote = [rec({ lemma: 'apple', status: 'known', favorite: false, favoriteUpdatedAt: T1 })]
+    const { pushOnly } = mergeWordStates(local, remote)
+    expect(pushOnly).toHaveLength(1)
+    expect(pushOnly[0]?.favorite).toBe(true)
   })
 })
 

@@ -82,7 +82,15 @@ export async function readLocal(): Promise<{
 }> {
   const [documents, wordStates, occurrences] = await Promise.all([
     idbGetAll<Document>(STORES.documents),
-    idbGetAll<WordStateRecord & { surface?: string; status: WordStatus }>(STORES.wordStates),
+    idbGetAll<
+      Omit<WordStateRecord, 'favorite' | 'favoriteUpdatedAt'> & {
+        surface?: string
+        status: WordStatus
+        /** 별 기능 이전에 쓰인 행에는 없다 */
+        favorite?: boolean
+        favoriteUpdatedAt?: string
+      }
+    >(STORES.wordStates),
     idbGetAll<WordOccurrence>(STORES.wordOccurrences),
   ])
 
@@ -95,6 +103,9 @@ export async function readLocal(): Promise<{
       seenCount: r.seenCount,
       firstSeenAt: r.firstSeenAt,
       lastSeenAt: r.lastSeenAt,
+      // 없던 것을 있다고 말하지 않는다
+      favorite: r.favorite ?? false,
+      favoriteUpdatedAt: r.favoriteUpdatedAt ?? r.lastSeenAt,
     })),
     occurrences,
   }

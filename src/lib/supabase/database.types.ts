@@ -59,6 +59,8 @@ export type Database = {
           seen_count: number
           first_seen_at: string
           last_seen_at: string
+          is_favorite: boolean
+          favorite_updated_at: string
         }
         Insert: {
           id?: string
@@ -69,6 +71,8 @@ export type Database = {
           seen_count?: number
           first_seen_at?: string
           last_seen_at?: string
+          is_favorite?: boolean
+          favorite_updated_at?: string
         }
         Update: {
           id?: string
@@ -79,6 +83,8 @@ export type Database = {
           seen_count?: number
           first_seen_at?: string
           last_seen_at?: string
+          is_favorite?: boolean
+          favorite_updated_at?: string
         }
         Relationships: []
       }

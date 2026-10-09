@@ -203,6 +203,11 @@ export const ko: Dictionary = {
     baseForm: '기본형',
   },
 
+  favorite: {
+    add: '즐겨찾기에 추가',
+    remove: '즐겨찾기에서 제거',
+  },
+
   sentence: {
     button: '이 문장 번역',
     translating: '번역 중…',

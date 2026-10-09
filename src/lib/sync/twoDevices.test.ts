@@ -147,6 +147,8 @@ const wordState = (lemma: string) => ({
   seenCount: 1,
   firstSeenAt: '2026-10-02T00:00:00.000Z',
   lastSeenAt: '2026-10-05T00:00:00.000Z',
+  favorite: false,
+  favoriteUpdatedAt: '2026-10-02T00:00:00.000Z',
 })
 
 /** 서버에 단어 상태를 몇 개 심는다 */
@@ -219,6 +221,25 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
     await useWordStatesStore.getState().loadLanguage('fr', { force: true })
 
     expect(useWordStatesStore.getState().byKey['fr::été']?.status).toBe('known')
+  })
+
+  /** 별도 서버를 타야 한다 — 이 기기에서만 빛나면 반쪽이다 */
+  it('A 기기의 별이 B 기기에 전해진다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.wordStates, {
+      ...wordState('été'),
+      favorite: true,
+      favoriteUpdatedAt: '2026-10-06T00:00:00.000Z',
+    })
+    await sync(server)
+
+    // B 기기: 로컬에 아무것도 없다
+    await clearLocalWords()
+    await sync(server)
+
+    const local = await idbGetAll<{ lemma: string; favorite: boolean }>(STORES.wordStates)
+    expect(local.find((r) => r.lemma === 'été')?.favorite).toBe(true)
   })
 })
 

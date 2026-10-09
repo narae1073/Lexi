@@ -16,6 +16,8 @@ const row = (over: Partial<WordStateRecord> = {}): WordStateRecord => ({
   seenCount: 1,
   firstSeenAt: '2026-10-01T00:00:00.000Z',
   lastSeenAt: '2026-10-05T00:00:00.000Z',
+  favorite: false,
+  favoriteUpdatedAt: '2026-10-01T00:00:00.000Z',
   ...over,
 })
 

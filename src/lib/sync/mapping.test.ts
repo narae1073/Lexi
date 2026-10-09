@@ -36,6 +36,8 @@ describe('word_state 매핑', () => {
       seenCount: 3,
       firstSeenAt: T0,
       lastSeenAt: T1,
+      favorite: true,
+      favoriteUpdatedAt: T1,
     }
     // 보낼 때는 자동 채번 열을 싣지 않는다 — upsert payload 에 id 가 들어가면
     // 갱신되는 행의 id 가 그 값으로 덮인다
@@ -54,6 +56,8 @@ describe('word_state 매핑', () => {
       seenCount: 1,
       firstSeenAt: T0,
       lastSeenAt: T0,
+      favorite: false,
+      favoriteUpdatedAt: T0,
     })
     expect(row).toMatchObject({
       user_id: USER,
@@ -73,6 +77,8 @@ describe('word_state 매핑', () => {
         seenCount: 1,
         firstSeenAt: T0,
         lastSeenAt: T0,
+        favorite: false,
+        favoriteUpdatedAt: T0,
       })
       expect(wordStateFromRow(row as WordStateRow).status).toBe(status)
     }

@@ -204,6 +204,11 @@ export const en = {
     baseForm: 'Base form',
   },
 
+  favorite: {
+    add: 'Add to favorites',
+    remove: 'Remove from favorites',
+  },
+
   sentence: {
     button: 'Translate sentence',
     translating: 'Translating…',

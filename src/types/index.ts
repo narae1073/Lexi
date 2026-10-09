@@ -58,4 +58,11 @@ export type WordState = {
   seenCount: number
   firstSeenAt: string
   lastSeenAt: string
+  /**
+   * 즐겨찾기. 상태와 독립이다 — 아는 단어에도, 미표시 단어에도 붙일 수 있다.
+   *
+   * 본문 표시(색)는 상태가 맡고 별은 별도로 둔다. 본문에 별을 그릴지는 아직
+   * 정하지 않았으므로, 지금은 팝오버와 이후 단어장 탭에서만 쓴다.
+   */
+  favorite: boolean
 }

@@ -40,7 +40,9 @@ export function WordPopover({
 }) {
   const t = useTranslation()
   const current = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.status)
+  const favorite = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.favorite ?? false)
   const setStatus = useWordStatesStore((s) => s.setStatus)
+  const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
 
   return (
@@ -50,9 +52,28 @@ export function WordPopover({
       onClose={onClose}
       width={WORD_POPOVER_WIDTH}
     >
-      <p className="truncate pb-1 text-sm font-semibold" title={segment.text}>
-        {segment.text}
-      </p>
+      <div className="flex items-center gap-1 pb-1">
+        <p className="min-w-0 flex-1 truncate text-sm font-semibold" title={segment.text}>
+          {segment.text}
+        </p>
+        {/*
+          즐겨찾기 ☆/★ — 제목 오른쪽.
+          상태(○◐●)와 독립이다. 아무리 외워도 외워지지 않는 단어, 그냥 마음에 드는
+          단어를 따로 모아 두는 자리다. 본문에 별을 그릴지는 아직 정하지 않았다.
+        */}
+        <button
+          type="button"
+          onClick={() => toggleFavorite(languageCode, lemma, segment.text)}
+          aria-pressed={favorite}
+          aria-label={favorite ? t('favorite.remove') : t('favorite.add')}
+          title={favorite ? t('favorite.remove') : t('favorite.add')}
+          className={`pointer-events-auto shrink-0 rounded-lg px-1.5 py-0.5 text-base leading-none transition ${
+            favorite ? 'text-accent' : 'text-ink-muted hover:text-ink'
+          }`}
+        >
+          {favorite ? '★' : '☆'}
+        </button>
+      </div>
 
       <div className="grid grid-cols-3 gap-1" role="group" aria-label={t('status.group')}>
         {WORD_STATUSES.map((status: WordStatus) => {

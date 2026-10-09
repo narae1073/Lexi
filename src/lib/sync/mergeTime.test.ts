@@ -14,6 +14,8 @@ const record = (over: Partial<WordStateRecord> = {}): WordStateRecord => ({
   seenCount: 1,
   firstSeenAt: LOCAL_TIME,
   lastSeenAt: LOCAL_TIME,
+  favorite: false,
+  favoriteUpdatedAt: LOCAL_TIME,
   ...over,
 })
 

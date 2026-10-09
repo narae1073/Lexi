@@ -13,6 +13,20 @@ export async function run(ctx) {
   ctx.check('○ ◐ ● 세 상태 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('New'))), popover?.buttons.join(' '))
   ctx.check('사전 버튼이 있다', Boolean(popover?.buttons.some((b) => b.includes('Dictionary'))))
 
+  // ── 즐겨찾기 ☆/★ — 제목 오른쪽, 상태와 독립 ──
+  let star = await starState(ctx)
+  ctx.check('제목 오른쪽에 빈 별이 있다', star?.star === '☆' && star?.pressed === 'false', JSON.stringify(star))
+  ctx.check('별을 눌렀다', await clickStar(ctx))
+  await sleep(300)
+  star = await starState(ctx)
+  ctx.check('별을 누르면 채워진다', star?.star === '★' && star?.pressed === 'true', JSON.stringify(star))
+  await ctx.pressEscape()
+  await ctx.clickWord('apple')
+  await sleep()
+  star = await starState(ctx)
+  ctx.check('다시 열어도 별이 유지된다', star?.star === '★', JSON.stringify(star))
+  // 팝오버를 열어 둔 채로 넘긴다 — 아래에서 상태를 바로 준다
+
   const unmarkedColor = await colorOf(ctx, 'apple')
   await ctx.setStatus('New')
   const unknownColor = await colorOf(ctx, 'apple')
@@ -70,6 +84,13 @@ export async function run(ctx) {
     afterReload.plain !== afterReload.known,
     `미표시=${afterReload.plain} 앎=${afterReload.known}`)
 
+  // 별도 새로고침 뒤에 살아 있어야 한다
+  await ctx.clickWord('apple')
+  await sleep()
+  const starAfter = await starState(ctx)
+  ctx.check('새로고침 후에도 별이 유지된다', starAfter?.star === '★', JSON.stringify(starAfter))
+  await ctx.pressEscape()
+
   // ESC 로 닫는다
   await ctx.clickWord('economy')
   await sleep()
@@ -82,6 +103,25 @@ async function colorOf(ctx, surface) {
   return ctx.page.evaluate(`(() => {
     const el = [...document.querySelectorAll('[data-start]')].find(e => e.textContent === ${JSON.stringify(surface)});
     return el ? getComputedStyle(el).color : null;
+  })()`)
+}
+
+/** 팝오버 제목 오른쪽의 별 버튼 상태 */
+async function starState(ctx) {
+  return ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d && [...d.querySelectorAll('button')].find(x => x.innerText === '☆' || x.innerText === '★');
+    return b ? { star: b.innerText, pressed: b.getAttribute('aria-pressed') } : null;
+  })()`)
+}
+
+async function clickStar(ctx) {
+  return ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d && [...d.querySelectorAll('button')].find(x => x.innerText === '☆' || x.innerText === '★');
+    if (!b) return false;
+    b.click();
+    return true;
   })()`)
 }
 
