@@ -183,12 +183,14 @@ export const en = {
       known: 'Know it',
       unsure: 'Unsure',
       unknown: 'Do not know',
+      favorite: '★ Favorites',
     },
     empty: {
       unmarked: 'No unmarked words. Open a document to collect words.',
       known: 'Nothing marked as known yet.',
       unsure: 'Nothing marked as unsure yet.',
       unknown: 'Nothing marked as unknown yet.',
+      favorite: 'No starred words yet. Tap the ☆ next to a word to collect it.',
     },
   },
 

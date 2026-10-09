@@ -16,7 +16,7 @@ export async function run(ctx) {
   ctx.check('메인에서 단어장으로 들어갈 수 있다', (await ctx.bodyText()).includes('Wordbook'))
 
   const counts = await readTabCounts(ctx)
-  ctx.check('상태별 탭 4개가 보인다', counts.length === 4, counts.join(' '))
+  ctx.check('상태별 탭 5개가 보인다', counts.length === 5, counts.join(' '))
   ctx.check('등장 기록이 단어장으로 반영된다', Number(counts[0]) > 0, `미표시 ${counts[0]}개`)
 
   // ── 목록 내용 ──
@@ -94,6 +94,45 @@ export async function run(ctx) {
     return true;
   })()`)
   await sleep(300)
+
+  // ── ★ 탭 — 목록에서 별을 붙이면 ★ 탭에 모인다 ──
+  const starred = await ctx.page.evaluate(`(() => {
+    const li = document.querySelector('li [data-wordbook-lemma]')?.closest('li');
+    const lemma = li?.querySelector('[data-wordbook-lemma]')?.innerText ?? '';
+    const btn = li && [...li.querySelectorAll('button')].find(b => b.innerText === '☆' || b.innerText === '★');
+    if (!btn) return null;
+    btn.click();
+    return lemma;
+  })()`)
+  ctx.check('목록에서 별을 붙일 수 있다', Boolean(starred), String(starred))
+  await sleep(400)
+  await ctx.page.evaluate(`(() => {
+    const tab = [...document.querySelectorAll('div.border-b button')].find(b => b.innerText.includes('★'));
+    if (tab) tab.click();
+    return true;
+  })()`)
+  await sleep(400)
+  const favorites = await ctx.page.evaluate(`(() =>
+    [...document.querySelectorAll('li [data-wordbook-lemma]')].map(x => x.innerText))()`)
+  ctx.check('★ 탭에 별표한 단어가 있다', favorites.includes(starred), favorites.join(', '))
+  // 별을 다시 떼어 원복한다 — 아래 단계의 개수 비교를 오염시키지 않게
+  const unstarred = await ctx.page.evaluate(`((lemma) => {
+    const li = [...document.querySelectorAll('li')].find(x =>
+      x.querySelector('[data-wordbook-lemma]')?.innerText === lemma);
+    const btn = li && [...li.querySelectorAll('button')].find(b => b.innerText === '★');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })(${JSON.stringify(starred)})`)
+  ctx.check('별을 떼면 ★ 탭에서 빠진다', unstarred === true, String(starred))
+  await sleep(400)
+  // 원래 탭으로 돌려놓는다 — 아래 단계가 미표시 목록을 본다
+  await ctx.page.evaluate(`(() => {
+    const tab = [...document.querySelectorAll('div.border-b button')].find(b => /^Not marked/.test(b.innerText.trim()));
+    if (tab) tab.click();
+    return true;
+  })()`)
+  await sleep(400)
 
   // ── 문서 안에서도 진입 (plan.txt 9줄) ──
   await ctx.clickSelector('a[href="/"]')
@@ -175,12 +214,12 @@ export async function run(ctx) {
 }
 
 /**
- * 상태가 지정된 항목 수 — "미표시" 를 제외한 세 탭의 합.
+ * 상태가 지정된 항목 수 — "미표시" 와 "★" 를 제외한 세 탭의 합.
  * 탭을 클릭하지 않고 헤더의 개수만 읽으므로 현재 어느 탭을 보고 있어도 같다.
  */
 async function readMarked(ctx) {
   const counts = await readTabCounts(ctx)
-  return counts.slice(1).reduce((sum, n) => sum + Number(n), 0)
+  return counts.slice(1, 4).reduce((sum, n) => sum + Number(n), 0)
 }
 
 async function readTabCounts(ctx) {

@@ -3,15 +3,17 @@ import type { WordState, WordStatus } from '../../types'
 
 /** plan.txt 9줄의 세 상태에, 아직 표시하지 않은 단어를 한 그룹으로 더한다.
  *  표시 기록이 없으면 어휘 목록의 대부분이 어디에도 속하지 않게 되어서 필요하다. */
-export type WordbookGroup = WordStatus | 'unmarked'
+export type WordbookGroup = WordStatus | 'unmarked' | 'favorite'
 
-export const WORDBOOK_GROUPS: WordbookGroup[] = ['unmarked', 'known', 'unsure', 'unknown']
+export const WORDBOOK_GROUPS: WordbookGroup[] = ['unmarked', 'known', 'unsure', 'unknown', 'favorite']
 
 export type WordbookEntry = {
   lemma: string
   /** 이 lemma 이 문서들에서 실제로 쓰인 표기들 */
   surfaces: string[]
-  status: WordbookGroup
+  status: WordStatus | 'unmarked'
+  /** 즐겨찾기 — 상태와 독립이라 어느 상태 탭에도 함께 있을 수 있다 */
+  favorite: boolean
   /** 학습할 때 도움이 되는 문맥 예문 (가장 최근 문서의 것) */
   sentence: string
   documentId: string
@@ -72,6 +74,7 @@ export function buildWordbook({
         lemma: occurrence.lemma,
         surfaces: [...occurrence.surfaces],
         status,
+        favorite: lookup(languageCode, occurrence.lemma)?.favorite ?? false,
         sentence: occurrence.sentence,
         documentId: occurrence.documentId,
         documentTitle: occurrence.documentTitle,
@@ -102,6 +105,7 @@ export function buildWordbook({
   // 상태가 나중에 바뀌었을 수 있으므로 병합 후 다시 확인한다
   for (const entry of entries) {
     entry.status = lookup(languageCode, entry.lemma)?.status ?? 'unmarked'
+    entry.favorite = lookup(languageCode, entry.lemma)?.favorite ?? false
   }
 
   const needle = query?.trim().toLowerCase()
@@ -127,7 +131,12 @@ export function groupByStatus(
     known: [],
     unsure: [],
     unknown: [],
+    favorite: [],
   }
-  for (const entry of entries) grouped[entry.status].push(entry)
+  for (const entry of entries) {
+    grouped[entry.status].push(entry)
+    // 별은 상태와 독립 — 상태 탭에 있으면서 ★ 탭에도 있다
+    if (entry.favorite) grouped.favorite.push(entry)
+  }
   return grouped
 }

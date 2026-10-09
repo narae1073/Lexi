@@ -63,6 +63,27 @@ describe('buildWordbook', () => {
     expect(grouped.unmarked).toHaveLength(0)
   })
 
+  /**
+   * ★ 탭 — 상태와 독립이라 상태 탭에 있으면서 ★ 탭에도 있다.
+   *
+   * 별을 뗀 단어는 ★ 탭에서 빠져야 하고, 상태를 바꾸지 않아도 ★ 탭에 들어간다.
+   */
+  it('별표한 단어는 상태 탭과 ★ 탭에 함께 있다', () => {
+    const byKey = {
+      'en::cat': { ...state('cat', 'known'), favorite: true },
+      'en::dog': state('dog', 'unsure'),
+    }
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [occurrence({ lemma: 'cat' }), occurrence({ lemma: 'dog' })],
+      byKey,
+    })
+    const grouped = groupByStatus(entries)
+    expect(grouped.known.map((e) => e.lemma)).toEqual(['cat'])
+    expect(grouped.favorite.map((e) => e.lemma)).toEqual(['cat'])
+    expect(grouped.unsure.map((e) => e.lemma)).toEqual(['dog'])
+  })
+
   it('같은 lemma 의 여러 문서 기록을 하나로 합친다', () => {
     const entries = buildWordbook({
       languageCode: 'en',

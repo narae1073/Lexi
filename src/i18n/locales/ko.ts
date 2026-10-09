@@ -182,12 +182,14 @@ export const ko: Dictionary = {
       known: '아는 단어',
       unsure: '잘 모름',
       unknown: '모름',
+      favorite: '★ 즐겨찾기',
     },
     empty: {
       unmarked: '아직 표시하지 않은 단어가 없습니다. 문서를 열어 단어를 모으세요.',
       known: '아는 단어로 표시한 단어가 없습니다.',
       unsure: '잘 모름으로 표시한 단어가 없습니다.',
       unknown: '모름으로 표시한 단어가 없습니다.',
+      favorite: '별표한 단어가 없습니다. 단어 옆의 ☆를 눌러 모으세요.',
     },
   },
 

@@ -34,6 +34,7 @@ export function WordbookItem({
 }) {
   const t = useTranslation()
   const setStatus = useWordStatesStore((s) => s.setStatus)
+  const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
   const titleSegment: WordSegment = {
@@ -128,6 +129,24 @@ export function WordbookItem({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/*
+          목록에서도 별을 붙이거나 뗀다 — ★ 탭에 들어온 뒤에 해제할 길이 없으면
+          갇힌다. 문서 팝오버의 별과 같은 저장소라 어느 쪽에서 눌러도 같다.
+        */}
+        <button
+          type="button"
+          onClick={() => toggleFavorite(languageCode, entry.lemma, entry.lemma)}
+          aria-pressed={entry.favorite}
+          aria-label={entry.favorite ? t('favorite.remove') : t('favorite.add')}
+          title={entry.favorite ? t('favorite.remove') : t('favorite.add')}
+          className={`rounded border px-2 py-0.5 text-[11px] transition ${
+            entry.favorite
+              ? 'border-accent text-accent'
+              : 'text-ink-muted border-line hover:border-accent'
+          }`}
+        >
+          {entry.favorite ? '★' : '☆'}
+        </button>
         <div className="flex gap-1" role="group" aria-label={t('status.group')}>
           {WORD_STATUSES.map((status: WordStatus) => {
             const active = entry.status === status
