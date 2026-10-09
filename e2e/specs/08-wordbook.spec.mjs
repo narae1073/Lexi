@@ -17,7 +17,14 @@ export async function run(ctx) {
 
   const counts = await readTabCounts(ctx)
   ctx.check('상태별 탭 5개가 보인다', counts.length === 5, counts.join(' '))
-  ctx.check('등장 기록이 단어장으로 반영된다', Number(counts[0]) > 0, `미표시 ${counts[0]}개`)
+  const tabOrder = await ctx.page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    return row ? [...row.parentElement.children].map(c => c.innerText.replace(/\s*\d+\s*$/, '')) : [];
+  })()`)
+  ctx.check('★ 탭이 맨 앞, 미표시가 맨 뒤다',
+    tabOrder[0]?.includes('★') && /^Not marked/.test(tabOrder[4] ?? ''),
+    tabOrder.join(' | '))
+  ctx.check('등장 기록이 단어장으로 반영된다', Number(counts[4]) > 0, `미표시 ${counts[4]}개`)
 
   // ── 목록 내용 ──
   const list = await ctx.page.evaluate(`(() => {

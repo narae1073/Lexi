@@ -5,7 +5,7 @@ import type { WordState, WordStatus } from '../../types'
  *  표시 기록이 없으면 어휘 목록의 대부분이 어디에도 속하지 않게 되어서 필요하다. */
 export type WordbookGroup = WordStatus | 'unmarked' | 'favorite'
 
-export const WORDBOOK_GROUPS: WordbookGroup[] = ['unmarked', 'known', 'unsure', 'unknown', 'favorite']
+export const WORDBOOK_GROUPS: WordbookGroup[] = ['favorite', 'known', 'unsure', 'unknown', 'unmarked']
 
 export type WordbookEntry = {
   lemma: string
