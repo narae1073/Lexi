@@ -85,7 +85,7 @@ export function WordbookItem({
             type="button"
             data-wordbook-lemma={entry.lemma}
             onClick={(event) => openDictionary(titleSegment, entry.lemma, event.currentTarget)}
-            className="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium underline decoration-dotted underline-offset-4 hover:text-accent"
+            className="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium hover:text-accent"
           >
             {entry.lemma}
           </button>
@@ -113,7 +113,7 @@ export function WordbookItem({
                     event.currentTarget,
                   )
                 }
-                className="cursor-pointer rounded-sm underline decoration-dotted underline-offset-2 hover:text-accent"
+                className="cursor-pointer rounded-sm hover:text-accent"
               >
                 {segment.text}
               </button>
