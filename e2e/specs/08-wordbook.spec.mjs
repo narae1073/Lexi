@@ -174,12 +174,12 @@ export async function run(ctx) {
   await sleep(500)
   const languageChips = await ctx.page.evaluate(`(() => {
     const wanted = ['English', 'Korean'];
-    return [...document.querySelectorAll('button[aria-pressed]')].filter(b => wanted.includes(b.innerText.trim())).length;
+    return [...document.querySelectorAll('button[aria-pressed]')].filter(b => wanted.some(w => b.innerText.includes(w))).length;
   })()`)
   ctx.check('단어장에서 언어를 고를 수 있다', languageChips >= 1, `칩 ${languageChips}개`)
 
   if (languageChips >= 2) {
-    await ctx.clickText('Korean')
+    await clickChip(ctx, 'Korean')
     await sleep(600)
     ctx.check('한국어로 바꾸면 목록이 그 언어 기록을 따른다', (await ctx.bodyText()).includes('Korean'),
       '언어 전환됨')
@@ -190,7 +190,7 @@ export async function run(ctx) {
   // 전부 "미표시" 로 보이던 문제.
   await ctx.clickSelector('a[href="/wordbook"]')
   await sleep(600)
-  await ctx.clickText('English')
+  await clickChip(ctx, 'English')
   await sleep(700)
   const markedBefore = await readMarked(ctx)
   ctx.check('새로고침 전에는 상태가 보인다', markedBefore >= 1, `${markedBefore}개 표시됨`)
@@ -203,12 +203,12 @@ export async function run(ctx) {
    * 알 길이 없다.
    */
   const langInUrl = await ctx.page.evaluate(`(() => {
-    const a = [...document.querySelectorAll('button[aria-pressed]')].find(b => /^(English|Korean)$/.test(b.innerText.trim()));
+    const a = [...document.querySelectorAll('button[aria-pressed]')].find(b => /(English|Korean)/.test(b.innerText));
     const pressed = a?.innerText.trim();
     return { pressed, url: location.href };
   })()`)
   ctx.check('언어를 바꾸면 주소도 그 언어를 가리킨다',
-    langInUrl.pressed === 'English' && /lang=en/.test(langInUrl.url), JSON.stringify(langInUrl))
+    (langInUrl.pressed ?? '').includes('English') && /lang=en/.test(langInUrl.url), JSON.stringify(langInUrl))
 
 
   await ctx.reload()
@@ -222,7 +222,7 @@ export async function run(ctx) {
     `새로고침 전 ${markedBefore} → 후 ${markedAfter}`)
 
   // 문서를 열지 않은 상태에서 다른 언어로 바꿔도 상태가 보여야 한다
-  await ctx.clickText('English')
+  await clickChip(ctx, 'English')
   await sleep(700)
   const englishMarked = await readMarked(ctx)
   ctx.check('문서를 열지 않고 언어를 바꿔도 상태가 유지된다', englishMarked >= 1,
@@ -252,6 +252,15 @@ async function markFirst(ctx) {
     const btn = li && [...li.querySelectorAll('button')].find(b => b.innerText.trim() === 'New');
     if (!btn) return false;
     btn.click();
+    return true;
+  })()`)
+}
+
+/** 언어 칩을 이름으로 누른다 — 국기가 앞에 붙으므로 포함으로 찾는다 */
+async function clickChip(ctx, label) {
+  await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button[aria-pressed]')].find(x => x.innerText.includes(${JSON.stringify(label)}));
+    if (b) b.click();
     return true;
   })()`)
 }

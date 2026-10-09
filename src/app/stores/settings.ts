@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 import { createTranslator, DEFAULT_APP_LANGUAGE, type AppLanguage, type Translator } from '../../i18n'
-import type { SupportedLanguageCode } from '../../lib/languages'
+import { getLanguageFlag, type SupportedLanguageCode } from '../../lib/languages'
 import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features/settings/themes'
 import {
   DEFAULT_DOCUMENT_SORT,
@@ -254,8 +254,15 @@ export function useTranslation(): Translator {
   return useMemo(() => createTranslator(language), [language])
 }
 
-/** 언어 이름을 현재 앱 언어로 부른다 (화이트리스트 밖 코드는 그대로 통과) */
+/** 언어 이름을 현재 앱 언어로 부른다 (앞에 국기 포함, 예: 🇩🇪 독일어). 화이트리스트 밖 코드는 그대로 통과 */
 export function useLanguageName(): (code: SupportedLanguageCode) => string {
   const t = useTranslation()
-  return useCallback((code: SupportedLanguageCode) => t(`languageNames.${code}`), [t])
+  return useCallback(
+    (code: SupportedLanguageCode) => {
+      const name = t(`languageNames.${code}`)
+      const flag = getLanguageFlag(code)
+      return flag ? `${flag} ${name}` : name
+    },
+    [t],
+  )
 }

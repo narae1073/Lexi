@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useDocumentsStore } from '../../app/stores/documents'
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
+import { getLanguage } from '../../lib/languages'
 import type { LanguageCode } from '../../types'
 
 /**
@@ -66,7 +67,7 @@ export function ComposeDocument() {
                   : 'border-line hover:border-line'
               }`}
             >
-              {languageName(code)}
+              <span aria-hidden>{getLanguage(code)?.flag}</span> {languageName(code)}
             </button>
           ))}
         </div>

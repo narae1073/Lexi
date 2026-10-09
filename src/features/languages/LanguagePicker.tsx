@@ -44,7 +44,7 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
           <h2 className="text-ink-muted mb-2 text-xs font-medium">{t('langs.mine')}</h2>
           <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {mine.map((lang) => (
-              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} active />
+              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} flag={lang.flag} active />
             ))}
           </ul>
         </section>
@@ -59,7 +59,7 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
         ) : (
           <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {others.map((lang) => (
-              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} active={false} />
+              <LanguageButton key={lang.code} code={lang.code} label={lang.nativeLabel} flag={lang.flag} active={false} />
             ))}
           </ul>
         )}
@@ -84,10 +84,12 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
 function LanguageButton({
   code,
   label,
+  flag,
   active,
 }: {
   code: (typeof SUPPORTED_LANGUAGES)[number]['code']
   label: string
+  flag: string
   active: boolean
 }) {
   const languageName = useLanguageName()
@@ -105,7 +107,9 @@ function LanguageButton({
             : 'border-line bg-surface hover:border-line'
         }`}
       >
-        <span className="text-sm font-medium">{languageName(code)}</span>
+        <span className="text-sm font-medium">
+          <span aria-hidden>{flag}</span> {languageName(code)}
+        </span>
         {/*
           선택된 카드의 바탕은 강조색이다 — 표면용 옅은 글자색을 그대로 쓰면 묻힌다.
           선택 상태에서는 강조색 위의 글자색을 쓴다. 테마마다 강조색 위 글자색을

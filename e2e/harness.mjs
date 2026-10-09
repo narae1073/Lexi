@@ -483,8 +483,9 @@ class Ctx {
   async createDocument(text, languageLabel) {
     if (languageLabel) {
       const ok = await this.#eval(`(() => {
+        // 언어 칩에 국기가 붙어 "🇩🇪 German" 형태이므로 포함 매칭으로 찾는다
         const b = [...document.querySelectorAll('button')].find(x =>
-          x.className.includes('rounded-lg') && x.innerText.trim() === ${JSON.stringify(languageLabel)});
+          x.className.includes('rounded-lg') && x.innerText.includes(${JSON.stringify(languageLabel)}));
         if (!b) return false;
         b.click();
         return true;

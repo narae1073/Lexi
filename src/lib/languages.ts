@@ -6,14 +6,14 @@
  * types/index.ts 가 여기서 유니온을 가져가므로 순환이 없도록 이 파일은 types 를 import 하지 않는다.
  */
 export const SUPPORTED_LANGUAGES = [
-  { code: 'en', nativeLabel: 'English', cjk: false },
-  { code: 'ja', nativeLabel: '日本語', cjk: true },
-  { code: 'ko', nativeLabel: '한국어', cjk: false },
-  { code: 'es', nativeLabel: 'Español', cjk: false },
-  { code: 'fr', nativeLabel: 'Français', cjk: false },
-  { code: 'de', nativeLabel: 'Deutsch', cjk: false },
-  { code: 'pt', nativeLabel: 'Português', cjk: false },
-  { code: 'zh', nativeLabel: '中文', cjk: true },
+  { code: 'en', nativeLabel: 'English', cjk: false, flag: '🇺🇸' },
+  { code: 'ja', nativeLabel: '日本語', cjk: true, flag: '🇯🇵' },
+  { code: 'ko', nativeLabel: '한국어', cjk: false, flag: '🇰🇷' },
+  { code: 'es', nativeLabel: 'Español', cjk: false, flag: '🇪🇸' },
+  { code: 'fr', nativeLabel: 'Français', cjk: false, flag: '🇫🇷' },
+  { code: 'de', nativeLabel: 'Deutsch', cjk: false, flag: '🇩🇪' },
+  { code: 'pt', nativeLabel: 'Português', cjk: false, flag: '🇵🇹' },
+  { code: 'zh', nativeLabel: '中文', cjk: true, flag: '🇨🇳' },
 ] as const satisfies readonly SupportedLanguageShape[]
 
 type SupportedLanguageShape = {
@@ -21,6 +21,8 @@ type SupportedLanguageShape = {
   nativeLabel: string
   /** 공백 없는 언어 — 토크나이저가 Intl.Segmenter 분절을 우선해야 함 (PLAN.md §5.1) */
   cjk: boolean
+  /** 언어 이름 앞에 붙는 국기 */
+  flag: string
 }
 
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number]
@@ -34,6 +36,11 @@ const BY_CODE = new Map<string, SupportedLanguage>(
 
 export function getLanguage(code: string): SupportedLanguage | undefined {
   return BY_CODE.get(code)
+}
+
+/** 언어 코드에 대응하는 국기. 모르는 코드는 빈 문자열 — 이름만 보인다. */
+export function getLanguageFlag(code: string): string {
+  return BY_CODE.get(code)?.flag ?? ''
 }
 
 /** 이 언어를 배우면 뜻은 영어로 보여준다 (PLAN.md §1 언어 방향) */

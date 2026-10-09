@@ -11,6 +11,7 @@ import {
   useTranslation,
 } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
+import { getLanguage } from '../../lib/languages'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
@@ -155,7 +156,7 @@ export function Wordbook() {
                   : 'rounded-lg border border-line px-3 py-1.5 text-sm hover:border-accent'
               }
             >
-              {languageName(code)}
+              <span aria-hidden>{getLanguage(code)?.flag}</span> {languageName(code)}
             </button>
           ))}
         </div>
