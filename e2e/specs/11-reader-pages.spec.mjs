@@ -112,6 +112,12 @@ export async function run(ctx) {
   await sleep(500)
   ctx.check('다음 쪽으로 간다', (await currentPage(ctx)) === 2, `${await currentPage(ctx)}쪽`)
 
+  // ── 새로고침해도 읽던 쪽이 유지된다 ──
+  await ctx.reload()
+  await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
+  await sleep(500)
+  ctx.check('새로고침해도 둘째 쪽에 머문다', (await currentPage(ctx)) === 2, `${await currentPage(ctx)}쪽`)
+
   /*
    * 뒤쪽 쪽의 본문은 원문 그 구간과 정확히 같아야 한다.
    *
@@ -326,6 +332,14 @@ async function openFirstDocument(ctx) {
   )
   await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
   await sleep(500)
+  // 읽던 쪽이 복원될 수 있으므로(새로고침 유지), 처음부터 넘기려면 1쪽으로 간다
+  await ctx.page.evaluate(`(() => {
+    const n = document.querySelector('nav[aria-label]');
+    const first = n && [...n.querySelectorAll('button')].find(b => b.innerText.trim() === '1');
+    if (first) first.click();
+    return true;
+  })()`)
+  await sleep(350)
 }
 
 function sleep() {

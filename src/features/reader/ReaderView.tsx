@@ -100,7 +100,17 @@ export function ReaderView({ doc }: { doc: Document }) {
 
   const pageWords = useSettingsStore((s) => s.readerPageWords)
   const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
-  const [pageIndex, setPageIndex] = useState(0)
+  const setReaderPage = useSettingsStore((s) => s.setReaderPage)
+  /**
+   * 새로고침해도 읽던 쪽에서 이어 읽는다.
+   *
+   * 페이지를 넘길 때마다 문서별로 저장해 둔다. 처음 열 때는 저장된 쪽부터 시작하고,
+   * 본문이 달라져 쪽이 줄었으면 렌더 쪽에서 범위에 맞춰 당긴다.
+   */
+  const [pageIndex, setPageIndex] = useState(() => {
+    const saved = useSettingsStore.getState().readerPageByDocument[doc.id]
+    return typeof saved === 'number' && Number.isInteger(saved) && saved >= 0 ? saved : 0
+  })
   const retryTimer = useRef(0)
   const settleTimer = useRef(0)
 
@@ -208,9 +218,11 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const goToPage = useCallback((index: number) => {
     setPageIndex(index)
+    // 다음에 열 때(새로고침 포함) 이 자리부터 시작한다
+    setReaderPage(doc.id, index)
     setSelection(null)
     window.scrollTo({ top: 0 })
-  }, [])
+  }, [doc.id, setReaderPage])
 
   /**
    * 상태 바 통계.

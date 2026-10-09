@@ -52,6 +52,12 @@ export function clampTextScale(value: number): number {
   return Math.round(clamped / TEXT_SCALE_STEP) * TEXT_SCALE_STEP
 }
 
+/** 깨진 저장은 0쪽으로 — 복원할 때 쪽 수에 맞춰 다시 당긴다 */
+export function sanitizeReaderPage(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.floor(value))
+}
+
 type SettingsState = {
   /** 사용자가 명시적으로 고른 앱 언어. null 이면 기기 설정을 따른다. */
   appLanguage: AppLanguage | null
@@ -69,6 +75,13 @@ type SettingsState = {
   documentSortDir: Record<DocumentSort, SortDirection>
   /** 문서 본문 한 쪽에 담을 단어 수 */
   readerPageWords: number
+  /**
+   * 문서별로 읽던 쪽. 새로고침해도 그 자리에서 이어 읽는다.
+   *
+   * 쪽은 기기·화면 설정에 따라 달라지므로 계정 동기화 대상이 아니다 — 이 기기의
+   * localStorage 에만 둔다. 복원할 때는 쪽 수를 보고 범위를 벗어나면 당긴다.
+   */
+  readerPageByDocument: Record<string, number>
   setAppLanguage: (language: AppLanguage | null) => void
   setTheme: (theme: ThemeId | null) => void
   setUnmarkedDim: (value: number) => void
@@ -78,6 +91,7 @@ type SettingsState = {
   setDocumentSortDir: (sort: DocumentSort, value: SortDirection) => void
   toggleDocumentSortDir: (sort: DocumentSort) => void
   setReaderPageWords: (value: number) => void
+  setReaderPage: (documentId: string, page: number) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
 }
@@ -104,6 +118,7 @@ export const useSettingsStore = create<SettingsState>()(
       documentSort: DEFAULT_DOCUMENT_SORT,
       documentSortDir: { ...DEFAULT_SORT_DIRECTION },
       readerPageWords: DEFAULT_READER_PAGE_WORDS,
+      readerPageByDocument: {},
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
       setUnmarkedDim: (value) => set({ unmarkedDim: clampUnmarkedDim(value) }),
@@ -130,6 +145,13 @@ export const useSettingsStore = create<SettingsState>()(
         }))
       },
       setReaderPageWords: (value) => set({ readerPageWords: pageWordsOrDefault(value) }),
+      setReaderPage: (documentId, page) =>
+        set((s) => ({
+          readerPageByDocument: {
+            ...s.readerPageByDocument,
+            [documentId]: sanitizeReaderPage(page),
+          },
+        })),
       resolvedAppLanguage: () => get().appLanguage ?? detectDeviceLanguage(),
       resolvedTheme: () => get().theme ?? detectPreferredTheme(),
     }),
