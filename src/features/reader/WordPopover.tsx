@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
+import { StarPalette } from './StarPalette'
 import { STATUS_GLYPH, WORD_STATUSES, type LanguageCode, type Segment, type WordStatus } from '../../types'
 import { Popover } from './Popover'
 
@@ -44,8 +45,9 @@ export function WordPopover({
   const starColor = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.starColor)
   const setStatus = useWordStatesStore((s) => s.setStatus)
   const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
-  const shuffleStarColor = useWordStatesStore((s) => s.shuffleStarColor)
+  const setStarColor = useWordStatesStore((s) => s.setStarColor)
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
+  const [showPalette, setShowPalette] = useState(false)
 
   return (
     <Popover
@@ -76,15 +78,15 @@ export function WordPopover({
           {favorite ? '★' : '☆'}
         </button>
         {/*
-          별 색 바꾸기 — 별이 있을 때만 보인다. 누를 때마다 지금 색을 빼고
-          새로 뽑으므로, 눌렀는데 그대로인 일은 없다.
+          별 색 고르기 — 별이 있을 때만 보인다. 작은 색창이 아래에 펼쳐진다.
         */}
         {favorite && (
           <button
             type="button"
-            onClick={() => shuffleStarColor(languageCode, lemma, segment.text)}
-            aria-label={t('favorite.shuffleColor')}
-            title={t('favorite.shuffleColor')}
+            onClick={() => setShowPalette((v) => !v)}
+            aria-expanded={showPalette}
+            aria-label={t('favorite.pickColor')}
+            title={t('favorite.pickColor')}
             className="pointer-events-auto flex shrink-0 items-center rounded-lg px-1.5 py-1 transition hover:opacity-80"
           >
             <span
@@ -95,6 +97,16 @@ export function WordPopover({
           </button>
         )}
       </div>
+
+      {favorite && showPalette && (
+        <StarPalette
+          current={starColor}
+          onPick={(hex) => {
+            setStarColor(languageCode, lemma, hex, segment.text)
+            setShowPalette(false)
+          }}
+        />
+      )}
 
       <div className="grid grid-cols-3 gap-1" role="group" aria-label={t('status.group')}>
         {WORD_STATUSES.map((status: WordStatus) => {

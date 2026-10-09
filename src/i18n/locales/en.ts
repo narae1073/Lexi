@@ -209,7 +209,18 @@ export const en = {
   favorite: {
     add: 'Add to favorites',
     remove: 'Remove from favorites',
-    shuffleColor: 'Shuffle star color',
+    pickColor: 'Pick a star color',
+    colors: {
+      white: 'White',
+      red: 'Red',
+      orange: 'Orange',
+      yellow: 'Yellow',
+      green: 'Green',
+      blue: 'Blue',
+      indigo: 'Indigo',
+      violet: 'Violet',
+      black: 'Black',
+    },
   },
 
   sentence: {

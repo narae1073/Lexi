@@ -208,7 +208,18 @@ export const ko: Dictionary = {
   favorite: {
     add: '즐겨찾기에 추가',
     remove: '즐겨찾기에서 제거',
-    shuffleColor: '별 색 바꾸기',
+    pickColor: '별 색 고르기',
+    colors: {
+      white: '흰색',
+      red: '빨강',
+      orange: '주황',
+      yellow: '노랑',
+      green: '초록',
+      blue: '파랑',
+      indigo: '남색',
+      violet: '보라',
+      black: '검정',
+    },
   },
 
   sentence: {

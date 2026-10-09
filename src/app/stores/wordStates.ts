@@ -31,12 +31,12 @@ type WordStatesStore = {
    */
   toggleFavorite: (languageCode: LanguageCode, lemma: string, surface?: string) => void
   /**
-   * 별 스티커의 색을 바꾼다 — 팔레트에서 지금 색을 빼고 새로 뽑는다.
+   * 별 스티커의 색을 고른다 — 색창의 9색 중 하나.
    *
    * 별이 있는 단어에만 된다. 색을 바꾸는 것도 별의 변경이라 시각을 찍어
    * 동기화에 실어 보낸다.
    */
-  shuffleStarColor: (languageCode: LanguageCode, lemma: string, surface?: string) => void
+  setStarColor: (languageCode: LanguageCode, lemma: string, color: string, surface?: string) => void
   /**
    * 이 언어의 상태를 읽는다.
    *
@@ -117,17 +117,14 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     })
   },
 
-  shuffleStarColor: (languageCode, lemma, surface) => {
+  setStarColor: (languageCode, lemma, color, surface) => {
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     // 별이 없으면 바꿀 색도 없다 — 팝오버에서 별이 있을 때만 보여준다
     if (!previous?.favorite) return
     const timestamp = new Date().toISOString()
 
-    const next: WordState = {
-      ...previous,
-      starColor: randomStarColor(previous.starColor),
-    }
+    const next: WordState = { ...previous, starColor: color }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
 

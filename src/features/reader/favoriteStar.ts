@@ -6,17 +6,23 @@
  * 뽑은 값은 단어 상태에 저장해 두고 그린다.
  */
 
-/** 스티커다운 색만 — 너무 옅거나 어두우면 별이 묻힌다 */
-export const STAR_COLORS = [
-  '#eab308',
-  '#ef4444',
-  '#ec4899',
-  '#f97316',
-  '#22c55e',
-  '#3b82f6',
-  '#a855f7',
-  '#14b8a3',
+/** 흰빨주노초파남보검 — 색창에 놓는 순서 그대로 */
+export const STAR_SWATCHES = [
+  { name: 'white', hex: '#ffffff' },
+  { name: 'red', hex: '#ef4444' },
+  { name: 'orange', hex: '#f97316' },
+  { name: 'yellow', hex: '#eab308' },
+  { name: 'green', hex: '#22c55e' },
+  { name: 'blue', hex: '#3b82f6' },
+  { name: 'indigo', hex: '#6366f1' },
+  { name: 'violet', hex: '#a855f7' },
+  { name: 'black', hex: '#000000' },
 ] as const
+
+export type StarSwatchName = (typeof STAR_SWATCHES)[number]['name']
+
+/** 스티커다운 색만 — 너무 옅거나 어두우면 별이 묻힌다 */
+export const STAR_COLORS: readonly string[] = STAR_SWATCHES.map((swatch) => swatch.hex)
 
 /** -25도에서 25도 사이 */
 export function randomStarAngle(): number {
