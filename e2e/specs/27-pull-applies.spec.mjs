@@ -89,7 +89,7 @@ function sleep(ms = 400) {
 /** 처음 열리는 탭은 ★ — 목록을 보려면 미표시 탭으로 간다 */
 async function gotoUnmarkedTab(ctx) {
   await ctx.page.evaluate(`(() => {
-    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\\d/.test(b.innerText));
     const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
     if (tab) tab.click();
     return true;

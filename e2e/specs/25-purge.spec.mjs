@@ -96,7 +96,7 @@ export async function run(ctx) {
   await sleep(1000)
   // 처음 열리는 탭은 ★ — 지워진 단어가 없는지 미표시 목록에서 본다
   await ctx.page.evaluate(`(() => {
-    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\\d/.test(b.innerText));
     const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
     if (tab) tab.click();
     return true;
