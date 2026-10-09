@@ -7,6 +7,11 @@ export type WordbookGroup = WordStatus | 'unmarked' | 'favorite'
 
 export const WORDBOOK_GROUPS: WordbookGroup[] = ['favorite', 'known', 'unsure', 'unknown', 'unmarked']
 
+/** 깨진 저장은 ★ 탭으로 — 처음 여는 자리와 같다 */
+export function wordbookGroupOrDefault(value: unknown): WordbookGroup {
+  return WORDBOOK_GROUPS.includes(value as WordbookGroup) ? (value as WordbookGroup) : 'favorite'
+}
+
 export type WordbookEntry = {
   lemma: string
   /** 이 lemma 이 문서들에서 실제로 쓰인 표기들 */

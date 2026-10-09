@@ -14,15 +14,12 @@ import { useWordStatesStore } from '../../app/stores/wordStates'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
-import type { WordbookGroup } from './buildWordbook'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
 import { WordStatusChart } from './WordStatusChart'
 import { countsFromGroups } from './statusChart'
 import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
-
-type GroupKey = WordbookGroup
 
 const EMPTY: WordOccurrence[] = []
 
@@ -64,7 +61,12 @@ export function Wordbook() {
   const effectiveDocumentId = scopedDocument?.id
 
   const [query, setQuery] = useState('')
-  const [group, setGroup] = useState<GroupKey>('unmarked')
+  /**
+   * 마지막으로 본 탭을 기억한다 — 새로고침해도 그 탭에 머문다.
+   * 처음 여는 자리는 ★(설정 기본값)다.
+   */
+  const group = useSettingsStore((s) => s.wordbookGroup)
+  const setGroup = useSettingsStore((s) => s.setWordbookGroup)
   const [pageNumber, setPageNumber] = useState(1)
 
   const pageSize = useSettingsStore((s) => s.wordbookPageSize)

@@ -26,6 +26,15 @@ export async function run(ctx) {
     tabOrder.join(' | '))
   ctx.check('등장 기록이 단어장으로 반영된다', Number(counts[4]) > 0, `미표시 ${counts[4]}개`)
 
+  // 처음 열리는 탭은 ★ — 미표시를 보려면 탭을 눌러 간다
+  await ctx.page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
+    if (tab) tab.click();
+    return true;
+  })()`)
+  await sleep(400)
+
   // ── 목록 내용 ──
   const list = await ctx.page.evaluate(`(() => {
     const items = [...document.querySelectorAll('li')].filter(li => li.querySelector('button[role], button[aria-pressed]'));

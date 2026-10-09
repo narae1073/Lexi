@@ -46,6 +46,14 @@ async function openWordbook(ctx) {
   await ctx.clickSelector('a[href="/wordbook"]')
   await ctx.waitFor(`!!document.querySelector('input[placeholder]')`, '단어장')
   await sleep(600)
+  // 처음 열리는 탭은 ★ — 목록을 보려면 미표시 탭으로 간다
+  await ctx.page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
+    if (tab) tab.click();
+    return true;
+  })()`)
+  await sleep(400)
 }
 
 /**

@@ -23,6 +23,8 @@ export async function run(ctx) {
     return true;
   })()`)
   await sleep(1000)
+  await gotoUnmarkedTab(ctx)
+  await sleep(400)
 
   /** 상태 탭의 개수 — null 을 돌려주면 값이 사라지므로 물건으로 감싼다 */
   const unmarkedCount = () => ctx.page.evaluate(`(() => {
@@ -48,6 +50,8 @@ export async function run(ctx) {
     return true;
   })()`)
   await sleep(1200)
+  await gotoUnmarkedTab(ctx)
+  await sleep(400)
 
   const after = await unmarkedCount()
   ctx.check('새로고침 뒤에도 단어가 남아 있다', after.count === before.count,
@@ -80,4 +84,14 @@ export async function run(ctx) {
 
 function sleep(ms = 400) {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/** 처음 열리는 탭은 ★ — 목록을 보려면 미표시 탭으로 간다 */
+async function gotoUnmarkedTab(ctx) {
+  await ctx.page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
+    if (tab) tab.click();
+    return true;
+  })()`)
 }

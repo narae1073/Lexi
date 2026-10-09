@@ -59,6 +59,15 @@ export async function run(ctx) {
   })()`)
   await sleep(800)
 
+  // 처음 열리는 탭은 ★ — 미표시 목록을 보려면 탭을 눌러 간다
+  await ctx.page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('button[aria-pressed]')].find(b => /\d/.test(b.innerText));
+    const tab = row && [...row.parentElement.children].find(c => /^Not marked/.test(c.innerText.trim()));
+    if (tab) tab.click();
+    return true;
+  })()`)
+  await sleep(400)
+
   // ── 버그: 방금 연 문서 단어만 보인다 ──
   // 단어장 목록의 행만 본다 — 본문 전체로 보면 드롭다운의 옵션 제목이 섞여 읽는다
   const all = await ctx.page.evaluate(`(() => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordState, WordStatus } from '../../types'
-import { buildWordbook, groupByStatus } from './buildWordbook'
+import { buildWordbook, groupByStatus, wordbookGroupOrDefault } from './buildWordbook'
 
 const occurrence = (over: Partial<WordOccurrence> & { lemma: string }): WordOccurrence => ({
   documentId: 'doc-1',
@@ -158,5 +158,19 @@ describe('buildWordbook', () => {
       statusOf: (lang, lemma) => (lang === 'ko' && lemma === '고양이' ? state('고양이', 'known') : undefined),
     })
     expect(entries[0].status).toBe('known')
+  })
+})
+
+describe('wordbookGroupOrDefault', () => {
+  it('다섯 탭은 그대로 둔다', () => {
+    for (const group of ['favorite', 'known', 'unsure', 'unknown', 'unmarked']) {
+      expect(wordbookGroupOrDefault(group)).toBe(group)
+    }
+  })
+
+  it('이상한 값은 ★ 탭으로 — 처음 여는 자리와 같다', () => {
+    expect(wordbookGroupOrDefault('all')).toBe('favorite')
+    expect(wordbookGroupOrDefault(null)).toBe('favorite')
+    expect(wordbookGroupOrDefault(undefined)).toBe('favorite')
   })
 })

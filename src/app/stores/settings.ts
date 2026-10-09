@@ -16,6 +16,8 @@ import {
 } from '../../features/reader/documentSort'
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from '../../lib/paginate'
 import { DEFAULT_READER_PAGE_WORDS, pageWordsOrDefault } from '../../features/reader/pageBreak'
+import type { WordbookGroup } from '../../features/wordbook/buildWordbook'
+import { wordbookGroupOrDefault } from '../../features/wordbook/buildWordbook'
 
 /** 표시 안 한 단어의 옅은 정도 (%) — 0 이면 본문색 그대로, 클수록 옅다 */
 export const UNMARKED_DIM_MIN = 0
@@ -84,6 +86,12 @@ type SettingsState = {
   textScale: number
   /** 단어장 한 페이지에 보여줄 단어 수 */
   wordbookPageSize: number
+  /**
+   * 단어장에서 마지막으로 본 탭. 새로고침해도 그 탭에 머문다.
+   *
+   * 처음 여는 자리는 ★ — 읽던 탭을 기억하는 것과 처음 기본값은 별개다.
+   */
+  wordbookGroup: WordbookGroup
   /** 문서 목록 정렬 기준 */
   documentSort: DocumentSort
   /** 정렬 방향 — 기준마다 따로 들고 있다 */
@@ -104,6 +112,7 @@ type SettingsState = {
   setUnmarkedDim: (value: number) => void
   setTextScale: (value: number) => void
   setWordbookPageSize: (value: number) => void
+  setWordbookGroup: (value: WordbookGroup) => void
   setDocumentSort: (value: DocumentSort) => void
   setDocumentSortDir: (sort: DocumentSort, value: SortDirection) => void
   toggleDocumentSortDir: (sort: DocumentSort) => void
@@ -133,6 +142,7 @@ export const useSettingsStore = create<SettingsState>()(
       unmarkedDim: UNMARKED_DIM_DEFAULT,
       textScale: TEXT_SCALE_DEFAULT,
       wordbookPageSize: DEFAULT_PAGE_SIZE,
+      wordbookGroup: 'favorite',
       documentSort: DEFAULT_DOCUMENT_SORT,
       documentSortDir: { ...DEFAULT_SORT_DIRECTION },
       readerPageWords: DEFAULT_READER_PAGE_WORDS,
@@ -144,6 +154,7 @@ export const useSettingsStore = create<SettingsState>()(
       setTextScale: (value) => set({ textScale: clampTextScale(value) }),
       // 매번 고를 필요는 없지만, 지정한 뒤에 다음번에도 남아 있어야 한다
       setWordbookPageSize: (value) => set({ wordbookPageSize: pageSizeOrDefault(value) }),
+      setWordbookGroup: (value) => set({ wordbookGroup: wordbookGroupOrDefault(value) }),
       setDocumentSort: (value) => set({ documentSort: documentSortOrDefault(value) }),
       setDocumentSortDir: (sort, value) => {
         const safe = documentSortOrDefault(sort)
