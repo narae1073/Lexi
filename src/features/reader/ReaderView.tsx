@@ -8,6 +8,8 @@ import {
   useLanguageName,
   useSettingsStore,
   useTranslation,
+  clampStarSize,
+  sanitizeStarColor,
 } from '../../app/stores/settings'
 import { statusClass } from '../../lib/color'
 import { DEFINITION_LANGUAGE } from '../../lib/languages'
@@ -29,6 +31,8 @@ import { SelectionDebugPanel } from './SelectionDebugPanel'
 import { isCapitalisedPosition, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
+import { WordWithStar } from './WordWithStar'
+import { starTilt } from './favoriteStar'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -101,6 +105,8 @@ export function ReaderView({ doc }: { doc: Document }) {
   const pageWords = useSettingsStore((s) => s.readerPageWords)
   const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
   const setReaderPage = useSettingsStore((s) => s.setReaderPage)
+  const starSizeSetting = useSettingsStore((s) => s.favoriteStarSize)
+  const starColorSetting = useSettingsStore((s) => s.favoriteStarColor)
   /**
    * 새로고침해도 읽던 쪽에서 이어 읽는다.
    *
@@ -538,15 +544,19 @@ export function ReaderView({ doc }: { doc: Document }) {
       >
         {pageItems.map((segment) =>
           segment.type === 'word' ? (
-            <span
+            <WordWithStar
               key={segment.start}
-              data-start={segment.start}
-              className={`cursor-pointer rounded-sm ${statusClass(
+              segment={segment}
+              statusClassName={statusClass(
                 byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.status,
-              )}`}
-            >
-              {segment.text}
-            </span>
+              )}
+              starred={
+                byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.favorite ?? false
+              }
+              tiltDegrees={starTilt(doc.languageCode, lemmaFor(segment))}
+              starSize={clampStarSize(starSizeSetting)}
+              starColor={sanitizeStarColor(starColorSetting)}
+            />
           ) : (
             <span key={segment.start}>{segment.text}</span>
           ),

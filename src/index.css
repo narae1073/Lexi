@@ -222,3 +222,26 @@ body {
 * {
   scrollbar-color: var(--t-line) transparent;
 }
+
+/*
+ * 즐겨찾기 별 스티커.
+ *
+ * 별을 DOM 자식으로 넣으면 안 된다 — textContent 와 Range.toString() 에 ★이 섞여
+ * 단어 클릭 매칭과 드래그 번역의 오프셋 계산이 어긋난다. 가상요소는 DOM 텍스트에
+ * 없으므로 본문은 그대로 두고 별만 얹는다.
+ */
+.lexi-fav {
+  position: relative;
+}
+
+.lexi-fav::after {
+  content: '★';
+  position: absolute;
+  top: -0.45em;
+  right: -0.25em;
+  font-size: var(--star-size, 65%);
+  color: var(--star-color, #eab308);
+  transform: rotate(var(--star-tilt, 0deg));
+  line-height: 1;
+  pointer-events: none;
+}

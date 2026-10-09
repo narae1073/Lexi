@@ -1,6 +1,7 @@
 import { useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { AccountPanel } from './AccountPanel'
 import { AppLanguageSwitcher } from './AppLanguageSwitcher'
+import { FavoriteStarControl } from './FavoriteStarControl'
 import { ThemePicker } from './ThemePicker'
 import { TextScaleControl } from './TextScaleControl'
 import { UnmarkedDimControl } from './UnmarkedDimControl'
@@ -31,6 +32,8 @@ export function SettingsPanel() {
       <TextScaleControl />
 
       <UnmarkedDimControl />
+
+      <FavoriteStarControl />
 
       <div className="flex items-center gap-3">
         <button

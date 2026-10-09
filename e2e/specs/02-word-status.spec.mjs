@@ -91,6 +91,17 @@ export async function run(ctx) {
   ctx.check('새로고침 후에도 별이 유지된다', starAfter?.star === '★', JSON.stringify(starAfter))
   await ctx.pressEscape()
 
+  // 본문에 별 스티커가 붙는다 — 가상요소라 본문 텍스트는 그대로다
+  const sticker = await ctx.page.evaluate(`(() => {
+    const el = [...document.querySelectorAll('[data-start]')].find(e => e.textContent === 'apple');
+    if (!el || !el.hasAttribute('data-favorite')) return null;
+    const after = getComputedStyle(el, '::after');
+    return { content: after.content, transform: after.transform, color: after.color };
+  })()`)
+  ctx.check('본문에 별 스티커가 붙는다',
+    sticker !== null && (sticker.content ?? '').includes('★') && sticker.transform !== 'none',
+    JSON.stringify(sticker))
+
   // ESC 로 닫는다
   await ctx.clickWord('economy')
   await sleep()
