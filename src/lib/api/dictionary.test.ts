@@ -38,9 +38,14 @@ describe('dictionaryKey', () => {
   })
 
   it('대소문자와 앞뒤 공백을 정규화한다', () => {
-    expect(dictionaryKey('de', 'Häuser')).toBe('de::häuser')
-    expect(dictionaryKey('de', '  häuser  ')).toBe('de::häuser')
+    expect(dictionaryKey('de', 'Häuser')).toBe('de::en::häuser')
+    expect(dictionaryKey('de', '  häuser  ')).toBe('de::en::häuser')
     expect(dictionaryKey('de', 'HÄUSER')).toBe(dictionaryKey('de', 'häuser'))
+  })
+
+  it('목표 언어가 다르면 다른 키다 — 뜻이 섞이지 않는다', () => {
+    expect(dictionaryKey('zh', '北京大学', 'fr')).toBe('zh::fr::北京大学')
+    expect(dictionaryKey('zh', '北京大学', 'fr')).not.toBe(dictionaryKey('zh', '北京大学', 'en'))
   })
 
   it('결과가 패널이 찾는 키 자리에 저장된다', async () => {
@@ -58,7 +63,7 @@ describe('dictionaryKey', () => {
   it('요청 본문에는 표기를 그대로 보낸다', async () => {
     await useDictionaryStore.getState().lookup('de', 'Häuser', 'Häuser')
     expect(invoke).toHaveBeenCalledWith('dictionary', {
-      body: { languageCode: 'de', lemma: 'häuser', surface: 'Häuser' },
+      body: { languageCode: 'de', lemma: 'häuser', surface: 'Häuser', targetLanguage: 'en' },
     })
   })
 })

@@ -200,7 +200,7 @@ export const en = {
     notFound: 'No entry for “{word}”.',
     failed: 'Could not reach the dictionary.',
     failedStatus: 'Dictionary error ({status}).',
-    source: 'Wiktionary · {license}',
+    source: '{name} · {license}',
     offline: 'Offline — showing a copy saved on this device.',
     hide: 'Hide',
     baseForm: 'Base form',

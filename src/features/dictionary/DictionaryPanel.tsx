@@ -159,7 +159,7 @@ function SectionView({
           divider ? 'border-line border-t pt-1.5' : ''
         }`}
       >
-        {t('dictionary.source', { license: section.source.license })}
+        {t('dictionary.source', { name: section.source.name, license: section.source.license })}
       </a>
     </section>
   )

@@ -42,6 +42,18 @@ export async function run(ctx) {
   await ctx.clickWord('北京大学')
   await sleep()
   ctx.check('합친 단어를 누르면 팝오버가 열린다', (await ctx.popover()) !== null)
+
+  // 사전은 CC-CEDICT — 병음+영어 뜻, 출처 표기와 함께
+  const entry = await ctx.openDictionary()
+  ctx.check('CC-CEDICT 뜻이 나온다', /Beijing|Peking/i.test(entry?.text ?? ''),
+    entry?.text.replace(/\n/g, ' | ').slice(0, 120))
+  ctx.check('병음이 보인다', /Běi|jīng/i.test(entry?.text ?? ''),
+    entry?.text.replace(/\n/g, ' | ').slice(0, 60))
+  ctx.check('출처가 CC-CEDICT 다', /CC-CEDICT/.test(entry?.text ?? ''))
+  await ctx.pressEscape()
+
+  await ctx.clickWord('北京大学')
+  await sleep()
   await ctx.setStatus('Know')
   await ctx.pressEscape()
 

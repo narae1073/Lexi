@@ -7,11 +7,12 @@ import {
   referencedHeadwords,
   type Candidate,
 } from '../_shared/inflection.ts'
+import { pinyinToneMarks } from '../_shared/ccCedict.ts'
 
 /**
  * POST /functions/v1/dictionary
  *
- * { languageCode, lemma, surface } → 정규화된 사전 엔트리
+ * { languageCode, lemma, surface, targetLanguage? } → 정규화된 사전 엔트리
  *
  * 활용형 표기를 클릭하면 표기 자체의 항목과 기본형 항목을 함께 돌려준다.
  *   영어  running → [running 항목, run 기본형 항목]
@@ -20,6 +21,11 @@ import {
  *
  * lemma 은 캐시 키이자 소문자 정규형이고, surface 는 원문 표기다.
  * 독일어처럼 명사를 대문자로 쓰는 언어는 표기를 보존해야 사전이 잡힌다.
+ *
+ * 중국어는 CC-CEDICT 자체 테이블을 본다 (무료, 쿼터 없음).
+ * lindera 가 합친 단어(北京大学)가 사전 항목과 같은 단위라 맞아떨어진다.
+ * CC-CEDICT 는 중영 전용이라 목표 언어가 영어가 아닐 땐 기존 경로로 간다 —
+ * 캐시 키에 목표 언어를 넣어 섞이지 않게 한다.
  *
  * 출처는 English Wiktionary (CC BY-SA 4.0) 기반의 freedictionaryapi.com.
  * 키가 필요 없고 무료다. 비영어 언어를 배워도 정의는 영어로 온다 —
@@ -45,6 +51,11 @@ const MAX_PARTS = 4
 const MAX_PHONETICS = 4
 const MAX_EXAMPLES_PER_SENSE = 1
 
+/** CC-CEDICT 한 항목이 만드는 섹션 수 — 和 같은 다독음자는 섹션이 여럿이다 */
+const MAX_CEDICT_READINGS = 4
+/** CC-CEDICT 뜻 수 — 영어 위키낱말 경로의 상한과 맞춘다 */
+const MAX_CEDICT_SENSES = 4
+
 /**
  * 캐시 페이로드의 스키마 버전.
  *
@@ -53,7 +64,7 @@ const MAX_EXAMPLES_PER_SENSE = 1
  * 올리면 이전 행은 자동으로 무효가 되고 다음 요청에서 다시 조회한다.
  */
 /** 응답 구조의 버전 */
-const SCHEMA_VERSION = '5'
+const SCHEMA_VERSION = '6'
 
 /**
  * 캐시 페이로드 버전 = 구조 버전 + 활용 규칙 버전.
@@ -117,7 +128,7 @@ type Section = {
   role: 'surface' | 'base'
   phonetics: string[]
   parts: Part[]
-  source: { url: string; license: string }
+  source: { url: string; license: string; name: string }
 }
 
 // ── 정규화 ────────────────────────────────────────────────────────────────
@@ -176,6 +187,7 @@ function toSection(form: string, role: Section['role'], body: UpstreamBody): Sec
     source: {
       url: body.source?.url ?? `https://en.wiktionary.org/wiki/${encodeURIComponent(form)}`,
       license: body.source?.license?.name ?? 'CC BY-SA 4.0',
+      name: 'Wiktionary',
     },
   }
 }
@@ -214,11 +226,59 @@ function createServiceClient() {
   return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 }
 
+type CedictRow = {
+  simplified: string
+  traditional: string
+  pinyin: string
+  glosses: string[]
+}
+
+/**
+ * CC-CEDICT 에서 찾는다 — 간체·번체 둘 다 본다.
+ *
+ * lindera 가 합친 단어(北京大学)가 사전 항목과 같은 단위라 맞아떨어진다.
+ * 필터를 두 번 나누는 이유: or() 안에 값을 직접 넣으면 따옴표·괄호가
+ * 필터 문법을 깨뜨린다. 중국어에 그런 글자는 없지만, 없는 것을 가정하지 않는다.
+ */
+async function fetchCedict(
+  client: ReturnType<typeof createServiceClient>,
+  word: string,
+): Promise<CedictRow[]> {
+  const columns = 'simplified,traditional,pinyin,glosses'
+  const bySimplified = await client.from('cc_cedict').select(columns).eq('simplified', word)
+  if (bySimplified.error) throw new Error(`cc_cedict lookup failed: ${bySimplified.error.message}`)
+  if ((bySimplified.data ?? []).length > 0) return bySimplified.data as CedictRow[]
+
+  const byTraditional = await client.from('cc_cedict').select(columns).eq('traditional', word)
+  if (byTraditional.error) throw new Error(`cc_cedict lookup failed: ${byTraditional.error.message}`)
+  return (byTraditional.data ?? []) as CedictRow[]
+}
+
+/** CC-CEDICT 행 → 화면 섹션. 다독음자(和)는 읽는 법마다 섹션이 하나씩이다 */
+function cedictSections(word: string, rows: CedictRow[]): Section[] {
+  return rows.slice(0, MAX_CEDICT_READINGS).map((row) => ({
+    form: word,
+    role: 'surface' as const,
+    phonetics: [pinyinToneMarks(row.pinyin)],
+    parts: [
+      {
+        partOfSpeech: '',
+        senses: row.glosses.slice(0, MAX_CEDICT_SENSES).map((definition) => ({
+          definition,
+          tags: [],
+          examples: [],
+        })),
+      },
+    ],
+    source: { url: 'https://www.mdbg.net/chinese/dictionary', license: 'CC BY-SA 4.0', name: 'CC-CEDICT' },
+  }))
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
   try {
-    let payload: { languageCode?: string; lemma?: string; surface?: string }
+    let payload: { languageCode?: string; lemma?: string; surface?: string; targetLanguage?: string }
     try {
       payload = await req.json()
     } catch {
@@ -228,8 +288,12 @@ Deno.serve(async (req) => {
     const languageCode = payload.languageCode ?? ''
     const lemma = (payload.lemma ?? '').trim().toLowerCase()
     const surface = (payload.surface ?? '').trim()
+    // 목표 언어 확장 대비 — 지금은 영어만 쓴다. CC-CEDICT 는 중영 전용이라
+    // 다른 목표 언어의 중국어는 기존 경로(영어 뜻)로 간다.
+    const targetLanguage = (payload.targetLanguage ?? 'en').trim().toLowerCase()
 
     if (!LANGUAGE_RE.test(languageCode)) return json({ error: 'invalid language code' }, 400)
+    if (!/^[a-z]{2}$/.test(targetLanguage)) return json({ error: 'invalid target language' }, 400)
     if (lemma.length === 0) return json({ error: 'lemma is required' }, 400)
     if (lemma.length > MAX_LEMMA_CHARS) return json({ error: 'lemma too long' }, 400)
     // 공백이 섞이면 단어가 아니다 — 문장 조회로 남용되는 것을 막는다
@@ -244,11 +308,48 @@ Deno.serve(async (req) => {
       .select('payload')
       .eq('language_code', languageCode)
       .eq('lemma', lemma)
+      .eq('target_language', targetLanguage)
       .maybeSingle()
 
     if (cached) {
       const stored = cached.payload as Record<string, unknown>
       if (stored.schemaVersion === PAYLOAD_VERSION) return json({ ...stored, cached: true })
+    }
+
+    // 중국어 + 영어 뜻은 CC-CEDICT 자체 테이블을 본다 — 외부 API 쿼터가 없다
+    if (languageCode === 'zh' && targetLanguage === 'en') {
+      let rows: CedictRow[]
+      try {
+        rows = await fetchCedict(client, lemma)
+      } catch {
+        return json({ error: 'dictionary provider unreachable' }, 504)
+      }
+      const sections = cedictSections(lemma, rows)
+      const withGloss = sections.filter((section) =>
+        section.parts.some((part) => part.senses.length > 0),
+      )
+      const response = {
+        schemaVersion: PAYLOAD_VERSION,
+        found: withGloss.length > 0,
+        lemma,
+        languageCode,
+        targetLanguage,
+        matchedForm: null,
+        sections,
+        source: sections[0]?.source ?? null,
+      }
+      const { error: cacheError } = await client.from('dictionary_entries').upsert(
+        {
+          language_code: languageCode,
+          lemma,
+          target_language: targetLanguage,
+          payload: response,
+          provider: 'cc-cedict',
+        },
+        { onConflict: 'language_code,lemma,target_language' },
+      )
+      if (cacheError) console.error('dictionary cache insert failed', cacheError.message)
+      return json({ ...response, cached: false })
     }
 
     // 대소문자와 활용형을 한 번에 처리한다 (forms 의 순서에 따라 탐색한다).
@@ -335,6 +436,7 @@ Deno.serve(async (req) => {
       found: withGloss.length > 0,
       lemma,
       languageCode,
+      targetLanguage,
       /** 기본형으로 해석된 표기 (활용형 복원 또는 대소문자 복원) */
       matchedForm: sections.find((section) => section.role === 'base')?.form ?? null,
       sections,
@@ -347,10 +449,11 @@ Deno.serve(async (req) => {
       {
         language_code: languageCode,
         lemma,
+        target_language: targetLanguage,
         payload: response,
         provider: 'freedictionaryapi.com',
       },
-      { onConflict: 'language_code,lemma' },
+      { onConflict: 'language_code,lemma,target_language' },
     )
     if (cacheError) console.error('dictionary cache insert failed', cacheError.message)
 

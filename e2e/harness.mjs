@@ -468,7 +468,7 @@ class Ctx {
         `(() => { const d = document.querySelector('[role="dialog"]');
            if (!d) return false;
            const t = d.innerText;
-           return !t.includes('Looking up') && (t.includes('Wiktionary') || t.includes('No entry') || t.includes('Could not'));
+            return !t.includes('Looking up') && (t.includes('Wiktionary') || t.includes('CC-CEDICT') || t.includes('No entry') || t.includes('Could not'));
          })()`,
         '사전 결과',
         timeoutMs,

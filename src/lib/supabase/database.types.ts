@@ -165,6 +165,7 @@ export type Database = {
         Row: {
           language_code: string
           lemma: string
+          target_language: string
           payload: Json
           provider: string
           fetched_at: string
@@ -172,6 +173,7 @@ export type Database = {
         Insert: {
           language_code: string
           lemma: string
+          target_language?: string
           payload: Json
           provider: string
           fetched_at?: string
@@ -179,6 +181,7 @@ export type Database = {
         Update: {
           language_code?: string
           lemma?: string
+          target_language?: string
           payload?: Json
           provider?: string
           fetched_at?: string

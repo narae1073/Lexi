@@ -26,7 +26,7 @@ export type DictionarySection = {
   role: 'surface' | 'base'
   phonetics: string[]
   parts: DictionaryPart[]
-  source: { url: string; license: string }
+  source: { url: string; license: string; name: string }
 }
 
 export type DictionaryEntry = {
@@ -58,7 +58,18 @@ const transportStatus = (error: unknown): number | undefined =>
 type DictionaryState = {
   entries: Record<string, DictionaryEntry>
   inFlight: Map<string, Promise<DictionaryEntry>>
-  lookup: (languageCode: LanguageCode, lemma: string, surface?: string) => Promise<DictionaryEntry>
+  /**
+   * 목표 언어로 뜻을 찾는다 — 지금은 영어만 쓴다.
+   *
+   * 나중에 앱 언어가 늘면 정의 언어를 따라가게 하는 자리다. 키·요청·서버 캐시에
+   * 목표 언어가 들어 있어, 중불 사전 같은 다음 provider 가 같은 자리에 꽂힌다.
+   */
+  lookup: (
+    languageCode: LanguageCode,
+    lemma: string,
+    surface?: string,
+    targetLanguage?: string,
+  ) => Promise<DictionaryEntry>
 }
 
 /**
@@ -68,17 +79,22 @@ type DictionaryState = {
  * 소문자로 키를 만들면, 표 대문자 단어(독일어 명사 등)는 결과가 도착해도
  * 패널이 캐시를 못 찾아 "찾는 중" 에서 멈춘다.
  */
-export function dictionaryKey(languageCode: LanguageCode, lemma: string): string {
-  return `${languageCode}::${lemma.trim().toLowerCase()}`
+export function dictionaryKey(
+  languageCode: LanguageCode,
+  lemma: string,
+  targetLanguage = 'en',
+): string {
+  return `${languageCode}::${targetLanguage}::${lemma.trim().toLowerCase()}`
 }
 
 export const useDictionaryStore = create<DictionaryState>((set, get) => ({
   entries: {},
   inFlight: new Map(),
 
-  lookup: (languageCode, lemma, surface) => {
+  lookup: (languageCode, lemma, surface, targetLanguage = 'en') => {
     const word = lemma.trim().toLowerCase()
-    const key = dictionaryKey(languageCode, word)
+    const target = targetLanguage.trim().toLowerCase() || 'en'
+    const key = dictionaryKey(languageCode, word, target)
 
     // 이미 있으면 다시 물어보지 않는다 — 표 대문자 표기와 소문자 표기가
     // 같은 단어로 수렴하므로 캐시 적중률을 떨어뜨리면 안 된다
@@ -99,7 +115,7 @@ export const useDictionaryStore = create<DictionaryState>((set, get) => ({
         async () => {
           const { data, error } = await client.functions.invoke<DictionaryEntry>('dictionary', {
             // surface 를 함께 보내야 독일어처럼 명사를 대문자로 쓰는 언어를 조회할 수 있다
-            body: { languageCode, lemma: word, surface: surface?.trim() },
+            body: { languageCode, lemma: word, surface: surface?.trim(), targetLanguage: target },
           })
 
           if (error) {

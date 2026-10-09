@@ -199,7 +199,7 @@ export const ko: Dictionary = {
     notFound: '‘{word}’ 항목을 찾지 못했습니다.',
     failed: '사전에 연결하지 못했습니다.',
     failedStatus: '사전 오류 ({status}).',
-    source: '위키낱말 · {license}',
+    source: '{name} · {license}',
     offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
     hide: '접기',
     baseForm: '기본형',
