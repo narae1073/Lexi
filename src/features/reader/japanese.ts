@@ -1,6 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
-
 import type { LanguageCode, Segment, Sentence } from '../../types'
+import {
+  byteToCharRanges,
+  ensureLindera,
+  isLinderaReady,
+  peekLindera,
+  useLinderaUpgrade,
+  type LinderaToken,
+} from './lindera'
 import { computeSentences } from './tokenizer'
 
 /**
@@ -10,39 +16,9 @@ import { computeSentences } from './tokenizer'
  * べた 는 어휘가 아니라 상태도 사전도 의미가 없고, 食べる 라는 단어는 어디에도
  * 나타나지 않는다. 학습용으로는 치명적이라 형태소 분석기로 원형·품사를 본다.
  *
- * 원칙:
- * - 엔진(~2MB)은 일본어 문서를 열 때 동적 import 로만 받아 온다.
- * - 사전(~10MB)은 번들에 넣지 않는다. 첫 사용 시 내려받아 OPFS 에 캐시하고,
- *   그 뒤엔 오프라인에서도 동작한다. 없으면 Intl.Segmenter 로 폴백한다.
- * - 먼저 Intl 로 그리고 준비되면 갈아끼운다 — 10MB 를 기다리게 하지 않는다.
+ * 받아 오기·캐시·준비는 공용 하네스(lindera.ts)가 맡고, 여기는 일본어 규칙
+ * (합치기·원형)만 둔다.
  */
-
-const DICT_NAME = 'ipadic-5.3.0'
-const DICT_URL = '/dicts/lindera-ipadic-5.3.0.zip'
-
-/** lindera 토큰 — 필요한 것만 뽑는다 */
-export type LinderaToken = {
-  surface: string
-  /**
-   * IPADIC 상세 [品詞, 細分類1, 細分類2, 細分類3, 活用形, 活用型, 原形, 読み, 発音].
-   *
-   * 웹 빌드는 이 배열로 주고, 이름 붙은 getter(baseForm 등)는 node 빌드에만
-   * 있다 — 직접 필드를 읽으면 브라우저에서 undefined 가 나온다. 실제로 그렇게
-   * 되어 食べた 이 합쳐지지 않았다. 배열을 먼저 보고 없으면 이름으로 본다.
-   */
-  details?: string[]
-  baseForm?: string | null
-  partOfSpeech?: string | null
-  partOfSpeechSubcategory1?: string | null
-  byteStart?: number
-  byteEnd?: number
-  byte_start?: number
-  byte_end?: number
-}
-
-export type JaTokenizer = {
-  tokenize: (text: string) => LinderaToken[]
-}
 
 export type JaMorpheme = {
   surface: string
@@ -60,106 +36,13 @@ export type JaSegmentation = {
   lemmaByStart: Map<number, string>
 }
 
-let cached: JaTokenizer | null = null
-let loading: Promise<JaTokenizer | null> | null = null
-let ready = false
-const listeners = new Set<() => void>()
-
+/** 하위 호환 — 호출부는 이 이름으로 준비를 확인한다 */
 export function isJapaneseReady(): boolean {
-  return ready
+  return isLinderaReady('ja')
 }
 
-function subscribeJapaneseReady(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
-  }
-}
-
-function markReady(tokenizer: JaTokenizer | null): JaTokenizer | null {
-  cached = tokenizer
-  if (tokenizer) {
-    ready = true
-    for (const listener of listeners) listener()
-  } else {
-    // 실패는 세션에 남기지 않는다 — 오프라인이었다가 온라인이 되면 다음에 다시 시도한다
-    loading = null
-  }
-  return tokenizer
-}
-
-/**
- * 일본어 토크나이저를 준비한다 — 성공하면 같은 것을 돌려준다.
- *
- * 실패하면 null 이다. 사전이 없고 네트워크도 없으면 Intl.Segmenter 로 폴백한다 —
- * 일본어 문서가 안 열리는 일은 없다.
- */
-export function ensureJapaneseTokenizer(): Promise<JaTokenizer | null> {
-  if (cached) return Promise.resolve(cached)
-  if (!loading) {
-    loading = loadJapaneseTokenizer()
-      .then(markReady)
-      .catch(() => markReady(null))
-  }
-  return loading
-}
-
-async function loadJapaneseTokenizer(): Promise<JaTokenizer | null> {
-  if (typeof window === 'undefined') return null
-  try {
-    const [{ TokenizerBuilder, loadDictionaryFromBytes }, opfs] = await Promise.all([
-      import('lindera-wasm-bundler'),
-      import('lindera-wasm-bundler/opfs'),
-    ])
-    if (!(await opfs.hasDictionary(DICT_NAME))) {
-      await opfs.downloadDictionary(DICT_URL, DICT_NAME)
-    }
-    const files = await opfs.loadDictionaryFiles(DICT_NAME)
-    const dictionary = loadDictionaryFromBytes(
-      files.metadata,
-      files.dictTrie,
-      files.dictValsIdx,
-      files.dictVals,
-      files.dictWordsIdx,
-      files.dictWords,
-      files.matrixMtx,
-      files.charDef,
-      files.unk,
-    )
-    const builder = new TokenizerBuilder()
-    builder.setDictionaryInstance(dictionary)
-    builder.setMode('normal')
-    const tokenizer = builder.build()
-    return { tokenize: (text: string) => tokenizer.tokenize(text) as LinderaToken[] }
-  } catch {
-    return null
-  }
-}
-
-/**
- * lindera 바이트 오프셋을 문자 오프셋으로 바꾼다.
- *
- * lindera 는 UTF-8 바이트를 주고, JS 문자열은 UTF-16 이라 서로 다르다 —
- * 그대로 쓰면 이모지·옛 한자 뒤의 단어가 어긋난다.
- */
-export function byteToCharRanges(
-  text: string,
-  spans: Array<{ byteStart: number; byteEnd: number }>,
-): Array<[number, number]> {
-  const byteToChar = new Map<number, number>()
-  let byte = 0
-  let char = 0
-  for (const ch of text) {
-    byteToChar.set(byte, char)
-    byte += new TextEncoder().encode(ch).length
-    char += 1
-  }
-  byteToChar.set(byte, char)
-
-  return spans.map((span) => [
-    byteToChar.get(span.byteStart) ?? 0,
-    byteToChar.get(span.byteEnd) ?? text.length,
-  ])
+export function ensureJapaneseTokenizer() {
+  return ensureLindera('ja')
 }
 
 /** lindera 토큰 → 문자 오프셋 형태소. 원형이 없으면(*) 표기를 쓴다 */
@@ -243,9 +126,10 @@ export function joinJapaneseMorphemes(morphemes: JaMorpheme[]): Array<{
  * 호출부는 갈아끼우기만 하면 된다.
  */
 export function segmentJapanese(text: string): JaSegmentation | null {
-  if (!cached) return null
+  const tokenizer = peekLindera('ja')
+  if (!tokenizer) return null
   const sentences = computeSentences(text)
-  const morphemes = toMorphemes(text, cached.tokenize(text))
+  const morphemes = toMorphemes(text, tokenizer.tokenize(text))
   const words = joinJapaneseMorphemes(morphemes)
 
   const sentenceIndexAt = (offset: number): number => {
@@ -291,29 +175,5 @@ export function segmentJapanese(text: string): JaSegmentation | null {
  * effect 가 준비를 트리거하므로, 이 훅을 쓰는 화면은 자동으로 업그레이드된다.
  */
 export function useJapaneseUpgrade(text: string, languageCode: LanguageCode): JaSegmentation | null {
-  const active = languageCode === 'ja'
-  const [upgraded, setUpgraded] = useState(() => isJapaneseReady())
-
-  useEffect(() => {
-    if (!active) return
-    if (isJapaneseReady()) {
-      setUpgraded(true)
-      return
-    }
-    let cancelled = false
-    // 준비되면 다시 그린다 — effect 안에서 구독을 먼저 걸어 놓친다
-    const unsubscribe = subscribeJapaneseReady(() => {
-      if (!cancelled) setUpgraded(true)
-    })
-    void ensureJapaneseTokenizer()
-    return () => {
-      cancelled = true
-      unsubscribe()
-    }
-  }, [active])
-
-  return useMemo(() => {
-    if (!active || !upgraded) return null
-    return segmentJapanese(text)
-  }, [active, text, upgraded])
+  return useLinderaUpgrade(text, languageCode === 'ja', 'ja', segmentJapanese)
 }

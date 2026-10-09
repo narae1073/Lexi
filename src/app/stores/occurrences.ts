@@ -15,6 +15,11 @@ import {
   isJapaneseReady,
   segmentJapanese,
 } from '../../features/reader/japanese'
+import {
+  ensureChineseTokenizer,
+  isChineseReady,
+  segmentChinese,
+} from '../../features/reader/chinese'
 import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
 import type { Document, LanguageCode, Segment, Sentence } from '../../types'
 
@@ -145,6 +150,16 @@ async function segmentForRecord(doc: Document): Promise<{
     const upgrade = segmentJapanese(doc.rawText)
     if (upgrade) return { ...upgrade, segmenter: 'lindera' as const }
   }
+  if (doc.languageCode === 'zh') {
+    // 일본어와 같은 길목 — 중국어를 보고 있으므로 사전을 받아도 된다.
+    try {
+      await ensureChineseTokenizer()
+    } catch {
+      /* 폴백 */
+    }
+    const upgrade = segmentChinese(doc.rawText)
+    if (upgrade) return { ...upgrade, segmenter: 'lindera' as const }
+  }
   const { segments, sentences } = tokenize(doc.rawText, doc.languageCode)
   return { segments, sentences, segmenter: 'intl' as const }
 }
@@ -192,15 +207,18 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     ).catch(() => [])
     const known = new Map(meta.map((m) => [m.documentId, m]))
     /**
-     * 일본어는 분절기까지 본다 — Intl 로 기록됐는데 lindera 가 준비됐으면 다시 계산한다.
-     * 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게 하면 모바일 데이터를
-     * 사용자가 보지도 않은 일본어에 쓰게 된다.
+     * 일본어·중국어는 분절기까지 본다 — Intl 로 기록됐는데 lindera 가 준비됐으면
+     * 다시 계산한다. 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게
+     * 하면 모바일 데이터를 사용자가 보지도 않은 문서에 쓰게 된다.
      */
     const stale = docs.filter(
       (doc) =>
         known.get(doc.id)?.lemmaVersion !== LEMMA_VERSION ||
         (doc.languageCode === 'ja' &&
           isJapaneseReady() &&
+          known.get(doc.id)?.segmenter !== 'lindera') ||
+        (doc.languageCode === 'zh' &&
+          isChineseReady() &&
           known.get(doc.id)?.segmenter !== 'lindera'),
     )
 

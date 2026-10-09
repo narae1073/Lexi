@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { byteToCharRanges } from './lindera'
 import {
-  byteToCharRanges,
   joinJapaneseMorphemes,
   toMorphemes,
   type JaMorpheme,

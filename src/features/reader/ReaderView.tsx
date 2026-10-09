@@ -32,6 +32,7 @@ import { isCapitalisedPosition, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
 import { WordWithStar } from './WordWithStar'
+import { useChineseUpgrade } from './chinese'
 import { useJapaneseUpgrade } from './japanese'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
@@ -91,15 +92,17 @@ export function ReaderView({ doc }: { doc: Document }) {
   )
 
   /**
-   * 일본어는 형태소 분석기로 업그레이드한다.
+   * 일본어·중국어는 형태소 분석기로 업그레이드한다.
    *
    * 처음엔 Intl 경로(base)로 그리고, lindera 가 준비되는 순간 다시 그린다 —
-   * 10MB 사전을 기다리게 하지 않는다. 준비 전후의 lemma 가 다를 수 있어
+   * 사전을 기다리게 하지 않는다. 준비 전후의 lemma 가 다를 수 있어
    * lemmaFor 는 업그레이드 표를 먼저 본다.
    */
   const jaUpgrade = useJapaneseUpgrade(doc.rawText, doc.languageCode)
-  const segments = jaUpgrade?.segments ?? base.segments
-  const sentences = jaUpgrade?.sentences ?? base.sentences
+  const zhUpgrade = useChineseUpgrade(doc.rawText, doc.languageCode)
+  const upgrade = jaUpgrade ?? zhUpgrade
+  const segments = upgrade?.segments ?? base.segments
+  const sentences = upgrade?.sentences ?? base.sentences
 
   const byKey = useWordStatesStore((s) => s.byKey)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
@@ -149,8 +152,8 @@ export function ReaderView({ doc }: { doc: Document }) {
   /** 세그먼트의 대표 lemma */
   const lemmaFor = useCallback(
     (segment: WordSegment) =>
-      jaUpgrade?.lemmaByStart.get(segment.start) ?? lemmaOf.get(segment.text) ?? segment.lemma,
-    [jaUpgrade, lemmaOf],
+      upgrade?.lemmaByStart.get(segment.start) ?? lemmaOf.get(segment.text) ?? segment.lemma,
+    [upgrade, lemmaOf],
   )
 
   /**
@@ -162,7 +165,7 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const refreshStale = useOccurrencesStore((s) => s.refreshStaleDocuments)
   useEffect(() => {
-    if (!jaUpgrade) return
+    if (!upgrade) return
     let cancelled = false
     const run = async () => {
       // 앱 시작 시점의 전체 재계산과 겹치면 밀린다 — 끝날 때까지 기다렸다가 한다.
@@ -178,7 +181,7 @@ export function ReaderView({ doc }: { doc: Document }) {
     return () => {
       cancelled = true
     }
-  }, [jaUpgrade, doc, refreshStale])
+  }, [upgrade, doc, refreshStale])
 
   useEffect(() => {
     void loadWordStates(doc.languageCode)

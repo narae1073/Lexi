@@ -9,6 +9,7 @@ import {
   type WordStatus,
 } from '../../types'
 import { WordPopover } from '../reader/WordPopover'
+import { useChineseUpgrade } from '../reader/chinese'
 import { useJapaneseUpgrade } from '../reader/japanese'
 import { isCapitalisedPosition, tokenize } from '../reader/tokenizer'
 import { resolveLemmasFromWords } from '../reader/surfaceLemma'
@@ -58,12 +59,14 @@ export function WordbookItem({
    * 같은 단어를 다른 lemma 로 보게 된다.
    */
   const jaUpgrade = useJapaneseUpgrade(entry.sentence ?? '', languageCode)
+  const zhUpgrade = useChineseUpgrade(entry.sentence ?? '', languageCode)
+  const upgrade = jaUpgrade ?? zhUpgrade
   const sentenceTokens = useMemo(() => {
     if (!entry.sentence) return null
-    if (jaUpgrade) {
+    if (upgrade) {
       return {
-        segments: jaUpgrade.segments,
-        lemmaOf: jaUpgrade.lemmaByStart,
+        segments: upgrade.segments,
+        lemmaOf: upgrade.lemmaByStart,
         keyedByStart: true as const,
       }
     }
@@ -83,7 +86,7 @@ export function WordbookItem({
       languageCode,
     )
     return { segments, lemmaOf, keyedByStart: false as const }
-  }, [entry.sentence, languageCode, jaUpgrade])
+  }, [entry.sentence, languageCode, upgrade])
 
   const openDictionary = (segment: WordSegment, lemma: string, anchor: HTMLElement) => {
     setDictionaryTarget({ segment, lemma, anchor })
