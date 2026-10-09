@@ -41,8 +41,10 @@ export function WordPopover({
   const t = useTranslation()
   const current = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.status)
   const favorite = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.favorite ?? false)
+  const starColor = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.starColor)
   const setStatus = useWordStatesStore((s) => s.setStatus)
   const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
+  const shuffleStarColor = useWordStatesStore((s) => s.shuffleStarColor)
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
 
   return (
@@ -73,6 +75,25 @@ export function WordPopover({
         >
           {favorite ? '★' : '☆'}
         </button>
+        {/*
+          별 색 바꾸기 — 별이 있을 때만 보인다. 누를 때마다 지금 색을 빼고
+          새로 뽑으므로, 눌렀는데 그대로인 일은 없다.
+        */}
+        {favorite && (
+          <button
+            type="button"
+            onClick={() => shuffleStarColor(languageCode, lemma, segment.text)}
+            aria-label={t('favorite.shuffleColor')}
+            title={t('favorite.shuffleColor')}
+            className="pointer-events-auto flex shrink-0 items-center rounded-lg px-1.5 py-1 transition hover:opacity-80"
+          >
+            <span
+              aria-hidden
+              className="border-line block h-3 w-3 rounded-full border"
+              style={{ backgroundColor: starColor }}
+            />
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-1" role="group" aria-label={t('status.group')}>

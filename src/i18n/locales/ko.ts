@@ -208,6 +208,7 @@ export const ko: Dictionary = {
   favorite: {
     add: '즐겨찾기에 추가',
     remove: '즐겨찾기에서 제거',
+    shuffleColor: '별 색 바꾸기',
   },
 
   sentence: {
@@ -234,7 +235,6 @@ export const ko: Dictionary = {
     favoriteStarSizeHint: '별의 크기를 단어 글자의 {value}%로 합니다.',
     starSmall: '작게',
     starLarge: '크게',
-    favoriteStarColor: '별 색',
     favoriteStarPreview: '별표한 단어는 이렇게 보입니다.',
     appLanguage: '앱 언어',
     theme: '테마',

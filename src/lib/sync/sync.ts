@@ -8,6 +8,7 @@ import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
 import type { Document, WordStatus } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
+import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
 import { isNewer, mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
 import {
   documentFromRow,
@@ -83,12 +84,14 @@ export async function readLocal(): Promise<{
   const [documents, wordStates, occurrences] = await Promise.all([
     idbGetAll<Document>(STORES.documents),
     idbGetAll<
-      Omit<WordStateRecord, 'favorite' | 'favoriteUpdatedAt'> & {
+      Omit<WordStateRecord, 'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor'> & {
         surface?: string
         status: WordStatus
         /** 별 기능 이전에 쓰인 행에는 없다 */
         favorite?: boolean
         favoriteUpdatedAt?: string
+        starAngle?: number
+        starColor?: string
       }
     >(STORES.wordStates),
     idbGetAll<WordOccurrence>(STORES.wordOccurrences),
@@ -106,6 +109,8 @@ export async function readLocal(): Promise<{
       // 없던 것을 있다고 말하지 않는다
       favorite: r.favorite ?? false,
       favoriteUpdatedAt: r.favoriteUpdatedAt ?? r.lastSeenAt,
+      starAngle: r.starAngle ?? 0,
+      starColor: r.starColor ?? STAR_COLOR_DEFAULT,
     })),
     occurrences,
   }

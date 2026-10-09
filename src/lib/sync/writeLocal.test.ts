@@ -23,6 +23,8 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     status: 'known' as const,
     favorite: false,
     favoriteUpdatedAt: '2026-01-01T00:00:00.000Z',
+    starAngle: 0,
+    starColor: '#eab308',
     ...over,
   })
 

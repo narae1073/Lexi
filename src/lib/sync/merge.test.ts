@@ -16,6 +16,8 @@ function rec(over: Partial<WordStateRecord> & { lemma: string }): WordStateRecor
     lastSeenAt: T0,
     favorite: false,
     favoriteUpdatedAt: T0,
+    starAngle: 0,
+    starColor: '#eab308',
     ...over,
   }
 }
@@ -151,6 +153,32 @@ describe('mergeWordStates — 즐겨찾기', () => {
     const { pushOnly } = mergeWordStates(local, remote)
     expect(pushOnly).toHaveLength(1)
     expect(pushOnly[0]?.favorite).toBe(true)
+  })
+
+  /** 꾸밈은 별의 시각을 이긴 쪽의 것을 함께 쓴다 — 별과 따로 겨루면 기울기만 다른 별이 된다 */
+  it('별의 기울기와 색은 별을 이긴 쪽을 따라간다', () => {
+    const local = [
+      rec({
+        lemma: 'apple',
+        favorite: false,
+        favoriteUpdatedAt: T2,
+        starAngle: 10,
+        starColor: '#ef4444',
+      }),
+    ]
+    const remote = [
+      rec({
+        lemma: 'apple',
+        favorite: true,
+        favoriteUpdatedAt: T1,
+        starAngle: -20,
+        starColor: '#3b82f6',
+      }),
+    ]
+    const merged = find(mergeWordStates(local, remote).merged, 'apple')
+    expect(merged?.favorite).toBe(false)
+    expect(merged?.starAngle).toBe(10)
+    expect(merged?.starColor).toBe('#ef4444')
   })
 })
 

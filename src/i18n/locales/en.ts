@@ -209,6 +209,7 @@ export const en = {
   favorite: {
     add: 'Add to favorites',
     remove: 'Remove from favorites',
+    shuffleColor: 'Shuffle star color',
   },
 
   sentence: {
@@ -235,7 +236,6 @@ export const en = {
     favoriteStarSizeHint: 'Star size, {value}% of the word size.',
     starSmall: 'Small',
     starLarge: 'Large',
-    favoriteStarColor: 'Star color',
     favoriteStarPreview: 'Starred words look like this.',
     appLanguage: 'App language',
     theme: 'Theme',

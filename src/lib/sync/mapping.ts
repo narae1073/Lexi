@@ -55,6 +55,8 @@ export function wordStateToRow(
     last_seen_at: record.lastSeenAt,
     is_favorite: record.favorite,
     favorite_updated_at: record.favoriteUpdatedAt,
+    star_angle: record.starAngle,
+    star_color: record.starColor,
   }
 }
 
@@ -69,6 +71,8 @@ export function wordStateFromRow(row: WordStateRow): WordStateRecord & { status:
     // 마이그레이션 이전 행에는 서버 기본값이 들어 있다
     favorite: row.is_favorite ?? false,
     favoriteUpdatedAt: row.favorite_updated_at ?? row.last_seen_at,
+    starAngle: row.star_angle ?? 0,
+    starColor: row.star_color ?? '#eab308',
   }
 }
 

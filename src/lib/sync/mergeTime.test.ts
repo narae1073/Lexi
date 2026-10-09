@@ -16,6 +16,8 @@ const record = (over: Partial<WordStateRecord> = {}): WordStateRecord => ({
   lastSeenAt: LOCAL_TIME,
   favorite: false,
   favoriteUpdatedAt: LOCAL_TIME,
+  starAngle: 0,
+  starColor: '#eab308',
   ...over,
 })
 

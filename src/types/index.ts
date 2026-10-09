@@ -65,4 +65,8 @@ export type WordState = {
    * 정하지 않았으므로, 지금은 팝오버와 이후 단어장 탭에서만 쓴다.
    */
   favorite: boolean
+  /** 별 스티커의 기울기(도) — 붙일 때마다 새로 뽑는다 */
+  starAngle: number
+  /** 별 스티커의 색 — 붙일 때와 색바꾸기 버튼으로 새로 뽑는다 */
+  starColor: string
 }

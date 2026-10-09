@@ -61,6 +61,8 @@ export type Database = {
           last_seen_at: string
           is_favorite: boolean
           favorite_updated_at: string
+          star_angle: number
+          star_color: string
         }
         Insert: {
           id?: string
@@ -73,6 +75,8 @@ export type Database = {
           last_seen_at?: string
           is_favorite?: boolean
           favorite_updated_at?: string
+          star_angle?: number
+          star_color?: string
         }
         Update: {
           id?: string
@@ -85,6 +89,8 @@ export type Database = {
           last_seen_at?: string
           is_favorite?: boolean
           favorite_updated_at?: string
+          star_angle?: number
+          star_color?: string
         }
         Relationships: []
       }

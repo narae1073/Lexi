@@ -64,18 +64,8 @@ export function clampStarSize(value: number): number {
   return Math.round(clamped / STAR_SIZE_STEP) * STAR_SIZE_STEP
 }
 
-/** 즐겨찾기 별 스티커의 색 — 스티커는 노란 별이 정석이다 */
+/** 즐겨찾기 별 스티커의 기본 색 — 스티커는 노란 별이 정석이다 */
 export const STAR_COLOR_DEFAULT = '#eab308'
-
-export function sanitizeStarColor(value: unknown): string {
-  if (typeof value !== 'string') return STAR_COLOR_DEFAULT
-  const hex = value.trim()
-  if (/^#[0-9a-fA-F]{6}$/.test(hex)) return hex.toLowerCase()
-  if (/^#[0-9a-fA-F]{3}$/.test(hex)) {
-    return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase()
-  }
-  return STAR_COLOR_DEFAULT
-}
 
 /** 깨진 저장은 0쪽으로 — 복원할 때 쪽 수에 맞춰 다시 당긴다 */
 export function sanitizeReaderPage(value: number): number {
@@ -102,8 +92,6 @@ type SettingsState = {
   readerPageWords: number
   /** 즐겨찾기 별 스티커의 크기 — 단어 글자의 % */
   favoriteStarSize: number
-  /** 즐겨찾기 별 스티커의 색 */
-  favoriteStarColor: string
   /**
    * 문서별로 읽던 쪽. 새로고침해도 그 자리에서 이어 읽는다.
    *
@@ -122,7 +110,6 @@ type SettingsState = {
   setReaderPageWords: (value: number) => void
   setReaderPage: (documentId: string, page: number) => void
   setFavoriteStarSize: (value: number) => void
-  setFavoriteStarColor: (value: string) => void
   resolvedAppLanguage: () => AppLanguage
   resolvedTheme: () => ThemeId
 }
@@ -151,7 +138,6 @@ export const useSettingsStore = create<SettingsState>()(
       readerPageWords: DEFAULT_READER_PAGE_WORDS,
       readerPageByDocument: {},
       favoriteStarSize: STAR_SIZE_DEFAULT,
-      favoriteStarColor: STAR_COLOR_DEFAULT,
       setAppLanguage: (appLanguage) => set({ appLanguage }),
       setTheme: (theme) => set({ theme }),
       setUnmarkedDim: (value) => set({ unmarkedDim: clampUnmarkedDim(value) }),
@@ -179,7 +165,6 @@ export const useSettingsStore = create<SettingsState>()(
       },
       setReaderPageWords: (value) => set({ readerPageWords: pageWordsOrDefault(value) }),
       setFavoriteStarSize: (value) => set({ favoriteStarSize: clampStarSize(value) }),
-      setFavoriteStarColor: (value) => set({ favoriteStarColor: sanitizeStarColor(value) }),
       setReaderPage: (documentId, page) =>
         set((s) => ({
           readerPageByDocument: {

@@ -2,6 +2,8 @@ import { create } from 'zustand'
 
 import { STORES, idbGetAllByIndex, idbPut } from '../../lib/storage/localDb'
 import type { LanguageCode, WordState, WordStatus } from '../../types'
+import { randomStarAngle, randomStarColor } from '../../features/reader/favoriteStar'
+import { STAR_COLOR_DEFAULT } from './settings'
 
 /** IndexedDB 복합 키와 맞추기 위한 스토어 키 */
 export function wordKey(languageCode: LanguageCode, lemma: string): string {
@@ -23,10 +25,18 @@ type WordStatesStore = {
    * 즐겨찾기 ☆/★.
    *
    * 상태와 독립이다 — 별을 붙인다고 상태가 바뀌지 않고, 상태를 바꾼다고 별이
-   * 떨어지지 않는다. 별의 시각을 따로 찍어 두 기기가 달라도 '늦게 누른 쪽' 이
+   * 떨어지지 않는다. 붙일 때마다 기울기와 색을 새로 뽑는다 — 같은 단어도 매번
+   * 다른 별이 된다. 별의 시각을 따로 찍어 두 기기가 달라도 '늦게 누른 쪽' 이
    * 이긴다.
    */
   toggleFavorite: (languageCode: LanguageCode, lemma: string, surface?: string) => void
+  /**
+   * 별 스티커의 색을 바꾼다 — 팔레트에서 지금 색을 빼고 새로 뽑는다.
+   *
+   * 별이 있는 단어에만 된다. 색을 바꾸는 것도 별의 변경이라 시각을 찍어
+   * 동기화에 실어 보낸다.
+   */
+  shuffleStarColor: (languageCode: LanguageCode, lemma: string, surface?: string) => void
   /**
    * 이 언어의 상태를 읽는다.
    *
@@ -60,6 +70,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       lastSeenAt: timestamp,
       // 상태만 바꿨다고 별이 떨어지면 안 된다 — 별은 별의 길로 간다
       favorite: previous?.favorite ?? false,
+      starAngle: previous?.starAngle ?? 0,
+      starColor: previous?.starColor ?? STAR_COLOR_DEFAULT,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -74,6 +86,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
+    const favoriting = !(previous?.favorite ?? false)
 
     const next: WordState = {
       lemma,
@@ -82,7 +95,14 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       lastSeenAt: previous?.lastSeenAt ?? timestamp,
-      favorite: !(previous?.favorite ?? false),
+      favorite: favoriting,
+      // 붙일 때마다 새로 뽑는다 — 뗐다 다시 붙이면 다른 별이 된다.
+      // 뗄 때는 값을 지우지 않는다. 다시 붙일 때 이전 색을 빼고 뽑으려면
+      // 기억하고 있어야 한다.
+      starAngle: favoriting ? randomStarAngle() : (previous?.starAngle ?? 0),
+      starColor: favoriting
+        ? randomStarColor(previous?.starColor)
+        : (previous?.starColor ?? STAR_COLOR_DEFAULT),
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -94,6 +114,29 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       favoriteUpdatedAt: timestamp,
     }).catch((error) => {
       console.error('즐겨찾기 저장 실패', error)
+    })
+  },
+
+  shuffleStarColor: (languageCode, lemma, surface) => {
+    const key = wordKey(languageCode, lemma)
+    const previous = get().byKey[key]
+    // 별이 없으면 바꿀 색도 없다 — 팝오버에서 별이 있을 때만 보여준다
+    if (!previous?.favorite) return
+    const timestamp = new Date().toISOString()
+
+    const next: WordState = {
+      ...previous,
+      starColor: randomStarColor(previous.starColor),
+    }
+
+    set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+
+    void idbPut(STORES.wordStates, {
+      ...next,
+      surface,
+      favoriteUpdatedAt: timestamp,
+    }).catch((error) => {
+      console.error('별 색 저장 실패', error)
     })
   },
 

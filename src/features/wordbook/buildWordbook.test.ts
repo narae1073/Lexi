@@ -25,6 +25,8 @@ const state = (lemma: string, status: WordStatus): WordState => ({
   firstSeenAt: '2026-01-01',
   lastSeenAt: '2026-01-01',
   favorite: false,
+  starAngle: 0,
+  starColor: '#eab308',
 })
 
 describe('buildWordbook', () => {

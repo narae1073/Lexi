@@ -102,6 +102,30 @@ export async function run(ctx) {
     sticker !== null && (sticker.content ?? '').includes('★') && sticker.transform !== 'none',
     JSON.stringify(sticker))
 
+  // 별 옆의 색바꾸기 버튼 — 누를 때마다 지금 색을 빼고 새로 뽑는다
+  await ctx.clickWord('apple')
+  await sleep()
+  const colorOfStar = () => ctx.page.evaluate(`(() => {
+    const el = [...document.querySelectorAll('[data-start]')].find(e => e.textContent === 'apple');
+    return el ? getComputedStyle(el).getPropertyValue('--star-color').trim() : null;
+  })()`)
+  const colorBefore = await colorOfStar()
+  const shuffled = await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return false;
+    const b = [...d.querySelectorAll('button')].find(x => x.getAttribute('aria-label') === 'Shuffle star color');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  ctx.check('색바꾸기 버튼이 있다', shuffled === true)
+  await sleep(300)
+  const colorAfter = await colorOfStar()
+  ctx.check('색바꾸기 버튼으로 별 색이 바뀐다',
+    colorBefore !== null && colorAfter !== null && colorBefore !== colorAfter,
+    `${colorBefore} → ${colorAfter}`)
+  await ctx.pressEscape()
+
   // ESC 로 닫는다
   await ctx.clickWord('economy')
   await sleep()

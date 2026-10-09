@@ -25,8 +25,11 @@ export type WordStateRecord = {
   lastSeenAt: string
   /** 즐겨찾기. 상태와 독립이라 별도 시각으로 병합한다 */
   favorite: boolean
-  /** 별을 마지막으로 붙이거나 뗀 시각 — 늦은 쪽의 별이 이긴다 */
+  /** 별을 마지막으로 붙이거나 떼거나 색을 바꾼 시각 — 늦은 쪽의 별이 이긴다 */
   favoriteUpdatedAt: string
+  /** 별 스티커의 기울기(도)와 색 — 별의 시각을 이긴 쪽의 것을 함께 쓴다 */
+  starAngle: number
+  starColor: string
 }
 
 export type MergeOutcome<T> = {
@@ -155,18 +158,31 @@ function pickWinner(mine: WordStateRecord, theirs: WordStateRecord): WordStateRe
 function pickFavorite(
   mine: WordStateRecord,
   theirs: WordStateRecord,
-): Pick<WordStateRecord, 'favorite' | 'favoriteUpdatedAt'> {
+): Pick<WordStateRecord, 'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor'> {
   if (isNewer(mine.favoriteUpdatedAt, theirs.favoriteUpdatedAt)) {
-    return { favorite: mine.favorite, favoriteUpdatedAt: mine.favoriteUpdatedAt }
+    return {
+      favorite: mine.favorite,
+      favoriteUpdatedAt: mine.favoriteUpdatedAt,
+      starAngle: mine.starAngle,
+      starColor: mine.starColor,
+    }
   }
   if (isNewer(theirs.favoriteUpdatedAt, mine.favoriteUpdatedAt)) {
-    return { favorite: theirs.favorite, favoriteUpdatedAt: theirs.favoriteUpdatedAt }
+    return {
+      favorite: theirs.favorite,
+      favoriteUpdatedAt: theirs.favoriteUpdatedAt,
+      starAngle: theirs.starAngle,
+      starColor: theirs.starColor,
+    }
   }
   return {
     favorite: mine.favorite || theirs.favorite,
     favoriteUpdatedAt: isNewer(mine.favoriteUpdatedAt, theirs.favoriteUpdatedAt)
       ? mine.favoriteUpdatedAt
       : theirs.favoriteUpdatedAt,
+    // 동률이면 어느 쪽의 꾸밈이든 같다 — 같은 별을 두고 다투는 것이 아니다
+    starAngle: mine.starAngle,
+    starColor: mine.starColor,
   }
 }
 
@@ -178,7 +194,9 @@ function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
     a.firstSeenAt === b.firstSeenAt &&
     a.lastSeenAt === b.lastSeenAt &&
     a.favorite === b.favorite &&
-    a.favoriteUpdatedAt === b.favoriteUpdatedAt
+    a.favoriteUpdatedAt === b.favoriteUpdatedAt &&
+    a.starAngle === b.starAngle &&
+    a.starColor === b.starColor
   )
 }
 

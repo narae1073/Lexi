@@ -24,6 +24,8 @@ describe('받아 온 진도가 화면에 나타난다', () => {
     firstSeenAt: '2026-10-01T00:00:00.000Z',
     lastSeenAt: '2026-10-05T00:00:00.000Z',
     favorite: false,
+    starAngle: 0,
+    starColor: '#eab308',
   })
 
   beforeEach(() => {
@@ -85,7 +87,7 @@ describe('받아 온 진도가 화면에 나타난다', () => {
     await useWordStatesStore.getState().loadLanguage('fr')
     // 사용자가 눌렀다 — 저장은 뒤로 미룬다(낙관적 UI)
     useWordStatesStore.setState((s) => ({
-      byKey: { ...s.byKey, 'fr::chat': { languageCode: 'fr', lemma: 'chat', status: 'known', seenCount: 1, firstSeenAt: 'x', lastSeenAt: 'y', favorite: false } },
+      byKey: { ...s.byKey, 'fr::chat': { languageCode: 'fr', lemma: 'chat', status: 'known', seenCount: 1, firstSeenAt: 'x', lastSeenAt: 'y', favorite: false, starAngle: 0, starColor: '#eab308' } },
     }))
 
     await useWordStatesStore.getState().loadLanguage('fr', { force: true })

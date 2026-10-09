@@ -9,7 +9,7 @@ import {
   useSettingsStore,
   useTranslation,
   clampStarSize,
-  sanitizeStarColor,
+  STAR_COLOR_DEFAULT,
 } from '../../app/stores/settings'
 import { statusClass } from '../../lib/color'
 import { DEFINITION_LANGUAGE } from '../../lib/languages'
@@ -32,7 +32,6 @@ import { isCapitalisedPosition, segmentAt, tokenize } from './tokenizer'
 import { StatusBar, type DocumentStats } from './StatusBar'
 import { WordPopover } from './WordPopover'
 import { WordWithStar } from './WordWithStar'
-import { starTilt } from './favoriteStar'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -106,7 +105,6 @@ export function ReaderView({ doc }: { doc: Document }) {
   const setPageWords = useSettingsStore((s) => s.setReaderPageWords)
   const setReaderPage = useSettingsStore((s) => s.setReaderPage)
   const starSizeSetting = useSettingsStore((s) => s.favoriteStarSize)
-  const starColorSetting = useSettingsStore((s) => s.favoriteStarColor)
   /**
    * 새로고침해도 읽던 쪽에서 이어 읽는다.
    *
@@ -553,9 +551,14 @@ export function ReaderView({ doc }: { doc: Document }) {
               starred={
                 byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.favorite ?? false
               }
-              tiltDegrees={starTilt(doc.languageCode, lemmaFor(segment))}
+              tiltDegrees={
+                byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.starAngle ?? 0
+              }
               starSize={clampStarSize(starSizeSetting)}
-              starColor={sanitizeStarColor(starColorSetting)}
+              starColor={
+                byKey[`${doc.languageCode}::${lemmaFor(segment)}`]?.starColor ??
+                STAR_COLOR_DEFAULT
+              }
             />
           ) : (
             <span key={segment.start}>{segment.text}</span>

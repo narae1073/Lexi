@@ -149,6 +149,8 @@ const wordState = (lemma: string) => ({
   lastSeenAt: '2026-10-05T00:00:00.000Z',
   favorite: false,
   favoriteUpdatedAt: '2026-10-02T00:00:00.000Z',
+  starAngle: 0,
+  starColor: '#eab308',
 })
 
 /** 서버에 단어 상태를 몇 개 심는다 */
@@ -162,6 +164,10 @@ function seedWords(server: Server, count: number, start = 0) {
       seen_count: 1,
       first_seen_at: '2026-10-01T00:00:00+00:00',
       last_seen_at: '2026-10-05T00:00:00+00:00',
+      is_favorite: false,
+      favorite_updated_at: '2026-10-01T00:00:00+00:00',
+      star_angle: 0,
+      star_color: '#eab308',
     })
   }
 }
@@ -231,6 +237,8 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
       ...wordState('été'),
       favorite: true,
       favoriteUpdatedAt: '2026-10-06T00:00:00.000Z',
+      starAngle: 15,
+      starColor: '#ef4444',
     })
     await sync(server)
 
@@ -238,8 +246,13 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
     await clearLocalWords()
     await sync(server)
 
-    const local = await idbGetAll<{ lemma: string; favorite: boolean }>(STORES.wordStates)
+    const local = await idbGetAll<{ lemma: string; favorite: boolean; starAngle: number; starColor: string }>(
+      STORES.wordStates,
+    )
     expect(local.find((r) => r.lemma === 'été')?.favorite).toBe(true)
+    // 꾸밈도 함께 간다 — 기울기만 다른 별이 되면 안 된다
+    expect(local.find((r) => r.lemma === 'été')?.starAngle).toBe(15)
+    expect(local.find((r) => r.lemma === 'été')?.starColor).toBe('#ef4444')
   })
 })
 
