@@ -528,7 +528,11 @@ export function ReaderView({ doc }: { doc: Document }) {
         )}
         <p className="text-ink-muted mt-1 text-xs">
           {languageName(doc.languageCode)} ·{' '}
-          {t('reader.stats', { words: wordCount, sentences: sentences.length })}
+          {t('reader.stats', { words: wordCount, sentences: sentences.length })} ·{' '}
+          {/* 만든 날 — 마지막으로 본 시각(updated_at)과는 다른 말이다 */}
+          <time dateTime={doc.createdAt}>
+            {t('reader.created', { date: new Date(doc.createdAt).toLocaleDateString() })}
+          </time>
         </p>
         {/* 문서 안에서도 단어장으로 갈 수 있다 — 이 문서의 단어만 (plan.txt 9줄) */}
         <div className="mt-2 flex flex-wrap items-center gap-2">
