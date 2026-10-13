@@ -1,4 +1,4 @@
-import { statusClass } from '../../lib/color'
+import { statusDotClass } from '../../lib/color'
 import { useTranslation } from '../../app/stores/settings'
 import { CHART_ORDER, FILL_CLASS, percentages, segments, type StatusCounts } from './statusChart'
 
@@ -42,7 +42,7 @@ export function WordStatusChart({ counts }: { counts: StatusCounts }) {
       <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
         {CHART_ORDER.map((key) => (
           <li key={key} className="text-ink-muted flex items-center gap-1.5">
-            <span className={`text-[10px] ${statusClass(key)}`} aria-hidden="true">
+            <span className={`text-[10px] ${statusDotClass(key)}`} aria-hidden="true">
               ●
             </span>
             <span className="whitespace-nowrap">{t(`statusBar.status.${key}`)}</span>

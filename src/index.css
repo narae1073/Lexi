@@ -68,10 +68,10 @@
   --t-line: #ddceb2;
   --t-accent: #a5622a;
   --t-accent-ink: #fdfaf4;
-  --t-status-unsure: #96590f;
-  --t-status-unknown: #b23c2b;
-  --t-status-unsure-bg: rgb(150 89 15 / 0.1);
-  --t-status-unknown-bg: rgb(178 60 43 / 0.1);
+  --t-status-unsure: #8a5a12;
+  --t-status-unknown: #a8392a;
+  --t-status-unsure-bg: rgb(138 90 18 / 0.1);
+  --t-status-unknown-bg: rgb(168 57 42 / 0.1);
 }
 
 [data-theme='matcha'] {
@@ -84,10 +84,10 @@
   --t-line: #cfdcc4;
   --t-accent: #488037;
   --t-accent-ink: #f7fbf3;
-  --t-status-unsure: #8a6116;
-  --t-status-unknown: #b5432f;
-  --t-status-unsure-bg: rgb(138 97 22 / 0.1);
-  --t-status-unknown-bg: rgb(181 67 47 / 0.1);
+  --t-status-unsure: #6d7a12;
+  --t-status-unknown: #a9432b;
+  --t-status-unsure-bg: rgb(109 122 18 / 0.1);
+  --t-status-unknown-bg: rgb(169 67 43 / 0.1);
 }
 
 [data-theme='latte'] {
@@ -100,10 +100,10 @@
   --t-line: #d8d4ea;
   --t-accent: #7c5cd6;
   --t-accent-ink: #f9f8ff;
-  --t-status-unsure: #96601d;
-  --t-status-unknown: #c0392f;
-  --t-status-unsure-bg: rgb(150 96 29 / 0.1);
-  --t-status-unknown-bg: rgb(192 57 47 / 0.1);
+  --t-status-unsure: #9a5a20;
+  --t-status-unknown: #bb2d5e;
+  --t-status-unsure-bg: rgb(154 90 32 / 0.1);
+  --t-status-unknown-bg: rgb(187 45 94 / 0.1);
 }
 
 /* ── 어두운 테마 ──────────────────────────────────────────────────────── */

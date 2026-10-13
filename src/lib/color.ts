@@ -27,3 +27,25 @@ export function statusClass(status: WordStatus | 'unmarked' | undefined): string
   if (!status || status === 'unmarked') return UNMARKED_CLASS
   return STATUS_CLASS[status]
 }
+
+/**
+ * 표시 점(●)의 색 — 게이지 설명·상태 바의 점.
+ *
+ * statusClass 를 그대로 쓰면 두 가지가 어긋난다.
+ * - '아는' 은 클래스가 비어 본문색을 받는 규칙인데, 점은 muted 글자 안에 놓여
+ *   muted 회색이 된다 — 막대(bg-ink, 본문색)와 다른 색으로 읽힌다.
+ * - 밑줄·배경 클래스가 점에도 얹혀 ● 아래에 점선이 그어진다.
+ *
+ * 점은 막대와 같은 말을 해야 한다 — 같은 상태를 막대에서는 검게, 점에서는
+ * 회색으로 그리면 설명이 막대를 배신한다.
+ */
+const STATUS_DOT_CLASS: Record<WordStatus | 'unmarked', string> = {
+  known: 'text-ink',
+  unsure: 'text-status-unsure',
+  unknown: 'text-status-unknown',
+  unmarked: 'text-unmarked',
+}
+
+export function statusDotClass(status: WordStatus | 'unmarked' | undefined): string {
+  return STATUS_DOT_CLASS[status ?? 'unmarked']
+}

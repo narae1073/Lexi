@@ -1,4 +1,4 @@
-import { statusClass } from '../../lib/color'
+import { statusDotClass } from '../../lib/color'
 import { useTranslation } from '../../app/stores/settings'
 import type { WordStatus } from '../../types'
 
@@ -53,8 +53,8 @@ export function StatusBar({ stats }: { stats: DocumentStats }) {
         <ul className="text-ink-muted mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
           {ORDER.map((status) => (
             <li key={status} className="flex items-center gap-1.5">
-              {/* 상태 색을 그대로 쓴다 — 본문 색 규칙이 여기서도 같아야 한다 */}
-              <span className={`rounded-sm px-1 ${statusClass(status)}`} aria-hidden>
+              {/* 상태 색을 그대로 쓴다 — 막대와 설명이 같은 색을 말해야 한다 */}
+              <span className={`rounded-sm px-1 ${statusDotClass(status)}`} aria-hidden>
                 ●
               </span>
               {t(`statusBar.status.${status}`)}
