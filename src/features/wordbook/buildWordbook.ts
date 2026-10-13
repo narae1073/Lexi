@@ -19,6 +19,8 @@ export type WordbookEntry = {
   status: WordStatus | 'unmarked'
   /** 즐겨찾기 — 상태와 독립이라 어느 상태 탭에도 함께 있을 수 있다 */
   favorite: boolean
+  /** 별 스티커의 색 — ★ 탭에서 색으로 좁히는 데 쓴다 */
+  starColor?: string
   /** 학습할 때 도움이 되는 문맥 예문 (가장 최근 문서의 것) */
   sentence: string
   documentId: string
@@ -80,6 +82,7 @@ export function buildWordbook({
         surfaces: [...occurrence.surfaces],
         status,
         favorite: lookup(languageCode, occurrence.lemma)?.favorite ?? false,
+        starColor: lookup(languageCode, occurrence.lemma)?.starColor,
         sentence: occurrence.sentence,
         documentId: occurrence.documentId,
         documentTitle: occurrence.documentTitle,
@@ -111,6 +114,7 @@ export function buildWordbook({
   for (const entry of entries) {
     entry.status = lookup(languageCode, entry.lemma)?.status ?? 'unmarked'
     entry.favorite = lookup(languageCode, entry.lemma)?.favorite ?? false
+    entry.starColor = lookup(languageCode, entry.lemma)?.starColor
   }
 
   const needle = query?.trim().toLowerCase()
@@ -144,4 +148,24 @@ export function groupByStatus(
     if (entry.favorite) grouped.favorite.push(entry)
   }
   return grouped
+}
+
+/**
+ * ★ 탭을 별 색으로 좁힌다 — 여러 색을 겹쳐 켤 수 있다 (개선사항.txt: 단어장의
+ * Favorites 탭에서 별 색깔 고르기).
+ *
+ * 아무 색도 켜지 않았으면(빈 배열) 걸러는 일이 없다 — 전부 보여 준다.
+ * 켠 색 안에 별 색이 들면 남는다. 별 색이 없는 행(별 기능 이전의 기록)은
+ * 켠 색과 같을 수 없으므로 걸러 진다 — 색이 없는데 어느 색에도 속한다고
+ * 보여 주는 것은 '빈 화면' 과 같은 거짓말보다 낫다.
+ */
+export function filterByStarColors(
+  entries: WordbookEntry[],
+  colors: readonly string[],
+): WordbookEntry[] {
+  if (colors.length === 0) return entries
+  const active = new Set(colors.map((c) => c.toLowerCase()))
+  return entries.filter((entry) =>
+    entry.starColor !== undefined && active.has(entry.starColor.toLowerCase()),
+  )
 }

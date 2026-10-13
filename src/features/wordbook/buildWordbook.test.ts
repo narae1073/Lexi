@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordState, WordStatus } from '../../types'
-import { buildWordbook, groupByStatus, wordbookGroupOrDefault } from './buildWordbook'
+import { buildWordbook, filterByStarColors, groupByStatus, wordbookGroupOrDefault } from './buildWordbook'
+import type { WordbookEntry } from './buildWordbook'
 
 const occurrence = (over: Partial<WordOccurrence> & { lemma: string }): WordOccurrence => ({
   documentId: 'doc-1',
@@ -84,6 +85,57 @@ describe('buildWordbook', () => {
     expect(grouped.known.map((e) => e.lemma)).toEqual(['cat'])
     expect(grouped.favorite.map((e) => e.lemma)).toEqual(['cat'])
     expect(grouped.unsure.map((e) => e.lemma)).toEqual(['dog'])
+  })
+
+  /** 별 색은 상태 행에서 온다 — ★ 탭의 색 필터가 쓰는 근거 */
+  it('별 색을 항목에 실어 보낸다', () => {
+    const byKey = {
+      'en::cat': { ...state('cat', 'known'), favorite: true, starColor: '#ef4444' },
+      'en::dog': { ...state('dog', 'unsure'), favorite: true, starColor: '#3b82f6' },
+    }
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [occurrence({ lemma: 'cat' }), occurrence({ lemma: 'dog' })],
+      byKey,
+    })
+    const colors = new Map(entries.map((e) => [e.lemma, e.starColor]))
+    expect(colors.get('cat')).toBe('#ef4444')
+    expect(colors.get('dog')).toBe('#3b82f6')
+  })
+
+  describe('filterByStarColors', () => {
+    /** 별 기능 이전의 기록 — 색이 없다 */
+    const entry = (lemma: string, starColor?: string): WordbookEntry => {
+      const byKey: Record<string, WordState> = starColor
+        ? { [`en::${lemma}`]: { ...state(lemma, 'known'), favorite: true, starColor } }
+        : {}
+      return buildWordbook({
+        languageCode: 'en',
+        occurrences: [occurrence({ lemma })],
+        byKey,
+      })[0]
+    }
+    const cat = entry('cat', '#ef4444')
+    const dog = entry('dog', '#3b82F6')
+    const bare = entry('bird')
+
+    it('켠 색이 없으면 걸러지지 않는다', () => {
+      expect(filterByStarColors([cat, dog], [])).toEqual([cat, dog])
+    })
+
+    it('켠 색 하나로 좁힌다 — 대소문자는 같은 색이다', () => {
+      expect(filterByStarColors([cat, dog], ['#EF4444']).map((e) => e.lemma)).toEqual(['cat'])
+    })
+
+    it('여러 색을 겹쳐 켠다', () => {
+      expect(
+        filterByStarColors([cat, dog], ['#ef4444', '#3b82f6']).map((e) => e.lemma),
+      ).toEqual(['cat', 'dog'])
+    })
+
+    it('색 없는 행은 켠 색이 있으면 빠진다', () => {
+      expect(filterByStarColors([cat, bare], ['#ef4444']).map((e) => e.lemma)).toEqual(['cat'])
+    })
   })
 
   it('같은 lemma 의 여러 문서 기록을 하나로 합친다', () => {

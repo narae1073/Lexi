@@ -13,8 +13,9 @@ import {
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
-import { buildWordbook, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
+import { buildWordbook, filterByStarColors, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
+import { StarColorFilter } from './StarColorFilter'
 import { WordStatusChart } from './WordStatusChart'
 import { countsFromGroups } from './statusChart'
 import { PageSizeSelect } from './PageSizeSelect'
@@ -92,6 +93,21 @@ export function Wordbook() {
   const resetPage = () => setPageNumber(1)
 
   /**
+   * ★ 탭에서 별 색으로 좁히는 필터 (개선사항.txt).
+   *
+   * 여러 색을 겹쳐 켤 수 있다. 켠 색이 없으면 ★ 탭 전체다. 다른 탭에 옮겨
+   * 가도 켠 색을 그대로 둔다 — 필터는 ★ 탭에만 걸리므로 다른 탭에 영향이
+   * 없고, 돌아왔을 때 좁혀진 상태 그대로다.
+   */
+  const [starColors, setStarColors] = useState<string[]>([])
+  const toggleStarColor = (hex: string) => {
+    setStarColors((prev) =>
+      prev.includes(hex) ? prev.filter((c) => c !== hex) : [...prev, hex],
+    )
+    resetPage()
+  }
+
+  /**
    * 범위를 푼다 — 언어 버튼에서 언어를 바꿀 때 부른다.
    *
    * 바꾸려는 언어를 넘겨 받는다. 상태를 그대로 쓰면 아직 갱신되기 전의 이전 언어가
@@ -102,9 +118,20 @@ export function Wordbook() {
     setSearchParams({ lang: next }, { replace: true })
   }
 
+  /**
+   * ★ 탭에만 색 필터가 걸린다 — 다른 탭은 건드리지 않는다.
+   *
+   * 색창이 없는 탭에 필터를 몰래 남겨 두면 좁혀진 목록을 보고 '단어가
+   * 사라졌다' 고 읽는다. 탭 안에서만 좁히는 것이 그 것을 막는 길이다.
+   */
+  const visible = useMemo(() => {
+    if (group !== 'favorite') return grouped[group]
+    return filterByStarColors(grouped.favorite, starColors)
+  }, [grouped, group, starColors])
+
   const current = useMemo(
-    () => paginate(grouped[group], pageNumber, pageSize),
-    [grouped, group, pageNumber, pageSize],
+    () => paginate(visible, pageNumber, pageSize),
+    [visible, pageNumber, pageSize],
   )
 
   if (!languageCode) {
@@ -215,8 +242,17 @@ export function Wordbook() {
 
       <p className="text-ink-muted mb-3 text-xs">{t('wordbook.legend')}</p>
 
+      {/* ★ 탭에서만 — 별 색으로 즐겨찾기를 좁힌다 (개선사항.txt) */}
+      {group === 'favorite' && (
+        <StarColorFilter active={starColors} onToggle={toggleStarColor} />
+      )}
+
       {current.items.length === 0 ? (
-        <p className="text-ink-muted py-8 text-sm">{t(`wordbook.empty.${group}`)}</p>
+        <p className="text-ink-muted py-8 text-sm">
+          {group === 'favorite' && starColors.length > 0
+            ? t('wordbook.starFilterEmpty')
+            : t(`wordbook.empty.${group}`)}
+        </p>
       ) : (
         <ul className="divide-line divide-y">
           {current.items.map((entry) => (
