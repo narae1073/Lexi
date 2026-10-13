@@ -1,4 +1,5 @@
 import type { Document } from '../../types'
+import { SUPPORTED_LANGUAGE_CODES, getLanguage, type SupportedLanguageCode } from '../../lib/languages'
 
 /**
  * 문서 목록 정렬.
@@ -100,4 +101,33 @@ export function activeDocuments(documents: Document[]): Document[] {
 /** 휴지통에 있는 문서 */
 export function trashedDocuments(documents: Document[]): Document[] {
   return documents.filter((doc) => Boolean(doc.deletedAt))
+}
+
+/**
+ * 문서 목록의 언어 필터 (개선사항.txt).
+ *
+ * 언어가 섞인 목록에서 한 언어만 골라 본다. 드롭다운에는 **실제로 문서가 있는
+ * 언어만** 올린다 — 문서가 없는 언어를 고르면 항상 빈 화면이고, 고를 이유가 없다.
+ * 지원 언어 순서를 유지한다 — 문서를 만들거나 지울 때마다 항목 순서가 출렁이면
+ * 눈이 손가락을 따라간다.
+ */
+export function languagesWithDocuments(documents: Document[]): SupportedLanguageCode[] {
+  const present = new Set(documents.map((doc) => doc.languageCode))
+  return SUPPORTED_LANGUAGE_CODES.filter((code) => present.has(code))
+}
+
+/** 고른 언어의 문서만 남긴다 — null(전체)이면 그대로 둔다 */
+export function documentsOfLanguage(
+  documents: Document[],
+  languageCode: string | null,
+): Document[] {
+  if (!languageCode) return documents
+  return documents.filter((doc) => doc.languageCode === languageCode)
+}
+
+/** 깨진 저장은 전체로 — 목록에 없는 언어는 호출부가 문서를 보고 다시 걸러 낸다 */
+export function documentLanguageFilterOrDefault(value: unknown): SupportedLanguageCode | null {
+  return typeof value === 'string' && getLanguage(value)
+    ? (value as SupportedLanguageCode)
+    : null
 }

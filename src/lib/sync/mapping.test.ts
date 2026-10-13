@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WordOccurrence } from '../../app/stores/occurrences'
-import type { Document } from '../../types'
+import type { Document, Folder } from '../../types'
 import {
   documentFromRow,
   documentToRow,
-  groupOccurrences,
+  folderFromRow,
+  folderToRow,
   occurrenceFromRows,
+  groupOccurrences,
   occurrenceToRows,
   wordStateFromRow,
   wordStateToRow,
+  type DocumentRow,
+  type FolderRow,
 } from './mapping'
 import type { WordStateRow } from './mapping'
 
@@ -25,6 +29,9 @@ const doc: Document = {
   createdAt: T0,
   updatedAt: T1,
   deletedAt: null,
+  folderId: null,
+  /** 폴더로 옮긴 적 없는 문서 — 인장은 문서를 연 시각이 기본값이다 */
+  folderUpdatedAt: T1,
 }
 
 describe('word_state 매핑', () => {
@@ -113,6 +120,52 @@ describe('documents 매핑', () => {
 
   it('살아 있는 문서는 deleted_at 이 NULL 이다', () => {
     expect(documentToRow(USER, { ...doc, deletedAt: undefined }).deleted_at).toBeNull()
+  })
+
+  /**
+   * 폴더도 왕복을 보존해야 한다 — 옮긴 기록이 사라지면 다른 기기는
+   * 문서가 폴더에 없는 것으로 보인다.
+   */
+  it('폴더에 놓인 문서도 폴더와 인장을 보존한다', () => {
+    const moved = { ...doc, folderId: 'folder-1', folderUpdatedAt: T1 }
+    const row = documentToRow(USER, moved)
+    expect(row.folder_id).toBe('folder-1')
+    expect(row.folder_updated_at).toBe(T1)
+    expect(documentFromRow(row)).toEqual(moved)
+  })
+
+  /** 폴더 기능 이전의 행에는 두 열이 모두 없다 (NULL) — 읽을 때 기본값을 채운다 */
+  it('폴더 열이 없던 행도 읽는다 — 인장은 열람 시각이 기본값이다', () => {
+    const legacyRow = {
+      ...documentToRow(USER, doc),
+      folder_id: null,
+      folder_updated_at: null,
+    } as DocumentRow
+    const back = documentFromRow(legacyRow)
+    expect(back.folderId).toBeNull()
+    expect(back.folderUpdatedAt).toBe(doc.updatedAt)
+  })
+
+  /** 폴더 매핑 — 폴더 자체의 왕복이다 */
+  it('폴더도 양방향으로 값이 보존된다', () => {
+    const folder: Folder = {
+      id: 'folder-1',
+      name: 'Reading',
+      parentId: null,
+      createdAt: T0,
+      updatedAt: T1,
+      deletedAt: null,
+    }
+    // Insert 모양에는 자동 채번 열이 없어도, 이 표는 id 를 클라이언트가 찍는다 — 왕복에 필요하다
+    const rowOf = (f: Folder): FolderRow => folderToRow(USER, f) as unknown as FolderRow
+    expect(folderFromRow(rowOf(folder))).toEqual(folder)
+
+    const child: Folder = { ...folder, id: 'folder-2', parentId: 'folder-1' }
+    expect(folderFromRow(rowOf(child))).toEqual(child)
+
+    const tombstoned: Folder = { ...folder, deletedAt: T1 }
+    expect(rowOf(tombstoned).deleted_at).toBe(T1)
+    expect(folderFromRow(rowOf(tombstoned))).toEqual(tombstoned)
   })
 })
 

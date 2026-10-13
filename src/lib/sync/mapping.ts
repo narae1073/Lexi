@@ -1,5 +1,5 @@
 import type { Database } from '../supabase/database.types'
-import type { Document, LanguageCode, WordStatus } from '../../types'
+import type { Document, Folder, LanguageCode, WordStatus } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordStateRecord } from './merge'
 
@@ -86,6 +86,9 @@ export function documentToRow(userId: string, doc: Document): DocumentRow {
     created_at: doc.createdAt,
     updated_at: doc.updatedAt,
     deleted_at: doc.deletedAt ?? null,
+    // 옮기지 않은 문서도 같은 말을 한다 (null) — 옛내 행이 서버 기본값으로 잠기지 않게
+    folder_id: doc.folderId ?? null,
+    folder_updated_at: doc.folderUpdatedAt ?? null,
   }
 }
 
@@ -95,6 +98,39 @@ export function documentFromRow(row: DocumentRow): Document {
     title: row.title,
     languageCode: row.language_code as LanguageCode,
     rawText: row.raw_text,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? null,
+    // 마이그레이션 이전 행에는 없다 — 서버 기본값이 있어도 여기서 기본값을 정한다
+    folderId: row.folder_id ?? null,
+    folderUpdatedAt: row.folder_updated_at ?? row.updated_at,
+  }
+}
+
+/**
+ * 서버에 있는 폴더 — Folder 나이트브 모양은 snake_case 다.
+ * 병합·전송에서 이 변환만 쓴다 (문서의 것과 같은 이유다).
+ */
+export type FolderRow = Database['public']['Tables']['folders']['Row']
+type FolderInsert = Database['public']['Tables']['folders']['Insert']
+
+export function folderToRow(userId: string, folder: Folder): FolderInsert {
+  return {
+    id: folder.id,
+    user_id: userId,
+    name: folder.name,
+    parent_id: folder.parentId,
+    created_at: folder.createdAt,
+    updated_at: folder.updatedAt,
+    deleted_at: folder.deletedAt ?? null,
+  }
+}
+
+export function folderFromRow(row: FolderRow): Folder {
+  return {
+    id: row.id,
+    name: row.name,
+    parentId: row.parent_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at ?? null,

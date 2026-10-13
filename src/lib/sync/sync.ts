@@ -6,17 +6,20 @@ import { purgedDocumentIds } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
-import type { Document, WordStatus } from '../../types'
+import type { Document, Folder, WordStatus } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
 import { isNewer, mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
 import {
   documentFromRow,
   documentToRow,
+  folderFromRow,
+  folderToRow,
   occurrenceToRows,
   wordStateFromRow,
   wordStateToRow,
   type DocumentRow,
+  type FolderRow,
   type OccurrenceRow,
   type WordStateRow,
 } from './mapping'
@@ -78,11 +81,13 @@ function client(): SupabaseClient<Database> {
  */
 export async function readLocal(): Promise<{
   documents: Document[]
+  folders: Folder[]
   wordStates: (WordStateRecord & { status: WordStatus })[]
   occurrences: WordOccurrence[]
 }> {
-  const [documents, wordStates, occurrences] = await Promise.all([
+  const [documents, folders, wordStates, occurrences] = await Promise.all([
     idbGetAll<Document>(STORES.documents),
+    idbGetAll<Folder>(STORES.folders),
     idbGetAll<
       Omit<WordStateRecord, 'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor'> & {
         surface?: string
@@ -98,7 +103,14 @@ export async function readLocal(): Promise<{
   ])
 
   return {
-    documents,
+    // 옛 행에는 폴더 인장이 없다 — 없던 것을 있는 것은 아니지만, 폴더가 없는 것
+    // 자체는 있다 (루트). 인장만 문서를 연 시각으로 채워 병합이 자리를 갖게 한다
+    documents: documents.map((doc) => ({
+      ...doc,
+      folderId: doc.folderId ?? null,
+      folderUpdatedAt: doc.folderUpdatedAt ?? doc.updatedAt,
+    })),
+    folders,
     wordStates: wordStates.map((r) => ({
       languageCode: r.languageCode,
       lemma: r.lemma,
@@ -148,14 +160,15 @@ async function idbPutIfChanged<T>(
 /**
  * 저장소의 주키를 만들어 낸다.
  *
- * 문서는 'id', 단어 상태는 [languageCode, lemma] 다. 저장소가 늘어날 때마다 여기만
- * 늘리면 된다 — 그래야 '같은 것' 을 저장소의 원래 규칙대로 판단할 수 있다.
+ * 문서·폴더는 'id', 단어 상태는 [languageCode, lemma] 다. 저장소가 늘어날 때마다
+ * 여기만 늘리면 된다 — 그래야 '같은 것' 을 저장소의 원래 규칙대로 판단할 수 있다.
  */
 function idbKeyOf(
   store: (typeof STORES)[keyof typeof STORES],
   value: unknown,
 ): IDBValidKey | undefined {
   if (store === STORES.documents) return (value as { id?: IDBValidKey }).id
+  if (store === STORES.folders) return (value as { id?: IDBValidKey }).id
   if (store === STORES.wordStates) {
     const state = value as { languageCode?: string; lemma?: string }
     return state.languageCode !== undefined && state.lemma !== undefined
@@ -169,9 +182,11 @@ export async function writeLocal(
   documents: Document[],
   wordStates: WordStateRecord[],
   occurrences: WordOccurrence[],
+  folders: Folder[],
 ): Promise<void> {
   await Promise.all([
     ...documents.map((doc) => idbPutIfChanged(STORES.documents, doc)),
+    ...folders.map((folder) => idbPutIfChanged(STORES.folders, folder)),
     ...wordStates.map((state) => idbPutIfChanged(STORES.wordStates, state)),
   ])
 
@@ -206,7 +221,7 @@ const MAX_ROWS = 200_000
  */
 async function fetchAll<T>(
   db: SupabaseClient<Database>,
-  table: 'user_languages' | 'documents' | 'word_states' | 'word_occurrences',
+  table: 'user_languages' | 'documents' | 'folders' | 'word_states' | 'word_occurrences',
   userId: string,
   order: string,
   columns = '*',
@@ -252,9 +267,10 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
    * 실제로는 그 이상인데 잘린 것이었다. 그 숫자를 믿은 나는 '서버에 다 있다' 고
    * 잘못 읽었다.
    */
-  const [languageRows, documents, wordStates, occurrences] = await Promise.all([
+  const [languageRows, documents, folders, wordStates, occurrences] = await Promise.all([
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
     fetchAll<DocumentRow>(db, 'documents', userId, 'id'),
+    fetchAll<FolderRow>(db, 'folders', userId, 'id'),
     fetchAll<WordStateRow>(db, 'word_states', userId, 'lemma'),
     fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id'),
   ])
@@ -262,6 +278,7 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
   return {
     languages: languageRows.map((r) => r.language_code),
     documents: documents.map(documentFromRow),
+    folders: folders.map(folderFromRow),
     wordStates: wordStates.map(wordStateFromRow),
     occurrences: occurrences as OccurrenceRow[],
   }
@@ -289,6 +306,7 @@ export async function syncOnce({
 
   const words = mergeWordStates(local.wordStates, remote.wordStates)
   const languages = mergeLanguages(localLanguages, remote.languages)
+  const folders = mergeFolders(local.folders, remote.folders)
 
   /**
    * 이 기기에서 완전 삭제한 문서는 서버 것이 남아 있어도 받지 않는다.
@@ -325,7 +343,6 @@ export async function syncOnce({
   const mergedDocuments = mergeDocuments(local.documents, remoteDocs)
     // 로컬에 남은 지운 문서가 있어도 서버로 다시 올리지 않는다
     .filter((d) => !purged.includes(d.id))
-
   /**
    * 표시를 없앤 행은 없는 채로 쓴다.
    *
@@ -336,7 +353,7 @@ export async function syncOnce({
     record.status === undefined ? record : withStatus(record),
   )
 
-  await writeLocal(mergedDocuments, mergedWords, occurrences)
+  await writeLocal(mergedDocuments, mergedWords, occurrences, folders)
 
   /**
    * 바뀐 문서만 보낸다.
@@ -357,6 +374,8 @@ export async function syncOnce({
     if (theirs.languageCode !== doc.languageCode) return true
     // 휴지통 상태가 달라졌다 — 버리거나 되살린 것을 서버도 알아야 한다
     if ((theirs.deletedAt ?? null) !== (doc.deletedAt ?? null)) return true
+    // 폴더가 달라졌다 — 문서를 옮긴 것을 서버도 알아야 한다
+    if ((theirs.folderId ?? null) !== (doc.folderId ?? null)) return true
     // 이 기기에서 더 늦게 열었다
     return isNewer(doc.updatedAt, theirs.updatedAt)
   })
@@ -369,15 +388,22 @@ export async function syncOnce({
    *
    * 그 결과가Coc Jordan 보이는 것이었다 — 어느 기기의 기록이 덜 계산되어 있으면 그것이
    * 서버 전체를 덮어쓴다. 그래서 **단어 색깔(`byKey`)은 맞는��**데 **목록 게이지와
-   * 단어장은 다른 기기의 것을 잃었다** — 게이지와 단어장은 기록에서 나오고 색깔은 상태에서
-   * 나오기 때문이다.
+   * 단어장은 다른 기기의 것을 잃었다** — 게이지와 단어장은 기록에서 나오고 색깔은
+   * 상태에서 나오기 때문이다.
    *
    * 같으면 보내지 않는다. 기록은 문서를 열 때 다시 쓰이므로, 바뀐 것만 보내면 충분하다.
    */
   const occurrencePush = changedOccurrenceDocuments(occurrences, remote.occurrences)
 
+  /**
+   * 폴더는 문서보다 **먼저** 간다 — 문서의 folder_id 가 폴더를 가리키므로(FK),
+   * 폴더가 아직 없는 채로 문서가 가면 서버가 거절한다. 문서가 맞아 떨어지기
+   * 전에 자리를 먼저 만들어 두는 것이다.
+   */
+  const foldersToPush = changedFolders(folders, remote.folders)
+
   // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
-  await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly })
+  await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly, folders: foldersToPush })
 
   return {
     // 지운 것은 '보낸 단어' 가 아니다 — 서버에서 지운 것이지 보낸 것이 아니다
@@ -404,10 +430,40 @@ export function mergeDocuments(local: Document[], remote: Document[]): Document[
   const byId = new Map(remote.map((d) => [d.id, d]))
   for (const doc of local) {
     const theirs = byId.get(doc.id)
-    if (!theirs || isNewer(doc.updatedAt, theirs.updatedAt)) byId.set(doc.id, doc)
+    if (!theirs) {
+      byId.set(doc.id, doc)
+      continue
+    }
+    /**
+     * 문서 내용은 '마지막으로 고친(열은)' 쪽이 이긴다. 폴더는 그보다
+     * **언제 옮겼는가**로 따로 이긴다 — 오래 전에 열Pi는 문서를 방금 옮긴
+     * 기록이 열기의 무게로 잡혀 먹히면 안 되므로 두 인장을 따로 본다.
+     */
+    const winner = isNewer(doc.updatedAt, theirs.updatedAt) ? doc : theirs
+    const folderWinner = folderWinnerOf(doc, theirs)
+    if (winner === folderWinner) byId.set(doc.id, winner)
+    else byId.set(doc.id, { ...winner, folderId: folderWinner.folderId ?? null, folderUpdatedAt: folderWinner.folderUpdatedAt })
   }
   return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
+
+/**
+ * 두 기록 가운데 폴더를 늦게 옮긴 쪽.
+ *
+ * 인장도 없는 옛 기록(폴더 기능 이전의 행)은 '없음' 이다 — 둘 다 인장이 없으면
+ * 아무런 폴더 기록이 없는 것이고, 폴더에 없는 결과가 남는다. 한쪽에만 있으면
+ * 그쪽이 이긴다.
+ */
+function folderWinnerOf(a: Document, b: Document): Document {
+  const aStamp = a.folderUpdatedAt
+  const bStamp = b.folderUpdatedAt
+  // 둘 다 인장이 없으면 폴더 기록 자체가 없는 것이다 — 폴더에 없다고 남는다
+  if (!aStamp && !bStamp) return { ...a, folderId: null, folderUpdatedAt: undefined }
+  if (!bStamp) return a
+  if (!aStamp) return b
+  return isNewer(aStamp, bStamp) ? a : b
+}
+
 
 /**
  * 서버에 없는 것만 보낸다.
@@ -475,18 +531,80 @@ export function changedOccurrenceDocuments(
   return changed
 }
 
+/**
+ * 폴더는 id 로 갈아끼운다 — 문서와 같은 규칙이다.
+ *
+ * 톰스톤도 같은 자리로 온다. 지운 폴더의 updated_at 이 늦으면 그 지움이 이기고,
+ * 옛 폴더가 되살아나지 않는다 (문서 휴지통 상태가 같은 방식으로 병합된다).
+ *
+ * 폴더에는 서버 트리거가 없다 — updated_at 을 우리가 찍어서 보내므로, 이
+ * 병합은 클라이언트 인장을 그대로 믿는다.
+ */
+export function mergeFolders(local: Folder[], remote: Folder[]): Folder[] {
+  const byId = new Map(remote.map((f) => [f.id, f]))
+  for (const folder of local) {
+    const theirs = byId.get(folder.id)
+    if (!theirs) {
+      byId.set(folder.id, folder)
+      continue
+    }
+    if (!isNewer(folder.updatedAt, theirs.updatedAt)) {
+      // 인장이 같은데 내용이 다르면 (지움 vs 고침) 지움을 믿는다 —
+      // 되살려 놓는 실수보다 지운 채로 남는 쪽이 조용하다
+      const tieGoesToTombstone = Boolean(folder.deletedAt && !theirs.deletedAt)
+      byId.set(folder.id, tieGoesToTombstone ? folder : theirs)
+      continue
+    }
+    byId.set(folder.id, folder)
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+}
+
+/**
+ * 서버와 달라진 폴더를 찾는다 — 서버가 없는 폴더도 '달라진 것' 이다.
+ *
+ * 문서와 같은 규칙이지만 한 가지가 다르다: **폴더에는 서버 트리거가 없다.**
+ * 로컬에서 고친 시각 그대로 서버에 들어가므로, 여기서는 클라이언트 인장을
+ * 그대로 믿고 비교한다.
+ */
+export function changedFolders(
+  merged: readonly Folder[],
+  remoteRows: readonly Folder[],
+): Folder[] {
+  const remoteById = new Map(remoteRows.map((f) => [f.id, f]))
+  return merged.filter((folder) => {
+    const theirs = remoteById.get(folder.id)
+    // 새 폴더
+    if (!theirs) return true
+    if (theirs.name !== folder.name) return true
+    // 부모가 달라졌다 — 만들어진 자리가 바뀐 것이다
+    if ((theirs.parentId ?? null) !== (folder.parentId ?? null)) return true
+    // 톰스톤 상태가 달라졌다
+    if ((theirs.deletedAt ?? null) !== (folder.deletedAt ?? null)) return true
+    // 이 기기에서 더 늦게 고쳤다
+    return isNewer(folder.updatedAt, theirs.updatedAt)
+  })
+}
+
+/**
+ * **폴더가 문서보다 먼저 가는 것이 서버의 규칙이다** — 문서의 folder_id 가
+ * 폴더를 가리키므로(FK) 폴더가 아직 없으면 문서가 거절된다.
+ */
+
 export async function push({
   userId,
   db,
   languages,
   documents,
   words,
+  folders,
 }: {
   userId: string
   db: SupabaseClient<Database>
   languages: string[]
   documents: Document[]
   words: WordStateRecord[]
+  folders: Folder[]
 }): Promise<void> {
   const failures: string[] = []
 
@@ -522,6 +640,18 @@ export async function push({
         .eq('user_id', userId)
         .eq('language_code', record.languageCode)
         .eq('lemma', record.lemma),
+    )
+  }
+
+  /**
+   * 폴더 먼저 — 문서의 folder_id 가 폴더를 가리키므로(FK) 문서보다 앞서야 한다.
+   * 실패가 있으면 모아서 한 번에 알린다 — 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
+   */
+  if (folders.length > 0) {
+    await send('folders', () =>
+      db.from('folders').upsert(folders.map((folder: Folder) => folderToRow(userId, folder)), {
+        onConflict: 'id',
+      }),
     )
   }
 

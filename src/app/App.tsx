@@ -14,6 +14,7 @@ import { SettingsPanel } from '../features/settings/SettingsPanel'
 import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
 import { useDocumentsStore } from './stores/documents'
+import { useFoldersStore } from './stores/folders'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
 import { useCloudSync } from './stores/sync'
@@ -72,6 +73,7 @@ export default function App() {
   const t = useTranslation()
   const ready = useLanguagesStore((s) => s.ready)
   const load = useDocumentsStore((s) => s.load)
+  const loadFolders = useFoldersStore((s) => s.load)
   const allDocuments = useDocumentsStore((s) => s.documents)
   // 휴지통에 있는 문서는 목록에도 없으니 진도 계산도 필요 없다
   const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
@@ -88,7 +90,8 @@ export default function App() {
 
   useEffect(() => {
     void load()
-  }, [load])
+    void loadFolders()
+  }, [load, loadFolders])
 
   /**
    * 목록의 진도 게이지를 위해, 아직 기록이 없는 문서를 유휴 시점에 계산한다.

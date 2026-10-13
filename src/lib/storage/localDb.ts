@@ -4,10 +4,11 @@
  */
 
 const DB_NAME = 'lexi'
-const DB_VERSION = 4
+const DB_VERSION = 5
 
 export const STORES = {
   documents: 'documents',
+  folders: 'folders',
   wordStates: 'wordStates',
   /** 단어가 실제로 등장한 위치. 단어장의 "이 문서에서 본 단어" 를 만드는 원본 데이터 */
   wordOccurrences: 'wordOccurrences',
@@ -36,7 +37,8 @@ export type StoreName = (typeof STORES)[keyof typeof STORES]
  * 여기가 바뀐 것은 이 기기 밖에 있는 계정에도 반영되어야 한다. 응답 캐시는 기기 안에서
  * 재사용용이고, documentMeta 는 기기 안의 계산 기록이라 서버와 상관없다.
  */
-const SYNCED_STORES: readonly StoreName[] = ['documents', 'wordStates', 'wordOccurrences']
+/** 폴더 — 문서를 모으는 자리. 문서·상태와 함께 계정 동기화 대상이다 */
+const SYNCED_STORES: readonly StoreName[] = ['documents', 'folders', 'wordStates', 'wordOccurrences']
 
 type LocalWriteListener = (store: StoreName) => void
 
@@ -80,6 +82,12 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.documents)) {
         const s = db.createObjectStore(STORES.documents, { keyPath: 'id' })
         s.createIndex('updatedAt', 'updatedAt')
+      }
+      if (!db.objectStoreNames.contains(STORES.folders)) {
+        // 문서 정리의 원본 데이터다 — 문서와 함께 계정으로 간다 (문서 휴지통과 같은 모양)
+        const s = db.createObjectStore(STORES.folders, { keyPath: 'id' })
+        s.createIndex('updatedAt', 'updatedAt')
+        s.createIndex('parentId', 'parentId')
       }
       if (!db.objectStoreNames.contains(STORES.wordStates)) {
         const s = db.createObjectStore(STORES.wordStates, { keyPath: ['languageCode', 'lemma'] })

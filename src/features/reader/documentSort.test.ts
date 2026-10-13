@@ -5,11 +5,14 @@ import {
   DEFAULT_DOCUMENT_SORT,
   DEFAULT_SORT_DIRECTION,
   directionOrDefault,
+  documentLanguageFilterOrDefault,
   documentLength,
+  documentsOfLanguage,
   documentSortOrDefault,
   flipDirection,
   isDocumentSort,
   isSortDirection,
+  languagesWithDocuments,
   sortDocuments,
   type DocumentSort,
   type SortDirection,
@@ -26,6 +29,36 @@ function doc(id: string, over: Partial<Document> = {}): Document {
     ...over,
   }
 }
+
+describe('언어 필터', () => {
+  it('실제로 문서가 있는 언어만, 지원 언어 순서대로', () => {
+    // 지원 순서는 en, ja, ko, es, fr, de, pt, zh — de 가 먼저 있어도 en 이 앞선다
+    const docs = [
+      doc('de1', { languageCode: 'de' }),
+      doc('ja1', { languageCode: 'ja' }),
+      doc('en1', { languageCode: 'en' }),
+      doc('de2', { languageCode: 'de' }),
+    ]
+    expect(languagesWithDocuments(docs)).toEqual(['en', 'ja', 'de'])
+  })
+
+  it('문서가 없으면 빈 목록이다', () => {
+    expect(languagesWithDocuments([])).toEqual([])
+  })
+
+  it('고른 언어의 문서만 남긴다', () => {
+    const docs = [doc('en1'), doc('de1', { languageCode: 'de' }), doc('en2')]
+    expect(documentsOfLanguage(docs, 'de').map((d) => d.id)).toEqual(['de1'])
+    expect(documentsOfLanguage(docs, null)).toEqual(docs)
+  })
+
+  it('깨진 저장은 전체로 되돌린다', () => {
+    expect(documentLanguageFilterOrDefault('zz')).toBeNull()
+    expect(documentLanguageFilterOrDefault(42)).toBeNull()
+    expect(documentLanguageFilterOrDefault(null)).toBeNull()
+    expect(documentLanguageFilterOrDefault('de')).toBe('de')
+  })
+})
 
 const ids = (docs: Document[]) => docs.map((d) => d.id)
 

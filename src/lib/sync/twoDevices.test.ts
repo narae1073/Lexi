@@ -19,6 +19,7 @@ function memoryServer(rowCap = 1000) {
   const tables: Record<string, Record<string, unknown>[]> = {
     user_languages: [],
     documents: [],
+    folders: [],
     word_states: [],
     word_occurrences: [],
   }
@@ -26,6 +27,7 @@ function memoryServer(rowCap = 1000) {
   const keyOf = (table: string, row: Record<string, unknown>): string => {
     if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
     if (table === 'documents') return String(row.id)
+    if (table === 'folders') return String(row.id)
     if (table === 'user_languages') return `${row.user_id}|${row.language_code}`
     return String(row.id ?? `${row.user_id}|${row.lemma}|${row.surface}`)
   }

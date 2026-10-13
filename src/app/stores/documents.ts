@@ -28,6 +28,14 @@ type DocumentsState = {
   }) => Promise<Document>
   /** 문서를 열어 봤음을 기록한다 — 목록에 보이는 '최근 본 시각' 의 근거 */
   touch: (id: string) => Promise<void>
+  /**
+   * 문서를 폴더로 옮긴다. 폴더에 없애는 것도 같은 길이다 (folderId = null).
+   *
+   * 옮기는 일은 열람이 아니므로 updated_at 을 건드리지 않는다 — '마지막으로 본
+   * 시각'은 목록 학돈 날짜·정렬의 근거다. 언제 옮겼는지는 folderUpdatedAt 이 따로
+   * 찍고, 병합은 그 인장으로 늦게 옮긴 쪽을 고른다.
+   */
+  moveToFolder: (ids: readonly string[], folderId: string | null) => Promise<void>
   /** 제목을 바꾼다. 빈 제목은 받지 않는다 — 제목이 없는 문서는 길을 잃는다 */
   rename: (id: string, title: string) => Promise<boolean>
   /** 휴지통으로 보낸다 — 바로 지우지 않는다 */
@@ -60,7 +68,10 @@ export function sameDocuments(a: Document[], b: Document[]): boolean {
       doc.rawText === other.rawText &&
       doc.createdAt === other.createdAt &&
       doc.updatedAt === other.updatedAt &&
-      (doc.deletedAt ?? null) === (other.deletedAt ?? null)
+      (doc.deletedAt ?? null) === (other.deletedAt ?? null) &&
+      // 폴더는 문서의 내용이 아니지만 목록에 그대로 보인다 — 따라오지 않으면
+      // 동기화가 옮김을 반영할 때 화면만 옛 집에 머문다
+      (doc.folderId ?? null) === (other.folderId ?? null)
     )
   })
 }
@@ -188,6 +199,41 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
     await idbPut(STORES.documents, next).catch((error) => {
       console.error('문서 열람 시각 저장 실패', error)
     })
+  },
+
+  /**
+   * 문서를 폴더로 옮긴다. 폴더에 없애는 것도 같은 길이다 (folderId = null).
+   *
+   * **updated_at 을 건드리지 않는다** — 이 앱에서 그 시각은 '마지막으로 본
+   * 시각'이고 목록의 날짜·'최근 본 순' 정렬의 근거다. 폴더로 옮기는 일이 그
+   * 시각을 찍으면, 옮긴 문서가 조용히 목록 맨 위로 술렁인다. 언제 옮겼는지는
+   * folderUpdatedAt 이 따로 찍고, 병합은 그 인장으로 늦게 옮긴 쪽을 고른다.
+   *
+   * 개수로 받는 이유: 한 장을 옮기는 것과 골라서 여러 장을 옮기는 것(Phase 3)이
+   * 같은 길이다 — 같은 말을 두 곳에서 하지 않게.
+   */
+  moveToFolder: async (ids, folderId) => {
+    const stamp = now()
+    const moving = new Set(ids)
+
+    const updates = get().documents
+      .filter((doc) => moving.has(doc.id))
+      .filter((doc) => (doc.folderId ?? null) !== folderId)
+      .map((doc) => ({ ...doc, folderId, folderUpdatedAt: stamp }))
+    if (updates.length === 0) return
+
+    // 화면을 먼저 옮긴다 — 저장은 따라 잡는다 (purge 의 규칙과 같다)
+    set((s) => ({
+      documents: s.documents.map((doc) => {
+        const update = updates.find((u) => u.id === doc.id)
+        return update ?? doc
+      }),
+    }))
+    for (const doc of updates) {
+      await idbPut(STORES.documents, doc).catch((error) => {
+        console.error('문서 폴더 옮기기 실패', error)
+      })
+    }
   },
 
   create: async ({ title, languageCode, rawText, fallbackTitle }) => {

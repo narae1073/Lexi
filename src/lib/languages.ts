@@ -30,6 +30,10 @@ export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number]
 /** 배울 언어로 선택할 수 있는 코드 */
 export type SupportedLanguageCode = SupportedLanguage['code']
 
+/** 지원 언어 코드만 — 목록 화면의 언어 필터가 이 순서를 유지한다 */
+export const SUPPORTED_LANGUAGE_CODES: readonly SupportedLanguageCode[] =
+  SUPPORTED_LANGUAGES.map((language) => language.code)
+
 const BY_CODE = new Map<string, SupportedLanguage>(
   SUPPORTED_LANGUAGES.map((lang) => [lang.code, lang]),
 )

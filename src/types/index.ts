@@ -48,6 +48,32 @@ export type Document = {
    * 문서를 열어 단어를 기록해 둔 것이 학습 상태의 근거라, 지우면 어디에도 안 남는다.
    */
   deletedAt?: string | null
+  /**
+   * 문서가 놓인 폴더. 없으면 폴더에 없다.
+   *
+   * 폴더로 옮기는 일은 문서를 고치는 일이 아니다 — updated_at 은 '마지막으로 본
+   * 시각'이라 목록 날짜·정렬의 근거라서 건드리지 않는다. 옮긴 시각은
+   * folderUpdatedAt 이 따로 찍는다 (문서 휴지통·별의 기록과 같은 모양이다).
+   */
+  folderId?: string | null
+  /** 폴더로 옮긴 시각 — 병합에서 늦게 옮긴 쪽이 이긴다 */
+  folderUpdatedAt?: string
+}
+
+/**
+ * 폴더. 문서를 모으는 자리 — 상태 탭이나 언어와 달리 문서를 가두지 않는다.
+ *
+ * 중첩은 parentId 로 한다. 삭제는 바로 지우지 않고 deleted_at 을 찍는다 —
+ * 문서 휴지통과 같은 이유로, 되살릴 방법이 없는 지우기는 하지 않는다.
+ * (폴더를 지우면 그 안의 문서는 폴더의 부모로 옮겨 간다 — 사라지지 않는다.)
+ */
+export type Folder = {
+  id: string
+  name: string
+  parentId: string | null
+  createdAt: string
+  updatedAt: string
+  deletedAt?: string | null
 }
 
 /** 언어별 단어 상태. 같은 단어는 문서와 무관하게 전역 공유 (PLAN.md §4). */

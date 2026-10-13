@@ -26,6 +26,10 @@ export type Database = {
           updated_at: string
           /** 휴지통에 버린 시각. NULL 이면 살아 있는 문서 */
           deleted_at: string | null
+          /** 문서가 놓인 폴더. NULL 이면 폴더에 없다 */
+          folder_id: string | null
+          /** 폴더로 옮긴 시각 — 열람 시각과 별개의 인장이다 */
+          folder_updated_at: string | null
         }
         Insert: {
           id?: string
@@ -36,6 +40,8 @@ export type Database = {
           created_at?: string
           updated_at?: string
           deleted_at?: string | null
+          folder_id?: string | null
+          folder_updated_at?: string | null
         }
         Update: {
           id?: string
@@ -43,6 +49,39 @@ export type Database = {
           title?: string
           language_code?: string
           raw_text?: string
+          created_at?: string
+          updated_at?: string
+          deleted_at?: string | null
+          folder_id?: string | null
+          folder_updated_at?: string | null
+        }
+        Relationships: []
+      }
+      folders: {
+        Row: {
+          id: string
+          user_id: string
+          name: string
+          /** 중첩 폴더 — 최상위는 NULL */
+          parent_id: string | null
+          created_at: string
+          updated_at: string
+          deleted_at: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          parent_id?: string | null
+          created_at?: string
+          updated_at?: string
+          deleted_at?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          parent_id?: string | null
           created_at?: string
           updated_at?: string
           deleted_at?: string | null

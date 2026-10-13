@@ -8,6 +8,7 @@ import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features
 import {
   DEFAULT_DOCUMENT_SORT,
   DEFAULT_SORT_DIRECTION,
+  documentLanguageFilterOrDefault,
   documentSortOrDefault,
   directionOrDefault,
   flipDirection,
@@ -96,6 +97,8 @@ type SettingsState = {
   documentSort: DocumentSort
   /** 정렬 방향 — 기준마다 따로 들고 있다 */
   documentSortDir: Record<DocumentSort, SortDirection>
+  /** 문서 목록의 언어 필터 — null 이면 전체. 저장은 하되, 문서가 없는 언어는 화면에서 무시한다 */
+  documentLanguageFilter: SupportedLanguageCode | null
   /** 문서 본문 한 쪽에 담을 단어 수 */
   readerPageWords: number
   /** 즐겨찾기 별 스티커의 크기 — 단어 글자의 % */
@@ -116,6 +119,7 @@ type SettingsState = {
   setDocumentSort: (value: DocumentSort) => void
   setDocumentSortDir: (sort: DocumentSort, value: SortDirection) => void
   toggleDocumentSortDir: (sort: DocumentSort) => void
+  setDocumentLanguageFilter: (value: SupportedLanguageCode | null) => void
   setReaderPageWords: (value: number) => void
   setReaderPage: (documentId: string, page: number) => void
   setFavoriteStarSize: (value: number) => void
@@ -145,6 +149,7 @@ export const useSettingsStore = create<SettingsState>()(
       wordbookGroup: 'favorite',
       documentSort: DEFAULT_DOCUMENT_SORT,
       documentSortDir: { ...DEFAULT_SORT_DIRECTION },
+      documentLanguageFilter: null,
       readerPageWords: DEFAULT_READER_PAGE_WORDS,
       readerPageByDocument: {},
       favoriteStarSize: STAR_SIZE_DEFAULT,
@@ -174,6 +179,9 @@ export const useSettingsStore = create<SettingsState>()(
           },
         }))
       },
+      // 깨진 저장은 전체로 — 문서가 없는 언어는 화면이 문서를 보고 다시 걸러 낸다
+      setDocumentLanguageFilter: (value) =>
+        set({ documentLanguageFilter: documentLanguageFilterOrDefault(value) }),
       setReaderPageWords: (value) => set({ readerPageWords: pageWordsOrDefault(value) }),
       setFavoriteStarSize: (value) => set({ favoriteStarSize: clampStarSize(value) }),
       setReaderPage: (documentId, page) =>

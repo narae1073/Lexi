@@ -46,7 +46,7 @@ describe('병합 결과를 되돌려 쓸 때', () => {
   it('같은 것을 다시 쓰지 않는다 — 조용해야 할 곳에 시끄러움을 두지 않는다', async () => {
     const writes: string[] = []
     const off = onLocalWrite((store) => writes.push(store))
-    await writeLocal([doc()], [word()], [])
+    await writeLocal([doc()], [word()], [], [])
     await Promise.resolve()
     off()
 
@@ -56,7 +56,7 @@ describe('병합 결과를 되돌려 쓸 때', () => {
   it('제목이 바뀌었으면 문서는 쓴다', async () => {
     const writes: string[] = []
     const off = onLocalWrite((store) => writes.push(store))
-    await writeLocal([doc({ title: '새 제목' })], [word()], [])
+    await writeLocal([doc({ title: "새 제목" })], [word()], [], [])
     await Promise.resolve()
     off()
 
@@ -66,7 +66,7 @@ describe('병합 결과를 되돌려 쓸 때', () => {
   it('단어 상태가 바뀌었으면 단어 상태를 쓴다', async () => {
     const writes: string[] = []
     const off = onLocalWrite((store) => writes.push(store))
-    await writeLocal([doc()], [word({ status: 'unsure' })], [])
+    await writeLocal([doc()], [word({ status: "unsure" })], [], [])
     await Promise.resolve()
     off()
 
@@ -78,7 +78,7 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     expect(stored?.status).toBe('known')
 
     // 서버에서 같은 값이 돌아왔다
-    await writeLocal([doc()], [word()], [])
+    await writeLocal([doc()], [word()], [], [])
     const after = await idbGet<Record<string, unknown>>(STORES.wordStates, ['en', 'run'])
     expect(after).toEqual(stored)
   })
@@ -87,7 +87,7 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     const seen: string[] = []
     const off = onLocalWrite((store) => seen.push(store))
     for (let i = 0; i < 5; i++) {
-      await writeLocal([doc()], [word()], [])
+      await writeLocal([doc()], [word()], [], [])
       await Promise.resolve()
     }
     off()
@@ -113,6 +113,7 @@ describe('되돌려 쓴 뒤에도 저장소가 그대로다', () => {
           updatedAt: '2026-01-02T00:00:00.000Z',
         },
       ],
+      [],
       [],
       [],
     )

@@ -3,6 +3,7 @@ import { create } from 'zustand'
 
 import { useAuthStore } from './auth'
 import { useDocumentsStore } from './documents'
+import { useFoldersStore } from './folders'
 import { useLanguagesStore } from './languages'
 import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
@@ -141,6 +142,8 @@ async function run(set: Setter) {
     // 받은 내용을 화면 스토어에 불어넣는다 — 안 하면 기록은 있어도 안 보인다
     const documents = useDocumentsStore.getState()
     await documents.load()
+    // 폴더도 다른 기기에서 온다 — 만들어진 폴더가 여기에도 나와야 한다
+    await useFoldersStore.getState().load()
 
     /**
      * 방금 써 넣은 병합 결과를 화면에 반영한다.
