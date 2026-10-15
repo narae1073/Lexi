@@ -84,6 +84,15 @@ export async function run(ctx) {
       if (b) b.click();
       return true;
     })()`)
+    await sleep(400)
+    // 한 번 묻는 상자를 확인해야 실제로 버려진다
+    await ctx.page.evaluate(`(() => {
+      const d = document.querySelector('[role="dialog"]');
+      const b = d && [...d.querySelectorAll('button')].find(x => x.innerText === 'Move to trash');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`)
     await sleep(500)
   }
   await ctx.clickSelector('a[href="/"]')

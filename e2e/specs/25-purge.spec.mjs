@@ -23,9 +23,17 @@ export async function run(ctx) {
   await sleep(700)
   await ctx.waitFor(`!!document.querySelector('[data-start]')`, '본문')
 
-  // 휴지통으로 보낸다
+  // 휴지통으로 보낸다 — 누르면 한 번 묻는다 (확인해야 실제로 버려진다)
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find(x => /휴지통으로|Move to trash/.test(x.innerText));
+    b.click();
+    return true;
+  })()`)
+  await sleep(500)
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d && [...d.querySelectorAll('button')].find(x => /휴지통으로|Move to trash/.test(x.innerText));
+    if (!b) return false;
     b.click();
     return true;
   })()`)
@@ -39,10 +47,18 @@ export async function run(ctx) {
   ctx.check('휴지통에 들어있다', /완전 삭제|Delete for good/.test(await ctx.bodyText()),
     (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
 
-  // 완전 삭제
+  // 완전 삭제 — 여기도 한 번 묻는다
   const before = await ctx.page.evaluate(`window.__docId = location.pathname`)
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find(x => /완전 삭제|Delete for good/.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(500)
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d && [...d.querySelectorAll('button')].find(x => /완전 삭제|Delete for good/.test(x.innerText));
     if (!b) return false;
     b.click();
     return true;
