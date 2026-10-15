@@ -38,7 +38,7 @@ export function QuizView() {
   const enrolled = useLanguagesStore((s) => s.enrolled)
   const occurrences = useOccurrencesStore((s) => s.byLanguage)
   const byKey = useWordStatesStore((s) => s.byKey)
-  const setStatus = useWordStatesStore((s) => s.setStatus)
+  const pressStatus = useWordStatesStore((s) => s.pressStatus)
 
   const [phase, setPhase] = useState<Phase>('setup')
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(enrolled[0] ?? null)
@@ -86,7 +86,8 @@ export function QuizView() {
     if (!word || answer !== null || !languageCode) return
     // 규칙은 quizSession 이 정한다 — 화면은 그 결과를 그대로 저장할 뿐이다
     const result = nextStatus(word.status, pressed)
-    setStatus(languageCode, word.lemma, result, word.surface)
+    // 누른 단추를 센다 (저장되는 상태가 아니다) — 모름에서 앎을 눌러도 앎을 세야 한다
+    pressStatus(languageCode, word.lemma, result, pressed, word.surface)
     setAnswer(result)
     setResults((prev) => {
       const next = [...prev]

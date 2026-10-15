@@ -30,6 +30,10 @@ export type WordStateRecord = {
   /** 별 스티커의 기울기(도)와 색 — 별의 시각을 이긴 쪽의 것을 함께 쓴다 */
   starAngle: number
   starColor: string
+  /** 퀴즈에서 상태 단추를 누른 횟수 — seen_count 처럼 큰 값으로 합친다 */
+  knownPresses: number
+  unsurePresses: number
+  unknownPresses: number
 }
 
 export type MergeOutcome<T> = {
@@ -144,6 +148,10 @@ function pickWinner(mine: WordStateRecord, theirs: WordStateRecord): WordStateRe
     lemma: mine.lemma,
     status: statusSource.status,
     seenCount: Math.max(mine.seenCount, theirs.seenCount),
+    // 누른 횟수도 큰 값 — seen_count 와 같은 규칙이다 (기기별 증분을 더하지는 않는다)
+    knownPresses: Math.max(mine.knownPresses, theirs.knownPresses),
+    unsurePresses: Math.max(mine.unsurePresses, theirs.unsurePresses),
+    unknownPresses: Math.max(mine.unknownPresses, theirs.unknownPresses),
     firstSeenAt: isNewer(mine.firstSeenAt, theirs.firstSeenAt) ? theirs.firstSeenAt : mine.firstSeenAt,
     lastSeenAt: isNewer(mine.lastSeenAt, theirs.lastSeenAt) ? mine.lastSeenAt : theirs.lastSeenAt,
     ...pickFavorite(mine, theirs),
@@ -201,7 +209,10 @@ function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
     a.favorite === b.favorite &&
     a.favoriteUpdatedAt === b.favoriteUpdatedAt &&
     a.starAngle === b.starAngle &&
-    a.starColor === b.starColor
+    a.starColor === b.starColor &&
+    a.knownPresses === b.knownPresses &&
+    a.unsurePresses === b.unsurePresses &&
+    a.unknownPresses === b.unknownPresses
   )
 }
 

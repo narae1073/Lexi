@@ -101,4 +101,15 @@ export type WordState = {
   starAngle: number
   /** 별 스티커의 색 — 붙일 때와 색바꾸기 버튼으로 새로 뽑는다 */
   starColor: string
+  /**
+   * 퀴즈에서 상태 단추를 누른 횟수 — 항목별로 센다.
+   *
+   * **누른 단추** 를 센다 (저장된 상태가 아니다). '모름' 인 단어에서 '앎' 을 누르면
+   * 상태는 '헷갈림' 이 되지만, 누른 것은 '앎' 이므로 '앎' 을 센다 — 상태를 세면
+   * 이 경우가 '앎' 에 영영 안 잡힌다. 읽기 화면·단어장의 표시는 세지 않는다.
+   * 지금은 저장만 해 두고 화면에 쓰지는 않는다 (나중에 쓰려고).
+   */
+  knownPresses: number
+  unsurePresses: number
+  unknownPresses: number
 }

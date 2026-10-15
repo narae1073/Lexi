@@ -18,6 +18,9 @@ function rec(over: Partial<WordStateRecord> & { lemma: string }): WordStateRecor
     favoriteUpdatedAt: T0,
     starAngle: 0,
     starColor: '#eab308',
+    knownPresses: 0,
+    unsurePresses: 0,
+    unknownPresses: 0,
     ...over,
   }
 }
@@ -152,6 +155,22 @@ describe('mergeWordStates — 합성 필드', () => {
     const local = [rec({ lemma: 'apple', seenCount: 3 })]
     const remote = [rec({ lemma: 'apple', seenCount: 7 })]
     expect(find(mergeWordStates(local, remote).merged, 'apple')?.seenCount).toBe(7)
+  })
+
+  /**
+   * 단추 누른 횟수도 seen_count 와 같은 규칙(큰 값)으로 합친다.
+   *
+   * 두 기기에서 각각 누른 것은 정확히 더해지지 않는다 — 지금의 병합 모델이
+   * '큰 값' 이기 때문이다. 셈을 정확히 하려면 기기별 증분을 따로 들고 다녀야
+   * 하는데, 그것은 지금 필요로 하는 것보다 큰 변화다.
+   */
+  it('단추 누른 횟수는 항목마다 큰 값으로 합친다', () => {
+    const local = [rec({ lemma: 'apple', knownPresses: 3, unsurePresses: 1 })]
+    const remote = [rec({ lemma: 'apple', knownPresses: 5, unknownPresses: 2 })]
+    const merged = find(mergeWordStates(local, remote).merged, 'apple')
+    expect(merged?.knownPresses).toBe(5)
+    expect(merged?.unsurePresses).toBe(1)
+    expect(merged?.unknownPresses).toBe(2)
   })
 
   it('처음 본 시각은 이른 값', () => {

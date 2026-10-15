@@ -102,6 +102,9 @@ export type Database = {
           favorite_updated_at: string
           star_angle: number
           star_color: string
+          known_presses: number
+          unsure_presses: number
+          unknown_presses: number
         }
         Insert: {
           id?: string
@@ -116,6 +119,9 @@ export type Database = {
           favorite_updated_at?: string
           star_angle?: number
           star_color?: string
+          known_presses?: number
+          unsure_presses?: number
+          unknown_presses?: number
         }
         Update: {
           id?: string
@@ -130,6 +136,9 @@ export type Database = {
           favorite_updated_at?: string
           star_angle?: number
           star_color?: string
+          known_presses?: number
+          unsure_presses?: number
+          unknown_presses?: number
         }
         Relationships: []
       }

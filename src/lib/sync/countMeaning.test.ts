@@ -20,6 +20,9 @@ const row = (over: Partial<WordStateRecord> = {}): WordStateRecord => ({
   favoriteUpdatedAt: '2026-10-01T00:00:00.000Z',
   starAngle: 0,
   starColor: '#eab308',
+  knownPresses: 0,
+  unsurePresses: 0,
+  unknownPresses: 0,
   ...over,
 })
 

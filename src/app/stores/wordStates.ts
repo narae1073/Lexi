@@ -51,7 +51,31 @@ type WordStatesStore = {
    * `force` 는 **동기화가 방금 써 넣은 것을 화면에 반영할 때** 쓴다.
    */
   loadLanguage: (languageCode: LanguageCode, options?: { force?: boolean }) => Promise<void>
+  /**
+   * 퀴즈에서 상태 단추를 누른 것을 기록한다.
+   *
+   * 누른 단추와 실제로 저장되는 상태가 다를 수 있다 — '모름' 인 단어에서 '앎' 을
+   * 누르면 상태는 '헷갈림' 이 된다 (퀴즈의 전이 규칙). 그래서 둘을 나눠 받는다:
+   * `result` 는 저장할 상태, `pressed` 는 센 단추다. 횟수는 눌린 단추를 센다.
+   *
+   * 상태와 횟수가 함께 바뀌므로 한 번만 저장한다 (setStatus 처럼 상태가 그대로면
+   * 건너뛰지 않는다 — 횟수는 늘었기 때문이다).
+   */
+  pressStatus: (
+    languageCode: LanguageCode,
+    lemma: string,
+    result: WordStatus,
+    pressed: WordStatus,
+    surface?: string,
+  ) => void
   getStatus: (languageCode: LanguageCode, lemma: string) => WordStatus | undefined
+}
+
+/** 누른 단추(status) → WordState 의 횟수 필드 */
+const PRESS_FIELD: Record<WordStatus, 'knownPresses' | 'unsurePresses' | 'unknownPresses'> = {
+  known: 'knownPresses',
+  unsure: 'unsurePresses',
+  unknown: 'unknownPresses',
 }
 
 /**
@@ -80,6 +104,10 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       favorite: previous?.favorite ?? false,
       starAngle: previous?.starAngle ?? 0,
       starColor: previous?.starColor ?? STAR_COLOR_DEFAULT,
+      // 누른 횟수는 상태와 무관하게 쌓인다 — 여기서는 이어받기만 한다 (세는 것은 퀴즈뿐)
+      knownPresses: previous?.knownPresses ?? 0,
+      unsurePresses: previous?.unsurePresses ?? 0,
+      unknownPresses: previous?.unknownPresses ?? 0,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -87,6 +115,36 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     if (previous?.status === status) return
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
       console.error('단어 상태 저장 실패', error)
+    })
+  },
+
+  pressStatus: (languageCode, lemma, result, pressed, surface) => {
+    const key = wordKey(languageCode, lemma)
+    const previous = get().byKey[key]
+    const timestamp = new Date().toISOString()
+    const field = PRESS_FIELD[pressed]
+
+    const next: WordState = {
+      lemma,
+      languageCode,
+      status: result,
+      seenCount: previous?.seenCount ?? 1,
+      firstSeenAt: previous?.firstSeenAt ?? timestamp,
+      lastSeenAt: timestamp,
+      favorite: previous?.favorite ?? false,
+      starAngle: previous?.starAngle ?? 0,
+      starColor: previous?.starColor ?? STAR_COLOR_DEFAULT,
+      knownPresses: previous?.knownPresses ?? 0,
+      unsurePresses: previous?.unsurePresses ?? 0,
+      unknownPresses: previous?.unknownPresses ?? 0,
+    }
+    next[field] = (previous?.[field] ?? 0) + 1
+
+    set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+
+    // 상태가 그대로여도 저장한다 — 횟수가 늘었기 때문이다
+    void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
+      console.error('퀴즈 단추 횟수 저장 실패', error)
     })
   },
 
@@ -139,6 +197,9 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       starColor: favoriting
         ? randomStarColor(previous?.starColor)
         : (previous?.starColor ?? STAR_COLOR_DEFAULT),
+      knownPresses: previous?.knownPresses ?? 0,
+      unsurePresses: previous?.unsurePresses ?? 0,
+      unknownPresses: previous?.unknownPresses ?? 0,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))

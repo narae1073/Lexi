@@ -105,6 +105,29 @@ export async function run(ctx) {
     JSON.stringify(counts))
   ctx.check('그대로 모름으로 둔 단어는 하나다', counts.unknown === '1', JSON.stringify(counts))
 
+  // ── 누른 횟수가 저장된다 — 나중에 쓰려고 IndexedDB 에 남는다 ──
+  //    세션에서 누른 것: 모름 1 (첫 단어) + 앎 9 (나머지). 헷갈림은 0.
+  const presses = await ctx.page.evaluate(`(async () => {
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open('lexi');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const rows = await new Promise((res, rej) => {
+      const t = db.transaction('wordStates', 'readonly').objectStore('wordStates').getAll();
+      t.onsuccess = () => res(t.result);
+      t.onerror = () => rej(t.error);
+    });
+    const sum = (f) => rows.reduce((a, r) => a + (r[f] ?? 0), 0);
+    return { known: sum('knownPresses'), unsure: sum('unsurePresses'), unknown: sum('unknownPresses') };
+  })()`)
+  ctx.check('앎 단추를 누른 횟수가 저장된다 (아홉)',
+    presses.known === 9, JSON.stringify(presses))
+  ctx.check('모름 단추를 누른 횟수가 저장된다 (하나)',
+    presses.unknown === 1, JSON.stringify(presses))
+  ctx.check('헷갈림 단추는 누르지 않았다',
+    presses.unsure === 0, JSON.stringify(presses))
+
   // ── 처음 화면으로 돌아간다 ──
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-again]').click(); return true })()`)
   await sleep(400)

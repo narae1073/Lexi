@@ -57,6 +57,9 @@ export function wordStateToRow(
     favorite_updated_at: record.favoriteUpdatedAt,
     star_angle: record.starAngle,
     star_color: record.starColor,
+    known_presses: record.knownPresses,
+    unsure_presses: record.unsurePresses,
+    unknown_presses: record.unknownPresses,
   }
 }
 
@@ -73,6 +76,10 @@ export function wordStateFromRow(row: WordStateRow): WordStateRecord & { status:
     favoriteUpdatedAt: row.favorite_updated_at ?? row.last_seen_at,
     starAngle: row.star_angle ?? 0,
     starColor: row.star_color ?? '#eab308',
+    // 마이그레이션 이전 행에는 이 열이 없다 — 0 이 기본값이다
+    knownPresses: row.known_presses ?? 0,
+    unsurePresses: row.unsure_presses ?? 0,
+    unknownPresses: row.unknown_presses ?? 0,
   }
 }
 

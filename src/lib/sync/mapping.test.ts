@@ -47,6 +47,9 @@ describe('word_state 매핑', () => {
       favoriteUpdatedAt: T1,
       starAngle: 12,
       starColor: '#ef4444',
+      knownPresses: 2,
+      unsurePresses: 1,
+      unknownPresses: 0,
     }
     // 보낼 때는 자동 채번 열을 싣지 않는다 — upsert payload 에 id 가 들어가면
     // 갱신되는 행의 id 가 그 값으로 덮인다
@@ -69,6 +72,9 @@ describe('word_state 매핑', () => {
       favoriteUpdatedAt: T0,
       starAngle: 0,
       starColor: '#eab308',
+      knownPresses: 0,
+      unsurePresses: 0,
+      unknownPresses: 0,
     })
     expect(row).toMatchObject({
       user_id: USER,
@@ -92,6 +98,9 @@ describe('word_state 매핑', () => {
         favoriteUpdatedAt: T0,
         starAngle: 0,
         starColor: '#eab308',
+        knownPresses: 0,
+        unsurePresses: 0,
+        unknownPresses: 0,
       })
       expect(wordStateFromRow(row as WordStateRow).status).toBe(status)
     }

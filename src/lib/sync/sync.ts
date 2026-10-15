@@ -123,6 +123,10 @@ export async function readLocal(): Promise<{
       favoriteUpdatedAt: r.favoriteUpdatedAt ?? r.lastSeenAt,
       starAngle: r.starAngle ?? 0,
       starColor: r.starColor ?? STAR_COLOR_DEFAULT,
+      // 없던 것을 있다고 말하지 않는다 — 이 열이 생기기 전의 행은 0 이다
+      knownPresses: r.knownPresses ?? 0,
+      unsurePresses: r.unsurePresses ?? 0,
+      unknownPresses: r.unknownPresses ?? 0,
     })),
     occurrences,
   }

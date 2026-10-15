@@ -25,6 +25,9 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     favoriteUpdatedAt: '2026-01-01T00:00:00.000Z',
     starAngle: 0,
     starColor: '#eab308',
+    knownPresses: 0,
+    unsurePresses: 0,
+    unknownPresses: 0,
     ...over,
   })
 

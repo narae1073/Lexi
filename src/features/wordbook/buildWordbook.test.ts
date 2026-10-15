@@ -28,6 +28,9 @@ const state = (lemma: string, status: WordStatus): WordState => ({
   favorite: false,
   starAngle: 0,
   starColor: '#eab308',
+  knownPresses: 0,
+  unsurePresses: 0,
+  unknownPresses: 0,
 })
 
 describe('buildWordbook', () => {
