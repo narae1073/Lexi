@@ -151,6 +151,7 @@ export const en = {
     summaryUnsure: 'Unsure',
     summaryNew: 'New',
     again: 'Choose a language again',
+    sentenceFrom: 'From {title}',
   },
   pagination: {
     label: 'Pagination',

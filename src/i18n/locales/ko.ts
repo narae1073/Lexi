@@ -150,6 +150,7 @@ export const ko: Dictionary = {
     summaryUnsure: '헷갈리는 단어',
     summaryNew: '모르는 단어',
     again: '언어 다시 고르기',
+    sentenceFrom: '{title} 에서',
   },
   pagination: {
     label: '페이지 이동',

@@ -98,6 +98,12 @@ export async function run(ctx) {
   ctx.check('예문의 단어마다 누를 수 있다',
     exampleWords.length >= 10 && exampleWords.includes('alpha'), `${exampleWords.length}개`)
 
+  // 예문이 어느 문서에서 왔는지 밝힌다 — 제목을 짓지 않은 문서는 'Untitled' 다
+  const source = await ctx.page.evaluate(
+    `document.querySelector('[data-quiz-sentence-source]')?.innerText ?? null`,
+  )
+  ctx.check('예문이 나온 문서 제목을 보여 준다', source === 'From Untitled', String(source))
+
   // 예문 속 단어를 누르면 그 단어의 사전이 뜬다 (단어장과 같은 길)
   const clickedExample = await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('[data-example-word]')].find(x => x.textContent === 'charlie');

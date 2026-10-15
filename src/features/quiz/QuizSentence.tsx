@@ -31,10 +31,13 @@ type Outcome = {
  */
 export function QuizSentence({
   sentence,
+  documentTitle,
   languageCode,
   onWordClick,
 }: {
   sentence: string
+  /** 예문이 나온 문서 제목 — 비어 있으면 밝히지 않는다 */
+  documentTitle: string
   languageCode: LanguageCode
   onWordClick: (segment: WordSegment, lemma: string, anchor: HTMLElement) => void
 }) {
@@ -120,6 +123,13 @@ export function QuizSentence({
             <p className="text-status-unsure mt-0.5 text-[10px]">{t('sentence.offline')}</p>
           )}
         </>
+      )}
+
+      {/* 문맥이 어디서 온 것인지 밝힌다 — 단어장이 문서 제목을 보여 주는 것과 같다 */}
+      {documentTitle && (
+        <p data-quiz-sentence-source className="text-ink-muted mt-2 text-[11px]">
+          {t('quiz.sentenceFrom', { title: documentTitle })}
+        </p>
       )}
     </div>
   )

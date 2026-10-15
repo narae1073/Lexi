@@ -12,6 +12,8 @@ export type QuizWord = {
   status: WordStatus
   /** 답한 뒤 보여 줄 문맥 예문 — 단어장의 예문과 같은 것 */
   sentence: string
+  /** 그 예문이 나온 문서 제목 — 어디서 온 문맥인지 밝힌다 */
+  documentTitle: string
 }
 
 /**
@@ -45,6 +47,8 @@ type StatusEntry = {
   status: WordStatus | 'unmarked'
   /** 이 단어가 나온 문장 — 답한 뒤 보여 준다 */
   sentence: string
+  /** 그 문장이 있는 문서 제목 */
+  documentTitle: string
 }
 
 /**
@@ -61,6 +65,7 @@ export function quizPool(entries: StatusEntry[]): QuizWord[] {
       surface: e.surfaces[0] ?? e.lemma,
       status: e.status as WordStatus,
       sentence: e.sentence,
+      documentTitle: e.documentTitle,
     }))
 }
 

@@ -307,6 +307,7 @@ export function QuizView() {
       {answer !== null && word.sentence && (
         <QuizSentence
           sentence={word.sentence}
+          documentTitle={word.documentTitle}
           languageCode={languageCode}
           onWordClick={openSentenceWord}
         />
