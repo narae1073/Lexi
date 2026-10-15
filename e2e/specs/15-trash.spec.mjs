@@ -144,6 +144,8 @@ export async function run(ctx) {
   await sleep(500)
   ctx.check('휴지통 화면이 열린다', (await ctx.bodyText()).includes('아침마다 읽는 짧은 글'),
     (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
+  ctx.check('휴지통에서 문서의 언어가 보인다', /Korean/.test(await ctx.bodyText()),
+    (await ctx.bodyText()).split('\n').slice(0, 4).join(' | '))
 
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find(x => /되살리기|Restore/.test(x.innerText));

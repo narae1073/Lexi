@@ -36,6 +36,10 @@ export async function run(ctx) {
   await clickBack(ctx)
   await sleep(400)
   ctx.check('뿌리는 전체 문서다', (await body(ctx)).includes('All documents'), '')
+  const newFolderButtons = await ctx.page.evaluate(`(() =>
+    [...document.querySelectorAll('button')]
+      .filter((b) => b.innerText.includes('New folder') && !b.innerText.includes('subfolder')).length)()`)
+  ctx.check('위(filter 줄)에도 새 폴더 단추가 있다', newFolderButtons === 2, String(newFolderButtons))
   ctx.check('뿌리에 폴더 줄이 있다', await folderRowExists(ctx, 'Books'), await body(ctx))
   ctx.check('옮기기 전에는 문서가 뿌리에 있다', (await docRowsCount(ctx)) === 1, await rows(ctx))
 

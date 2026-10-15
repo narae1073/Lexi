@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
-import { useTranslation } from '../../app/stores/settings'
+import { useLanguageName, useTranslation } from '../../app/stores/settings'
 import { ConfirmDialog } from './ConfirmDialog'
 import { trashedDocuments } from './documentSort'
 
@@ -14,6 +14,7 @@ import { trashedDocuments } from './documentSort'
  */
 export function TrashView() {
   const t = useTranslation()
+  const languageName = useLanguageName()
   const documents = useDocumentsStore((s) => s.documents)
   const restore = useDocumentsStore((s) => s.restore)
   const purge = useDocumentsStore((s) => s.purge)
@@ -43,6 +44,7 @@ export function TrashView() {
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate text-sm font-medium">{doc.title}</span>
                   <span className="text-ink-muted text-xs">
+                    {languageName(doc.languageCode)} ·{' '}
                     {t('trash.deletedAt', {
                       date: doc.deletedAt ? new Date(doc.deletedAt).toLocaleString() : '',
                     })}

@@ -152,6 +152,8 @@ export function DocumentList() {
 
   useEffect(() => {
     if (!creating) return
+    // 위쪽 단추로 만들 때도 입력칸(목록 맨 아래)으로 데려간다
+    inputRef.current?.scrollIntoView({ block: 'nearest' })
     inputRef.current?.focus()
   }, [creating])
 
@@ -356,6 +358,13 @@ export function DocumentList() {
           </label>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-2 py-1 text-xs"
+          >
+            + {folderId === null ? t('list.newFolder') : t('list.newSubfolder')}
+          </button>
           {trashedCount > 0 && (
             <Link
               to="/trash"
