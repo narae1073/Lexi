@@ -136,6 +136,8 @@ export const en = {
   quiz: {
     title: 'Word Quiz',
     lead: 'Pick a language and how many words to go through.',
+    ruleHint:
+      'A "New" word cannot become "Know" right away — pressing Know turns it into "Unsure". Press Know again on that word and it finally becomes "Know".',
     pickLanguage: 'Pick the language to quiz.',
     countLabel: 'Words',
     none: 'Nothing to quiz yet — mark some words as Unsure or New first.',

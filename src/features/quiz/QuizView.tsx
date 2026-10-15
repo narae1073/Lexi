@@ -137,6 +137,13 @@ export function QuizView() {
       <section className="mx-auto w-full max-w-2xl px-5 py-8">
         <h1 className="text-lg font-semibold">{t('quiz.title')}</h1>
         <p className="text-ink-muted mt-1 text-sm">{t('quiz.lead')}</p>
+        {/*
+          상태 전이 규칙을 미리 밝힌다 — 모름에서 앎을 눌러도 곧바로 앎이 되지 않는
+          이유를 모르면, 퀴즈가 말을 안 듣는 것처럼 보인다.
+        */}
+        <p data-quiz-rule className="text-ink-muted mt-2 text-xs leading-relaxed">
+          {t('quiz.ruleHint')}
+        </p>
 
         <h2 className="text-ink-muted mt-6 mb-2 text-xs font-medium">{t('quiz.pickLanguage')}</h2>
         <div className="flex flex-wrap gap-2">

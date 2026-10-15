@@ -23,6 +23,8 @@ export async function run(ctx) {
   await ctx.clickText('Quiz')
   await sleep(600)
   ctx.check('퀴즈 화면이 열린다', (await body(ctx)).includes('Word Quiz'), await body(ctx))
+  ctx.check('상태 전이 규칙을 미리 설명한다 — 새 단어는 곧바로 앎이 되지 않는다',
+    (await body(ctx)).includes('cannot become "Know" right away'), 'Quiz 설명')
 
   // ── 언어 고르기 ──
   const hasLanguage = await ctx.page.evaluate(
