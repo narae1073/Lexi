@@ -13,6 +13,7 @@ import { AppLanguageSwitcher } from '../features/settings/AppLanguageSwitcher'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
 import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
+import { QuizView } from '../features/quiz/QuizView'
 import { useDocumentsStore } from './stores/documents'
 import { useFoldersStore } from './stores/folders'
 import { useLanguagesStore } from './stores/languages'
@@ -53,6 +54,9 @@ function Nav() {
         </Link>
         <Link to="/wordbook" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
           {t('nav.wordbook')}
+        </Link>
+        <Link to="/quiz" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
+          {t('nav.quiz')}
         </Link>
         <Link to="/settings" className="text-ink-muted hover:text-ink text-sm whitespace-nowrap">
           {t('nav.settings')}
@@ -157,6 +161,7 @@ export default function App() {
         <Route path="/languages" element={<LanguagePicker onDone={() => history.back()} />} />
         <Route path="/compose" element={<ComposeDocument />} />
         <Route path="/wordbook" element={<Wordbook />} />
+        <Route path="/quiz" element={<QuizView />} />
         <Route path="/trash" element={<TrashView />} />
       <Route path="/settings" element={<SettingsPanel />} />
         <Route path="/read/:id" element={<DocumentRoute />} />

@@ -10,6 +10,7 @@ export const en = {
     compose: 'Add text',
     settings: 'Settings',
     wordbook: 'Wordbook',
+    quiz: 'Quiz',
   },
 
   langs: {
@@ -131,6 +132,25 @@ export const en = {
   },
   confirm: {
     cancel: 'Cancel',
+  },
+  quiz: {
+    title: 'Word Quiz',
+    lead: 'Pick a language and how many words to go through.',
+    pickLanguage: 'Pick the language to quiz.',
+    countLabel: 'Words',
+    none: 'Nothing to quiz yet — mark some words as Unsure or New first.',
+    start: 'Start',
+    progress: '{done} / {total}',
+    know: 'Know',
+    unsure: 'Unsure',
+    new: 'New',
+    next: 'Next',
+    done: 'Session complete',
+    doneHint: 'You went through every word in this session.',
+    summaryKnown: 'Known',
+    summaryUnsure: 'Unsure',
+    summaryNew: 'New',
+    again: 'Choose a language again',
   },
   pagination: {
     label: 'Pagination',

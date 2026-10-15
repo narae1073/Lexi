@@ -9,6 +9,7 @@ export const ko: Dictionary = {
     compose: '붙여넣기',
     settings: '설정',
     wordbook: '단어장',
+    quiz: '퀴즈',
   },
 
   langs: {
@@ -130,6 +131,25 @@ export const ko: Dictionary = {
   },
   confirm: {
     cancel: '취소',
+  },
+  quiz: {
+    title: '단어 퀴즈',
+    lead: '언어와 몇 개를 풀지 고르세요.',
+    pickLanguage: '퀴즈로 풀 언어를 고르세요.',
+    countLabel: '개수',
+    none: '아직 낼 단어가 없습니다 — 먼저 몇 단어를 헷갈림·모름으로 표시하세요.',
+    start: '시작',
+    progress: '{done} / {total}',
+    know: '앎',
+    unsure: '헷갈림',
+    new: '모름',
+    next: '다음',
+    done: '퀴즈를 마쳤습니다',
+    doneHint: '이번 세션의 단어를 모두 풀었습니다.',
+    summaryKnown: '아는 단어',
+    summaryUnsure: '헷갈리는 단어',
+    summaryNew: '모르는 단어',
+    again: '언어 다시 고르기',
   },
   pagination: {
     label: '페이지 이동',
