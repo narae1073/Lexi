@@ -8,6 +8,7 @@ import { useLanguageName, useSettingsStore, useTranslation } from '../../app/sto
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
 import { FolderMenu } from './FolderMenu'
+import { FolderPicker } from './FolderPicker'
 import {
   activeDocuments,
   documentLanguageFilterOrDefault,
@@ -16,7 +17,7 @@ import {
   languagesWithDocuments,
   sortDocuments,
 } from './documentSort'
-import { childrenOf, folderOfDocument, visibleRoots } from './folderTree'
+import { childrenOf, folderOfDocument, pruneNestedTicks, visibleRoots } from './folderTree'
 import type { Folder } from '../../types'
 
 export function DocumentList() {
@@ -35,6 +36,8 @@ export function DocumentList() {
   const setDocumentLanguageFilter = useSettingsStore((s) => s.setDocumentLanguageFilter)
   const folders = useFoldersStore((s) => s.folders)
   const createFolder = useFoldersStore((s) => s.create)
+  const trashDoc = useDocumentsStore((s) => s.trash)
+  const deleteFolder = useFoldersStore((s) => s.deleteFolder)
 
   /**
    * 문서 목록의 자리 — 조상들의 꼬리표다 (마지막이 지금 있는 폴더, 비었으면 뿌리).
@@ -56,6 +59,57 @@ export function DocumentList() {
 
   const enterFolder = (id: string) => setPath([...validPath, id])
   const goBack = () => setPath(validPath.slice(0, -1))
+
+  /**
+   * 골라 담기 — 손·마우스 공통의 유일한 이동/버리기 입구다.
+   *
+   * 체크는 문서와 폴더 두 자루로 든다 (id 가 겹칠 수 있으므로). 필터·정렬을
+   * 바꿔 가려진 줄도 그대로 옮겨가므로, 바에 살아 있는 셈을 둔다.
+   */
+  const [selecting, setSelecting] = useState(false)
+  const [tickedDocIds, setTickedDocIds] = useState<Set<string>>(new Set())
+  const [tickedFolderIds, setTickedFolderIds] = useState<Set<string>>(new Set())
+  const [pickerAnchor, setPickerAnchor] = useState<HTMLElement | null>(null)
+
+  const enterSelect = () => {
+    setTickedDocIds(new Set())
+    setTickedFolderIds(new Set())
+    setSelecting(true)
+  }
+  const exitSelect = () => {
+    setSelecting(false)
+    setTickedDocIds(new Set())
+    setTickedFolderIds(new Set())
+    setPickerAnchor(null)
+  }
+  const toggleId = (set: Set<string>, apply: (next: Set<string>) => void, id: string) => {
+    const next = new Set(set)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    apply(next)
+  }
+  const toggleDoc = (id: string) => toggleId(tickedDocIds, setTickedDocIds, id)
+  const toggleFolder = (id: string) => toggleId(tickedFolderIds, setTickedFolderIds, id)
+
+  /** 골라 담은 것을 휴지통에 — 문서는 되살릴 수 있고, 폴더는 부모로 옮겨 간다 */
+  const bulkTrash = async () => {
+    for (const id of tickedDocIds) await trashDoc(id)
+    for (const id of pruneNestedTicks(folders, [...tickedFolderIds])) {
+      await deleteFolder(id)
+    }
+    exitSelect()
+  }
+
+  // 골라 담는 중의 Esc 는 고르기를 그만둔다 — 옮길 곳 고르기가 열려 있으면
+  // 그쪽이 먼저 닫힌다 (Popover 자신의 Esc 처리)
+  useEffect(() => {
+    if (!selecting) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !pickerAnchor) exitSelect()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selecting, pickerAnchor])
 
   /** 이름 만들기가 열려 있는가 */
   const [creating, setCreating] = useState(false)
@@ -190,6 +244,44 @@ export function DocumentList() {
             {t('list.folderAll')}
           </span>
         )}
+        {selecting ? (
+          <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={(event) => setPickerAnchor(event.currentTarget)}
+              className="border-accent bg-accent text-accent-ink rounded-lg border px-2 py-1 text-xs"
+            >
+              {t('list.moveSelectedToFolder')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void bulkTrash()}
+              className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-2 py-1 text-xs"
+            >
+              {t('list.moveSelectedToTrash')}
+            </button>
+            <span className="text-ink-muted text-xs">
+              {t('list.selectedCount', {
+                count: tickedDocIds.size + tickedFolderIds.size,
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={exitSelect}
+              className="text-ink-muted hover:text-ink rounded-lg px-2 py-1 text-xs"
+            >
+              {t('list.cancelSelect')}
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={enterSelect}
+            className="border-line text-ink-muted hover:text-ink hover:border-accent shrink-0 rounded-lg border px-2 py-1 text-xs"
+          >
+            {t('list.selectDocuments')}
+          </button>
+        )}
       </div>
       <div className="border-line flex flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
         <div className="flex flex-wrap items-center gap-3">
@@ -266,34 +358,77 @@ export function DocumentList() {
       ) : (
         <ul className="divide-y divide-line">
           {visibleFolders.map((folder) => (
-            <FolderRow key={folder.id} folder={folder} onEnter={() => enterFolder(folder.id)} />
-          ))}
-          {sorted.map((doc) => (
-            <li key={doc.id} className="flex items-stretch gap-1">
-          <Link
-            to={`/read/${doc.id}`}
-            className="flex min-w-0 flex-1 items-center gap-3 px-5 py-3 hover:bg-surface-hover"
-          >
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="truncate text-sm font-medium">{doc.title}</span>
-              <span className="text-ink-muted text-xs">
-                {t('list.meta', {
-                  language: languageName(doc.languageCode),
-                  count: doc.rawText.trim().length,
-                  date: new Date(doc.updatedAt).toLocaleString(),
-                })}
-              </span>
-            </span>
-
-            <ProgressGauge
-              progress={progressByDocument.get(doc.id)}
-              label={t('list.markedLabel')}
-              text={(p) => t('list.marked', { percent: p.percent, marked: p.marked, total: p.total })}
+            <FolderRow
+              key={folder.id}
+              folder={folder}
+              selecting={selecting}
+              ticked={tickedFolderIds.has(folder.id)}
+              onEnter={() => enterFolder(folder.id)}
+              onToggle={() => toggleFolder(folder.id)}
             />
-          </Link>
-            </li>
           ))}
+          {sorted.map((doc) =>
+            selecting ? (
+              <li key={doc.id} className="flex items-stretch gap-1">
+                <button
+                  type="button"
+                  onClick={() => toggleDoc(doc.id)}
+                  aria-pressed={tickedDocIds.has(doc.id)}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-5 py-3 text-left hover:bg-surface-hover"
+                >
+                  <CheckBadge on={tickedDocIds.has(doc.id)} />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-sm font-medium">{doc.title}</span>
+                    <span className="text-ink-muted text-xs">
+                      {t('list.meta', {
+                        language: languageName(doc.languageCode),
+                        count: doc.rawText.trim().length,
+                        date: new Date(doc.updatedAt).toLocaleString(),
+                      })}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ) : (
+              <li key={doc.id} className="flex items-stretch gap-1">
+                <Link
+                  to={`/read/${doc.id}`}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-5 py-3 hover:bg-surface-hover"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-sm font-medium">{doc.title}</span>
+                    <span className="text-ink-muted text-xs">
+                      {t('list.meta', {
+                        language: languageName(doc.languageCode),
+                        count: doc.rawText.trim().length,
+                        date: new Date(doc.updatedAt).toLocaleString(),
+                      })}
+                    </span>
+                  </span>
+
+                  <ProgressGauge
+                    progress={progressByDocument.get(doc.id)}
+                    label={t('list.markedLabel')}
+                    text={(p) =>
+                      t('list.marked', { percent: p.percent, marked: p.marked, total: p.total })
+                    }
+                  />
+                </Link>
+              </li>
+            ),
+          )}
         </ul>
+      )}
+
+      {/* 옮길 곳 고르기 — 작은 나무 상자 (Task 7에서 잠금·옮기기를 채운다) */}
+      {pickerAnchor && (
+        <FolderPicker
+          anchor={pickerAnchor}
+          anchorKey="bulk-move"
+          lockedIds={[]}
+          onPick={() => setPickerAnchor(null)}
+          onClose={() => setPickerAnchor(null)}
+        />
       )}
 
       {/* 새 폴더 — 지금 있는 자리에 만든다 */}
@@ -332,8 +467,21 @@ export function DocumentList() {
  * 폴더 한 줄 — 누르면 그 안으로 들어간다.
  *
  * ⋯는 자기 자리만 여는 별도 단추다 — 눌러도 들어가지 않는다.
+ * 골라 담는 중에는 줄을 누르면 체크가 바뀌고, ⋯는 숨는다.
  */
-function FolderRow({ folder, onEnter }: { folder: Folder; onEnter: () => void }) {
+function FolderRow({
+  folder,
+  selecting,
+  ticked,
+  onEnter,
+  onToggle,
+}: {
+  folder: Folder
+  selecting: boolean
+  ticked: boolean
+  onEnter: () => void
+  onToggle: () => void
+}) {
   const t = useTranslation()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
 
@@ -341,27 +489,45 @@ function FolderRow({ folder, onEnter }: { folder: Folder; onEnter: () => void })
     <li className="flex items-stretch gap-1">
       <button
         type="button"
-        onClick={onEnter}
+        onClick={selecting ? onToggle : onEnter}
+        aria-pressed={selecting ? ticked : undefined}
         className="flex min-w-0 flex-1 items-center gap-3 px-5 py-3 text-left hover:bg-surface-hover"
       >
+        {selecting && <CheckBadge on={ticked} />}
         <span aria-hidden>📁</span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{folder.name}</span>
       </button>
-      <span className="flex flex-col justify-center pr-4">
-        <button
-          type="button"
-          onClick={(event) => setMenuAnchor(event.currentTarget)}
-          aria-label={t('list.folderMenu')}
-          title={t('list.folderMenu')}
-          className="text-ink-muted hover:text-ink rounded-lg px-2 py-1 text-sm"
-        >
-          ⋯
-        </button>
-      </span>
+      {!selecting && (
+        <span className="flex flex-col justify-center pr-4">
+          <button
+            type="button"
+            onClick={(event) => setMenuAnchor(event.currentTarget)}
+            aria-label={t('list.folderMenu')}
+            title={t('list.folderMenu')}
+            className="text-ink-muted hover:text-ink rounded-lg px-2 py-1 text-sm"
+          >
+            ⋯
+          </button>
+        </span>
+      )}
       {menuAnchor && (
         <FolderMenu folder={folder} anchor={menuAnchor} onClose={() => setMenuAnchor(null)} />
       )}
     </li>
+  )
+}
+
+/** 골라 담기의 체크 표시 — 줄 전체가 단추이므로 표시는 장식이다 */
+function CheckBadge({ on }: { on: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none ${
+        on ? 'border-accent bg-accent text-accent-ink' : 'border-line text-transparent'
+      }`}
+    >
+      ✓
+    </span>
   )
 }
 
