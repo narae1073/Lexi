@@ -37,7 +37,9 @@ export function DocumentList() {
   const folders = useFoldersStore((s) => s.folders)
   const createFolder = useFoldersStore((s) => s.create)
   const trashDoc = useDocumentsStore((s) => s.trash)
+  const moveDocs = useDocumentsStore((s) => s.moveToFolder)
   const deleteFolder = useFoldersStore((s) => s.deleteFolder)
+  const moveFolder = useFoldersStore((s) => s.moveFolder)
 
   /**
    * 문서 목록의 자리 — 조상들의 꼬리표다 (마지막이 지금 있는 폴더, 비었으면 뿌리).
@@ -96,6 +98,20 @@ export function DocumentList() {
     for (const id of tickedDocIds) await trashDoc(id)
     for (const id of pruneNestedTicks(folders, [...tickedFolderIds])) {
       await deleteFolder(id)
+    }
+    exitSelect()
+  }
+
+  /**
+   * 골라 담은 것을 한 곳으로 옮긴다 — 문서와 폴더가 같은 길을 간다.
+   *
+   * 폴더는 껍데기만 옮긴다 (담긴 것은 딸려 간다). 겹쳐 체크된 자손은
+   * 무시한다 — 부모 안에 딸려 가므로 따로 옮길 필요가 없다.
+   */
+  const bulkMove = async (target: string | null) => {
+    if (tickedDocIds.size > 0) await moveDocs([...tickedDocIds], target)
+    for (const id of pruneNestedTicks(folders, [...tickedFolderIds])) {
+      await moveFolder(id, target)
     }
     exitSelect()
   }
@@ -420,13 +436,14 @@ export function DocumentList() {
         </ul>
       )}
 
-      {/* 옮길 곳 고르기 — 작은 나무 상자 (Task 7에서 잠금·옮기기를 채운다) */}
+      {/* 옮길 곳 고르기 — 작은 나무 상자. 옮기는 폴더와 그 자손은 잠긴다 */}
       {pickerAnchor && (
         <FolderPicker
           anchor={pickerAnchor}
           anchorKey="bulk-move"
-          lockedIds={[]}
-          onPick={() => setPickerAnchor(null)}
+          lockedIds={pruneNestedTicks(folders, [...tickedFolderIds])}
+          currentId={folderId}
+          onPick={(target) => void bulkMove(target)}
           onClose={() => setPickerAnchor(null)}
         />
       )}
