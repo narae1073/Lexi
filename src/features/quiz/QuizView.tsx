@@ -4,10 +4,11 @@ import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import type { LanguageCode, WordStatus } from '../../types'
+import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
 import { buildWordbook } from '../wordbook/buildWordbook'
+import { QuizSentence } from './QuizSentence'
 import {
   drawWords,
   nextStatus,
@@ -18,6 +19,15 @@ import {
 } from './quizSession'
 
 type Phase = 'setup' | 'session' | 'summary'
+
+type WordSegment = Extract<Segment, { type: 'word' }>
+
+/** 사전 상자를 띄운 자리 — 퀴즈의 단어일 수도, 예문 속 단어일 수도 있다 */
+type DictionaryTarget = {
+  lemma: string
+  surface: string
+  anchor: HTMLElement
+}
 
 /** 사전 상자는 단어 팝오버와 같은 폭을 쓴다 — 같은 사전이 두 곳에서 달라 보이지 않게 */
 const DICTIONARY_WIDTH = 300
@@ -53,7 +63,7 @@ export function QuizView() {
   const [results, setResults] = useState<WordStatus[]>([])
   /** 사전을 먼저 본 단어인가 — 보면 '앎' 이 잠긴다 */
   const [peeked, setPeeked] = useState(false)
-  const [dictionaryAnchor, setDictionaryAnchor] = useState<HTMLElement | null>(null)
+  const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
   /** 이 언어에서 낼 수 있는 단어 — 단어장과 같은 재료를 쓴다 */
   const pool = useMemo(() => {
@@ -104,6 +114,7 @@ export function QuizView() {
     setIndex(index + 1)
     setAnswer(null)
     setPeeked(false)
+    setDictionaryTarget(null)
   }
 
   const backToSetup = () => {
@@ -112,6 +123,12 @@ export function QuizView() {
     setResults([])
     setAnswer(null)
     setPeeked(false)
+    setDictionaryTarget(null)
+  }
+
+  /** 예문 속 단어를 누르면 그 단어의 뜻을 띄운다 — 단어장의 예문과 같은 길 */
+  const openSentenceWord = (segment: WordSegment, lemma: string, anchor: HTMLElement) => {
+    setDictionaryTarget({ lemma, surface: segment.text, anchor })
   }
 
   // ── 처음 화면: 언어와 개수 고르기 ──
@@ -274,13 +291,26 @@ export function QuizView() {
           data-quiz-dictionary
           onClick={(event) => {
             if (answer === null) setPeeked(true)
-            setDictionaryAnchor(event.currentTarget)
+            setDictionaryTarget({
+              lemma: word.lemma,
+              surface: word.surface,
+              anchor: event.currentTarget,
+            })
           }}
           className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-4 py-2 text-sm"
         >
           {t('dictionary.button')}
         </button>
       </div>
+
+      {/* 답한 뒤에만 문맥을 보여 준다 — 답을 고르기 전에 보면 퀴즈가 아니다 */}
+      {answer !== null && word.sentence && (
+        <QuizSentence
+          sentence={word.sentence}
+          languageCode={languageCode}
+          onWordClick={openSentenceWord}
+        />
+      )}
 
       {answer !== null && (
         <div className="mt-6 flex justify-center">
@@ -295,14 +325,18 @@ export function QuizView() {
         </div>
       )}
 
-      {dictionaryAnchor && (
+      {dictionaryTarget && (
         <Popover
-          anchor={dictionaryAnchor}
-          anchorKey={`quiz:${index}`}
-          onClose={() => setDictionaryAnchor(null)}
+          anchor={dictionaryTarget.anchor}
+          anchorKey={`quiz:${index}:${dictionaryTarget.lemma}:${dictionaryTarget.surface}`}
+          onClose={() => setDictionaryTarget(null)}
           width={DICTIONARY_WIDTH}
         >
-          <DictionaryPanel languageCode={languageCode} lemma={word.lemma} surface={word.surface} />
+          <DictionaryPanel
+            languageCode={languageCode}
+            lemma={dictionaryTarget.lemma}
+            surface={dictionaryTarget.surface}
+          />
         </Popover>
       )}
     </section>

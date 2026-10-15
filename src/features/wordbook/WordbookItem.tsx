@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
 import { useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
@@ -8,11 +8,8 @@ import {
   type Segment,
   type WordStatus,
 } from '../../types'
+import { ExampleSentence } from '../reader/ExampleSentence'
 import { WordPopover } from '../reader/WordPopover'
-import { useChineseUpgrade } from '../reader/chinese'
-import { useJapaneseUpgrade } from '../reader/japanese'
-import { isCapitalisedPosition, tokenize } from '../reader/tokenizer'
-import { resolveLemmasFromWords } from '../reader/surfaceLemma'
 import type { WordbookEntry } from './buildWordbook'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
@@ -49,45 +46,9 @@ export function WordbookItem({
   }
 
   /**
-   * 예문 안의 단어도 문서와 같은 기준으로 lemma 를 찾는다.
-   *
-   * 예문은 문장 하나이므로 그 안에서만 본다 — 문서 전체의 표기 분포를 볼 수 없어
-   * US/us 같은 경계는 문서와 다르게 갈릴 수 있다. 그래도 누른 표기는 그대로 사전에
-   * 보내므로 조회 자체는 정확하다.
-   *
-   * 일본어는 문서와 같은 업그레이드를 쓴다 — 본문이 lindera 인데 예문만 Intl 이면
-   * 같은 단어를 다른 lemma 로 보게 된다.
+   * 예문 안의 단어도 문서와 같은 기준으로 lemma 를 찾는다 — 그 토막내기는
+   * `ExampleSentence` 가 맡는다 (퀴즈와 같은 것을 쓴다).
    */
-  const jaUpgrade = useJapaneseUpgrade(entry.sentence ?? '', languageCode)
-  const zhUpgrade = useChineseUpgrade(entry.sentence ?? '', languageCode)
-  const upgrade = jaUpgrade ?? zhUpgrade
-  const sentenceTokens = useMemo(() => {
-    if (!entry.sentence) return null
-    if (upgrade) {
-      return {
-        segments: upgrade.segments,
-        lemmaOf: upgrade.lemmaByStart,
-        keyedByStart: true as const,
-      }
-    }
-    const { segments, sentences } = tokenize(entry.sentence, languageCode)
-    const lemmaOf = resolveLemmasFromWords(
-      segments
-        .filter((segment): segment is WordSegment => segment.type === 'word')
-        .map((word) => ({
-          text: word.text,
-          sentenceInitial: isCapitalisedPosition(
-            entry.sentence,
-            sentences,
-            word.start,
-            word.sentenceIndex,
-          ),
-        })),
-      languageCode,
-    )
-    return { segments, lemmaOf, keyedByStart: false as const }
-  }, [entry.sentence, languageCode, upgrade])
-
   const openDictionary = (segment: WordSegment, lemma: string, anchor: HTMLElement) => {
     setDictionaryTarget({ segment, lemma, anchor })
   }
@@ -113,31 +74,13 @@ export function WordbookItem({
         <span className="text-ink-muted ml-auto shrink-0 text-[11px]">×{entry.count}</span>
       </div>
 
-      {sentenceTokens ? (
+      {entry.sentence ? (
         <p className="text-ink-muted mt-0.5 line-clamp-2 text-xs leading-relaxed">
-          {sentenceTokens.segments.map((segment) =>
-            segment.type === 'word' ? (
-              <button
-                key={segment.start}
-                type="button"
-                data-wordbook-example={segment.text}
-                onClick={(event) =>
-                  openDictionary(
-                    segment,
-                    sentenceTokens.keyedByStart
-                      ? (sentenceTokens.lemmaOf.get(segment.start) ?? segment.lemma)
-                      : (sentenceTokens.lemmaOf.get(segment.text) ?? segment.lemma),
-                    event.currentTarget,
-                  )
-                }
-                className="cursor-pointer rounded-sm hover:text-accent"
-              >
-                {segment.text}
-              </button>
-            ) : (
-              <span key={segment.start}>{segment.text}</span>
-            ),
-          )}
+          <ExampleSentence
+            sentence={entry.sentence}
+            languageCode={languageCode}
+            onWordClick={openDictionary}
+          />
         </p>
       ) : (
         <p className="text-ink-muted mt-0.5 line-clamp-2 text-xs leading-relaxed">

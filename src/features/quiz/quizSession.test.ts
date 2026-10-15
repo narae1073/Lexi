@@ -15,7 +15,8 @@ const entry = (
   lemma: string,
   status: WordStatus | 'unmarked',
   surfaces: string[] = [lemma],
-) => ({ lemma, surfaces, status })
+  sentence = '',
+) => ({ lemma, surfaces, status, sentence })
 
 describe('상태 전이표', () => {
   /**
@@ -90,6 +91,11 @@ describe('퀴즈에 낼 단어 고르기', () => {
     const pool = quizPool([entry('alpha', 'unknown', [])])
     expect(pool[0].surface).toBe('alpha')
   })
+
+  it('예문을 함께 들고 있다 — 답한 뒤 문맥을 보여 주려고', () => {
+    const pool = quizPool([entry('alpha', 'unsure', ['alpha'], 'Alpha is the first letter.')])
+    expect(pool[0].sentence).toBe('Alpha is the first letter.')
+  })
 })
 
 describe('단어 뽑기', () => {
@@ -97,6 +103,7 @@ describe('단어 뽑기', () => {
     lemma,
     surface: lemma,
     status: i < 2 ? 'unsure' : 'unknown',
+    sentence: `${lemma} appears here.`,
   }))
 
   it('요청한 개수만큼 뽑는다', () => {

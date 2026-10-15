@@ -65,7 +65,7 @@ export async function run(ctx) {
   await ctx.pressEscape()
 
   const openedExample = await ctx.page.evaluate(`(() => {
-    const btn = [...document.querySelectorAll('[data-wordbook-example]')]
+    const btn = [...document.querySelectorAll('[data-example-word]')]
       .find((b) => b.textContent === 'ate');
     if (!btn) return false;
     btn.click();

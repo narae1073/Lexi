@@ -61,6 +61,8 @@ export async function run(ctx) {
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-dictionary]')`)) === true)
   ctx.check('아직 다음 단추는 없다',
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-next]')`)) === false)
+  ctx.check('아직 예문은 없다 — 답하기 전에는 보여 주지 않는다',
+    (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-sentence]')`)) === false)
 
   // ── 사전을 먼저 보면 '앎' 을 고를 수 없다 ──
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-dictionary]').click(); return true })()`)
@@ -80,6 +82,46 @@ export async function run(ctx) {
   await sleep(300)
   ctx.check('답하면 다음 단추가 나타난다',
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-next]')`)) === true)
+
+  // ── 답하면 문맥(예문 + 번역)이 나타난다 ──
+  //    문서가 한 문장이라 예문은 그 줄 전체다 — 모든 퀴즈 단어의 예문이 같다
+  const sentence = await ctx.page.evaluate(
+    `document.querySelector('[data-quiz-sentence]')?.innerText ?? null`,
+  )
+  ctx.check('답하면 예문이 나타난다',
+    typeof sentence === 'string' && sentence.includes('alpha'),
+    String(sentence).replace(/\n/g, ' | ').slice(0, 80))
+
+  const exampleWords = await ctx.page.evaluate(
+    `[...document.querySelectorAll('[data-example-word]')].map(b => b.textContent)`,
+  )
+  ctx.check('예문의 단어마다 누를 수 있다',
+    exampleWords.length >= 10 && exampleWords.includes('alpha'), `${exampleWords.length}개`)
+
+  // 예문 속 단어를 누르면 그 단어의 사전이 뜬다 (단어장과 같은 길)
+  const clickedExample = await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('[data-example-word]')].find(x => x.textContent === 'charlie');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  ctx.check('예문의 단어를 찾을 수 있다', clickedExample === true, 'charlie')
+  await ctx.waitFor(`!!document.querySelector('[role="dialog"]')`, '예문 사전', 15_000)
+  ctx.check('예문의 단어를 누르면 사전 상자가 열린다',
+    (await ctx.page.evaluate(`!!document.querySelector('[role="dialog"]')`)) === true)
+  await ctx.pressEscape()
+  await sleep(300)
+
+  // 번역은 읽기 화면과 같은 규칙 — 뜻·번역은 영어로 (PLAN.md §1).
+  // 영어 글이라 "이미 영어" 안내가 온다.
+  await ctx.waitFor(
+    `(() => { const el = document.querySelector('[data-quiz-sentence]'); return !!el && /already in English/i.test(el.innerText) })()`,
+    '문맥 번역', 15_000,
+  )
+  ctx.check('예문 번역이 나온다 — 영어 글은 "이미 영어" 안내',
+    (await ctx.page.evaluate(
+      `/already in English/i.test(document.querySelector('[data-quiz-sentence]')?.innerText ?? '')`,
+    )) === true)
 
   // 첫 단어를 넘긴다
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-next]').click(); return true })()`)
