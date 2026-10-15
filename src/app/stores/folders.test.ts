@@ -241,3 +241,59 @@ describe('load 는 톰스톤을 가린다', () => {
     expect(useFoldersStore.getState().folders).toHaveLength(0)
   })
 })
+
+describe('moveFolder', () => {
+  it('부모를 바꾼다 — 문서를 건드리지 않는다', async () => {
+    const parent = await useFoldersStore.getState().create('Books')
+    const other = await useFoldersStore.getState().create('Other')
+    const child = await useFoldersStore.getState().create('Novels', parent!.id)
+
+    await useDocumentsStore.getState().create({
+      title: 'Haus',
+      languageCode: 'de',
+      rawText: 'Das Haus ist groß.',
+      fallbackTitle: 'Untitled',
+    })
+    const doc = useDocumentsStore.getState().documents[0]
+    await useDocumentsStore.getState().moveToFolder([doc.id], child!.id)
+    const openedAt = useDocumentsStore.getState().documents[0].updatedAt
+
+    expect(await useFoldersStore.getState().moveFolder(child!.id, other!.id)).toBe(true)
+    expect(
+      useFoldersStore.getState().folders.find((f) => f.id === child!.id)?.parentId,
+    ).toBe(other!.id)
+    expect(
+      useDocumentsStore.getState().documents.find((d) => d.id === doc.id)?.updatedAt,
+    ).toBe(openedAt)
+  })
+
+  it('자기 자신과 자손으로는 옮기지 않는다 — 순환 금지', async () => {
+    const parent = await useFoldersStore.getState().create('Books')
+    const child = await useFoldersStore.getState().create('Novels', parent!.id)
+
+    expect(await useFoldersStore.getState().moveFolder(parent!.id, parent!.id)).toBe(
+      false,
+    )
+    expect(await useFoldersStore.getState().moveFolder(parent!.id, child!.id)).toBe(
+      false,
+    )
+    expect(
+      useFoldersStore.getState().folders.find((f) => f.id === parent!.id)?.parentId,
+    ).toBeNull()
+  })
+
+  it('없어진 폴더로는 옮기지 않는다', async () => {
+    const parent = await useFoldersStore.getState().create('Books')
+    const child = await useFoldersStore.getState().create('Novels', parent!.id)
+    const gone = await useFoldersStore.getState().create('Gone')
+    await useFoldersStore.getState().deleteFolder(gone!.id)
+
+    expect(await useFoldersStore.getState().moveFolder(child!.id, gone!.id)).toBe(false)
+    expect(await useFoldersStore.getState().moveFolder(child!.id, 'no-such-id')).toBe(
+      false,
+    )
+    expect(
+      useFoldersStore.getState().folders.find((f) => f.id === child!.id)?.parentId,
+    ).toBe(parent!.id)
+  })
+})

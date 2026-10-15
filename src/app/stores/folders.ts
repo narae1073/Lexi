@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 import { STORES, idbGetAll, idbPut } from '../../lib/storage/localDb'
-import { liveFolders } from '../../features/reader/folderTree'
+import { descendantsOf, liveFolders } from '../../features/reader/folderTree'
 import { useDocumentsStore } from './documents'
 import type { Folder } from '../../types'
 
@@ -22,6 +22,14 @@ type FoldersState = {
   /** 새 폴더를 만든다. 빈 이름은 받지 않는다 — 제목 없는 폴더는 길을 잃는다 */
   create: (name: string, parentId?: string | null) => Promise<Folder | null>
   rename: (id: string, name: string) => Promise<boolean>
+  /**
+   * 폴더를 다른 폴더 안으로 옮긴다 (뿌리로 꺼내는 것도 같은 길이다 — null).
+   *
+   * 자기 자신·자손·없어진 폴더로는 옮기지 않는다 — 순환이 만들어지면 목록이
+   * 영원히 열리지 않는다. 같은 자리에 다시 두는 것은 아무 일도 아니다.
+   * 문서는 건드리지 않는다 — 담긴 문서는 폴더와 함께 딸려 간다.
+   */
+  moveFolder: (id: string, parentId: string | null) => Promise<boolean>
   /**
    * 폴더를 지운다 — 바로 지우지 않고 톰스톤을 남긴다 (문서 휴지통과 같은 이유다).
    *
@@ -102,6 +110,31 @@ export const useFoldersStore = create<FoldersState>((set, get) => ({
     set((s) => ({ folders: s.folders.map((f) => (f.id === id ? next : f)) }))
     await idbPut(STORES.folders, next).catch((error) => {
       console.error('폴더 이름 저장 실패', error)
+    })
+    return true
+  },
+
+  moveFolder: async (id, parentId) => {
+    const folder = get().folders.find((f) => f.id === id)
+    if (!folder) return false
+    if ((folder.parentId ?? null) === (parentId ?? null)) return false
+    if (parentId === id) return false
+    // 자손 안으로 옮기면 순환이다 — 목록이 영원히 열리지 않는다
+    if (
+      parentId !== null &&
+      descendantsOf(get().folders, id).some((f) => f.id === parentId)
+    ) {
+      return false
+    }
+    // 없어진 폴더(톰스톤·없는 id)로는 옮기지 않는다
+    if (parentId !== null && !get().folders.some((f) => f.id === parentId)) {
+      return false
+    }
+
+    const next: Folder = { ...folder, parentId, updatedAt: now() }
+    set((s) => ({ folders: s.folders.map((f) => (f.id === id ? next : f)) }))
+    await idbPut(STORES.folders, next).catch((error) => {
+      console.error('폴더 옮기기 실패', error)
     })
     return true
   },
