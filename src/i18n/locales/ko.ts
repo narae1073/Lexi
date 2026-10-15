@@ -120,6 +120,16 @@ export const ko: Dictionary = {
     deletedAt: '버린 시각 {date}',
     restore: '되살리기',
     purge: '완전 삭제',
+    confirmTrashTitle: '이 문서를 휴지통에 버릴까요?',
+    confirmTrashBody: '휴지통에서 되살릴 수 있습니다.',
+    confirmBulkTitle: '고른 항목을 휴지통에 버릴까요?',
+    confirmBulkDocs: '문서 {count}개가 휴지통으로 갑니다. 휴지통에서 되살릴 수 있습니다.',
+    confirmBulkFolders: '폴더 {count}개도 함께 지워집니다. 안의 내용은 간직됩니다.',
+    confirmPurgeTitle: '이 문서를 완전히 지울까요?',
+    confirmPurgeBody: '되돌릴 수 없습니다. 단어 기록도 함께 사라집니다.',
+  },
+  confirm: {
+    cancel: '취소',
   },
   pagination: {
     label: '페이지 이동',

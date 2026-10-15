@@ -81,10 +81,48 @@ export async function run(ctx) {
   ctx.check('빈 제목은 받지 않는다', (await ctx.bodyText()).includes('아침마다 읽는 짧은 글'),
     (await ctx.bodyText()).split('\n').slice(0, 2).join(' | '))
 
-  // ── 휴지통 ──
+  // ── 휴지통 — 누르면 먼저 한 번 묻는다 ──
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')]
       .find(x => /휴지통으로|Move to trash/i.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(600)
+  const asked = await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return d ? d.innerText : null;
+  })()`)
+  ctx.check('버리기 전에 한 번 묻는다', typeof asked === 'string', String(asked))
+  ctx.check('묻는 동안에는 아직 안 버렸다', (await ctx.bodyText()).includes('아침마다 읽는 짧은 글'),
+    (await ctx.bodyText()).split('\n').slice(0, 2).join(' | '))
+
+  // 그만두기 — 상자는 닫히고 문서는 그대로다
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /취소|^Cancel$/.test(x.innerText)) : null;
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(400)
+  const closedGone = await ctx.page.evaluate(`!!document.querySelector('[role="dialog"]')`)
+  ctx.check('그만두면 상자가 닫힌다', closedGone === false, String(closedGone))
+  ctx.check('그만두면 문서가 그대로다', (await ctx.bodyText()).includes('아침마다 읽는 짧은 글'))
+
+  // 이번에는 확인 — 버려진다
+  await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button')]
+      .find(x => /휴지통으로|Move to trash/i.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(600)
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /휴지통으로|Move to trash/i.test(x.innerText)) : null;
     if (!b) return false;
     b.click();
     return true;
@@ -128,15 +166,24 @@ export async function run(ctx) {
     (await ctx.bodyText()).split('\n').slice(0, 4).join(' | '))
 
   // ── 완전 삭제 ──
+  // 목록에서 문서를 열어 읽기 화면으로 간다 (읽기 화면의 '휴지통으로' 단추가起点이다)
   await ctx.page.evaluate(`(() => {
-    const link = [...document.querySelectorAll('a')].find(x => x.getAttribute('href')?.startsWith('/documents/'));
+    const link = [...document.querySelectorAll('a')].find(x => x.getAttribute('href')?.startsWith('/read/'));
     if (!link) return false;
     link.click();
     return true;
   })()`)
-  await sleep(500)
+  await sleep(600)
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find(x => /휴지통으로|Move to trash/i.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(600)
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /휴지통으로|Move to trash/i.test(x.innerText)) : null;
     if (!b) return false;
     b.click();
     return true;
@@ -149,8 +196,42 @@ export async function run(ctx) {
     return true;
   })()`)
   await sleep(500)
+  // ── 완전 삭제 — 여기도 먼저 한 번 묻는다 ──
   await ctx.page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find(x => /완전 삭제|Delete for good/.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(600)
+  const askedPurge = await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return d ? d.innerText : null;
+  })()`)
+  ctx.check('완전 삭제 전에 한 번 묻는다', typeof askedPurge === 'string', String(askedPurge))
+  ctx.check('묻는 동안에는 아직 있다', /Restore|되살리기/.test(await ctx.bodyText()),
+    (await ctx.bodyText()).split('\n').slice(0, 3).join(' | '))
+
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /취소|^Cancel$/.test(x.innerText)) : null;
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(400)
+  ctx.check('그만두면 휴지통에 그대로 있다', /Restore|되살리기/.test(await ctx.bodyText()))
+
+  await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button')].find(x => /완전 삭제|Delete for good/.test(x.innerText));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  await sleep(600)
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /완전 삭제|Delete for good/.test(x.innerText)) : null;
     if (!b) return false;
     b.click();
     return true;

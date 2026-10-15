@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
 import { useTranslation } from '../../app/stores/settings'
+import { ConfirmDialog } from './ConfirmDialog'
 import { trashedDocuments } from './documentSort'
 
 /**
@@ -18,6 +19,9 @@ export function TrashView() {
   const purge = useDocumentsStore((s) => s.purge)
 
   const trashed = useMemo(() => trashedDocuments(documents), [documents])
+
+  /** 완전히 지우기 전에 한 번 묻는 문서 — 단어 기록까지 사라지므로 */
+  const [confirmingPurgeId, setConfirmingPurgeId] = useState<string | null>(null)
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -54,7 +58,7 @@ export function TrashView() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void purge(doc.id)}
+                  onClick={() => setConfirmingPurgeId(doc.id)}
                   className="text-ink-muted hover:text-status-unknown shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm"
                 >
                   {t('trash.purge')}
@@ -63,6 +67,19 @@ export function TrashView() {
             ))}
           </ul>
         </>
+      )}
+
+      {confirmingPurgeId && (
+        <ConfirmDialog
+          title={t('trash.confirmPurgeTitle')}
+          body={t('trash.confirmPurgeBody')}
+          confirmLabel={t('trash.purge')}
+          onConfirm={() => {
+            void purge(confirmingPurgeId)
+            setConfirmingPurgeId(null)
+          }}
+          onClose={() => setConfirmingPurgeId(null)}
+        />
       )}
     </section>
   )

@@ -17,6 +17,7 @@ import type { Document, Segment, Sentence, WordStatus } from '../../types'
 import type { Page } from '../../lib/paginate'
 import { pageWordsOrDefault, planPages, READER_PAGE_WORDS, textOfPage } from './pageBreak'
 import { Pagination } from '../wordbook/Pagination'
+import { ConfirmDialog } from './ConfirmDialog'
 import { sentencesInRange } from './selection'
 import { SentencePopover } from './SentencePopover'
 import { resolveLemmasFromWords } from './surfaceLemma'
@@ -111,6 +112,8 @@ export function ReaderView({ doc }: { doc: Document }) {
   const touchDocument = useDocumentsStore((s) => s.touch)
   const renameDocument = useDocumentsStore((s) => s.rename)
   const trashDocument = useDocumentsStore((s) => s.trash)
+  /** 버리기 전에 한 번 묻는 상자가 열려 있는가 */
+  const [confirmingTrash, setConfirmingTrash] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(doc.title)
   const [selection, setSelection] = useState<Selection | null>(null)
@@ -545,14 +548,23 @@ export function ReaderView({ doc }: { doc: Document }) {
           {/* 휴지통으로 보낸다 — 바로 지우지 않는다. 되살릴 곳이 있어야 한다 */}
           <button
             type="button"
-            onClick={() => {
-              void trashDocument(doc.id)
-              navigate('/')
-            }}
+            onClick={() => setConfirmingTrash(true)}
             className="border-line text-ink-muted hover:text-status-unknown hover:border-status-unknown inline-block rounded-lg border px-2.5 py-1 text-xs transition"
           >
             {t('reader.trash')}
           </button>
+          {confirmingTrash && (
+            <ConfirmDialog
+              title={t('trash.confirmTrashTitle')}
+              body={t('trash.confirmTrashBody')}
+              confirmLabel={t('reader.trash')}
+              onConfirm={() => {
+                void trashDocument(doc.id)
+                navigate('/')
+              }}
+              onClose={() => setConfirmingTrash(false)}
+            />
+          )}
         </div>
       </header>
 

@@ -121,6 +121,16 @@ export const en = {
     deletedAt: 'Trashed {date}',
     restore: 'Restore',
     purge: 'Delete for good',
+    confirmTrashTitle: 'Move this document to Trash?',
+    confirmTrashBody: 'You can restore it from the Trash.',
+    confirmBulkTitle: 'Move the selection to Trash?',
+    confirmBulkDocs: '{count} documents will be moved to Trash. You can restore them there.',
+    confirmBulkFolders: '{count} folders will be deleted too. Their contents are kept.',
+    confirmPurgeTitle: 'Delete this document for good?',
+    confirmPurgeBody: 'This cannot be undone — its word records go with it.',
+  },
+  confirm: {
+    cancel: 'Cancel',
   },
   pagination: {
     label: 'Pagination',

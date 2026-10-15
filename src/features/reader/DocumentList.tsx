@@ -9,6 +9,7 @@ import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
 import { FolderMenu } from './FolderMenu'
 import { FolderPicker } from './FolderPicker'
+import { ConfirmDialog } from './ConfirmDialog'
 import {
   activeDocuments,
   documentLanguageFilterOrDefault,
@@ -72,6 +73,13 @@ export function DocumentList() {
   const [tickedDocIds, setTickedDocIds] = useState<Set<string>>(new Set())
   const [tickedFolderIds, setTickedFolderIds] = useState<Set<string>>(new Set())
   const [pickerAnchor, setPickerAnchor] = useState<HTMLElement | null>(null)
+  /** 골라 담은 것을 버리기 전에 한 번 묻는 상자가 열려 있는가 */
+  const [confirmingBulkTrash, setConfirmingBulkTrash] = useState(false)
+  /** 겹쳐 체크된 자손 폴더는 무시한다 — 부모 안에 딸려 간다 */
+  const prunedTickedFolders = useMemo(
+    () => pruneNestedTicks(folders, [...tickedFolderIds]),
+    [folders, tickedFolderIds],
+  )
 
   const enterSelect = () => {
     setTickedDocIds(new Set())
@@ -96,7 +104,7 @@ export function DocumentList() {
   /** 골라 담은 것을 휴지통에 — 문서는 되살릴 수 있고, 폴더는 부모로 옮겨 간다 */
   const bulkTrash = async () => {
     for (const id of tickedDocIds) await trashDoc(id)
-    for (const id of pruneNestedTicks(folders, [...tickedFolderIds])) {
+    for (const id of prunedTickedFolders) {
       await deleteFolder(id)
     }
     exitSelect()
@@ -110,22 +118,32 @@ export function DocumentList() {
    */
   const bulkMove = async (target: string | null) => {
     if (tickedDocIds.size > 0) await moveDocs([...tickedDocIds], target)
-    for (const id of pruneNestedTicks(folders, [...tickedFolderIds])) {
+    for (const id of prunedTickedFolders) {
       await moveFolder(id, target)
     }
     exitSelect()
   }
 
-  // 골라 담는 중의 Esc 는 고르기를 그만둔다 — 옮길 곳 고르기가 열려 있으면
-  // 그쪽이 먼저 닫힌다 (Popover 자신의 Esc 처리)
+  /** 물을 상자의 말 — 문서와 폴더의 셈을 각각 밝힌다 */
+  const bulkTrashBody = [
+    tickedDocIds.size > 0 ? t('trash.confirmBulkDocs', { count: tickedDocIds.size }) : null,
+    prunedTickedFolders.length > 0
+      ? t('trash.confirmBulkFolders', { count: prunedTickedFolders.length })
+      : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join(' ')
+
+  // 골라 담는 중의 Esc 는 고르기를 그만둔다 — 옮길 곳·물을 상자가 열려 있으면
+  // 그쪽이 먼저 닫힌다 (각 상자 자신의 Esc 처리)
   useEffect(() => {
     if (!selecting) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !pickerAnchor) exitSelect()
+      if (event.key === 'Escape' && !pickerAnchor && !confirmingBulkTrash) exitSelect()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selecting, pickerAnchor])
+  }, [selecting, pickerAnchor, confirmingBulkTrash])
 
   /** 이름 만들기가 열려 있는가 */
   const [creating, setCreating] = useState(false)
@@ -271,7 +289,7 @@ export function DocumentList() {
             </button>
             <button
               type="button"
-              onClick={() => void bulkTrash()}
+              onClick={() => setConfirmingBulkTrash(true)}
               className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-2 py-1 text-xs"
             >
               {t('list.moveSelectedToTrash')}
@@ -441,10 +459,24 @@ export function DocumentList() {
         <FolderPicker
           anchor={pickerAnchor}
           anchorKey="bulk-move"
-          lockedIds={pruneNestedTicks(folders, [...tickedFolderIds])}
+          lockedIds={prunedTickedFolders}
           currentId={folderId}
           onPick={(target) => void bulkMove(target)}
           onClose={() => setPickerAnchor(null)}
+        />
+      )}
+
+      {/* 버리기 전에 한 번 묻는다 — 그만두면 고른 채로 남는다 */}
+      {confirmingBulkTrash && (
+        <ConfirmDialog
+          title={t('trash.confirmBulkTitle')}
+          body={bulkTrashBody}
+          confirmLabel={t('list.moveSelectedToTrash')}
+          onConfirm={() => {
+            setConfirmingBulkTrash(false)
+            void bulkTrash()
+          }}
+          onClose={() => setConfirmingBulkTrash(false)}
         />
       )}
 

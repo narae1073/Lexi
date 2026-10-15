@@ -131,12 +131,25 @@ export async function run(ctx) {
   ctx.check('지운 폴더의 문서는 뿌리로 돌아온다', (await docRowsCount(ctx)) === 1, await rows(ctx))
   ctx.check('하위 폴더는 뿌리로 올라온다', await folderRowExists(ctx, 'Short'), '')
 
-  // ── 골라 담아 폴더째 버린다 — 안의 것은 사라지지 않는다 ──
+  // ── 골라 담아 폴더째 버린다 — 먼저 한 번 묻고, 안의 것은 사라지지 않는다 ──
   await clickExact(ctx, 'Select documents')
   await sleep(300)
   await tickRow(ctx, 'Short')
   await sleep(300)
   await clickExact(ctx, 'Move selected to trash')
+  await sleep(500)
+  const askedBulk = await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return d ? d.innerText : null;
+  })()`)
+  ctx.check('골라 버릴 때도 한 번 묻는다', typeof askedBulk === 'string', String(askedBulk))
+  await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find(x => /고른 항목을 휴지통에|Move selected to trash/.test(x.innerText)) : null;
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
   await sleep(500)
   ctx.check('버린 폴더는 줄에서 사라진다', !(await folderRowExists(ctx, 'Short')), '')
   ctx.check('문서는 그대로 있다', (await docRowsCount(ctx)) === 1, await rows(ctx))
