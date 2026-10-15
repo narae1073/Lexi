@@ -49,9 +49,11 @@ export function descendantsOf(folders: Folder[], folderId: string): Folder[] {
 export function visibleRoots(folders: Folder[]): Folder[] {
   const live = liveFolders(folders)
   const liveIds = new Set(live.map((folder) => folder.id))
-  return live.filter(
-    (folder) => folder.parentId === null || !liveIds.has(folder.parentId),
+  const roots = live.filter((folder) => folder.parentId === null)
+  const orphans = live.filter(
+    (folder) => folder.parentId !== null && !liveIds.has(folder.parentId),
   )
+  return [...roots, ...orphans]
 }
 
 /**

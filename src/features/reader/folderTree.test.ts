@@ -48,4 +48,14 @@ describe('중첩을 여는 순수 함수들', () => {
     ]
     expect(pruneNestedTicks(all, ['P', 'C', 'G'])).toEqual(['P'])
   })
+
+  it('뿌리가 먼저다 — 부모 잃은 폴더는 뒤에 선다', () => {
+    const tombstoned = folder({ id: 'T', deletedAt: '2026-02-01T00:00:00.000Z' })
+    const all = [
+      folder({ id: 'O', parentId: 'T' }),
+      folder({ id: 'P' }),
+      tombstoned,
+    ]
+    expect(visibleRoots(all).map((f) => f.id)).toEqual(['P', 'O'])
+  })
 })
