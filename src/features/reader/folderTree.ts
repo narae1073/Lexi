@@ -13,6 +13,69 @@ export function liveFolders(folders: Folder[]): Folder[] {
   return folders.filter((folder) => !folder.deletedAt)
 }
 
+/**
+ * 폴더의 모든 자손 — 직접 아이부터 그 아래까지 (가장 가까운 것부터).
+ *
+ * 폴더를 옮길 때 잠글 대상(자기 자신 + 자손)과, 겹쳐 체크된 폴더를
+ * 가지치는 데 쓴다. 데이터가 깨져 순환을 만들더라도 무한히 돌지 않는다.
+ */
+export function descendantsOf(folders: Folder[], folderId: string): Folder[] {
+  const live = liveFolders(folders)
+  const seen = new Set<string>([folderId])
+  const result: Folder[] = []
+  let frontier = childrenOf(live, folderId)
+  // 보호 — ancestorsOf 와 같은 이유다
+  let guard = 0
+  while (frontier.length > 0 && guard++ < 100) {
+    const next: Folder[] = []
+    for (const folder of frontier) {
+      if (seen.has(folder.id)) continue
+      seen.add(folder.id)
+      result.push(folder)
+      next.push(...childrenOf(live, folder.id))
+    }
+    frontier = next
+  }
+  return result
+}
+
+/**
+ * 뿌리 자리에 보이는 폴더 — 직접 뿌리인 것과 부모를 잃은 것.
+ *
+ * 다른 기기에서 부모를 지우는 사이에는 살아 있는 폴더가 톰스톤을 가리킬 수
+ * 있다. 그런 폴더를 어디에도 보여 주지 않으면 동기화는 됐는데 화면에 없는
+ * 폴더가 된다 — 문서의 folderOfDocument 와 같은 규칙으로 뿌리로 올린다.
+ */
+export function visibleRoots(folders: Folder[]): Folder[] {
+  const live = liveFolders(folders)
+  const liveIds = new Set(live.map((folder) => folder.id))
+  return live.filter(
+    (folder) => folder.parentId === null || !liveIds.has(folder.parentId),
+  )
+}
+
+/**
+ * 겹쳐 체크된 폴더를 가지친다 — 입력 순서를 지키고 부모만 남긴다.
+ *
+ * 부모 P 와 자식 C 를 함께 옮기면 C 는 P 안에 딸려 가므로, C 의 체크는
+ * 무시한다 (나무가 조용히 납작해지는 것을 막는다). 모르는 id 는 그대로 둔다.
+ */
+export function pruneNestedTicks(
+  folders: Folder[],
+  tickedFolderIds: readonly string[],
+): string[] {
+  const ticked = new Set(tickedFolderIds)
+  return tickedFolderIds.filter((id) => {
+    for (const other of ticked) {
+      if (other === id) continue
+      if (descendantsOf(folders, other).some((folder) => folder.id === id)) {
+        return false
+      }
+    }
+    return true
+  })
+}
+
 /** 어떤 폴더의 직접 아이들 — parentId 로 묶인다 */
 export function childrenOf(folders: Folder[], parentId: string | null): Folder[] {
   return folders.filter((folder) => folder.parentId === parentId)
