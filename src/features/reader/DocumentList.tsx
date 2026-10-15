@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
@@ -7,8 +7,7 @@ import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
-import { FolderChips } from './FolderChips'
-import { MoveToFolder } from './MoveToFolder'
+import { FolderMenu } from './FolderMenu'
 import {
   activeDocuments,
   documentLanguageFilterOrDefault,
@@ -17,6 +16,8 @@ import {
   languagesWithDocuments,
   sortDocuments,
 } from './documentSort'
+import { childrenOf, folderOfDocument, visibleRoots } from './folderTree'
+import type { Folder } from '../../types'
 
 export function DocumentList() {
   const t = useTranslation()
@@ -33,18 +34,38 @@ export function DocumentList() {
   const storedLanguageFilter = useSettingsStore((s) => s.documentLanguageFilter)
   const setDocumentLanguageFilter = useSettingsStore((s) => s.setDocumentLanguageFilter)
   const folders = useFoldersStore((s) => s.folders)
+  const createFolder = useFoldersStore((s) => s.create)
 
   /**
-   * 문서 목록의 폴더 — 칩으로 좁힌다 (개선사항.txt: 폴더 관리).
+   * 문서 목록의 자리 — 조상들의 꼬리표다 (마지막이 지금 있는 폴더, 비었으면 뿌리).
    *
-   * 고른 폴더가 사라지면(다른 기기의 지우기) 목록은 조용히 전체로 돌아간다 —
-   * 삭제된 폴더를 가리키는 주소는 어디에도 머무는 곳이 아니다.
+   * 주소가 아니라 앱 안의 상태다 — 새로고침하면 뿌리로 돌아간다.
+   * 보고 있던 폴더가 사라지면(다른 기기의 지우기) 꼬리의 죽은 끝을 떼어 내
+   * 가장 가까운 살아 있는 조상으로 돌아간다.
    */
-  const [browsingFolderId, setBrowsingFolderId] = useState<string | null>(null)
-  const folderId = useMemo(
-    () => (folders.some((f) => f.id === browsingFolderId) ? browsingFolderId : null),
-    [folders, browsingFolderId],
-  )
+  const [path, setPath] = useState<string[]>([])
+  const liveIds = useMemo(() => new Set(folders.map((f) => f.id)), [folders])
+  const validPath = useMemo(() => {
+    const next = [...path]
+    while (next.length > 0 && !liveIds.has(next[next.length - 1])) next.pop()
+    return next
+  }, [path, liveIds])
+  const folderId: string | null =
+    validPath.length > 0 ? validPath[validPath.length - 1] : null
+  const currentFolder = folderId ? (folders.find((f) => f.id === folderId) ?? null) : null
+
+  const enterFolder = (id: string) => setPath([...validPath, id])
+  const goBack = () => setPath(validPath.slice(0, -1))
+
+  /** 이름 만들기가 열려 있는가 */
+  const [creating, setCreating] = useState(false)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!creating) return
+    inputRef.current?.focus()
+  }, [creating])
 
   /**
    * 문서별 진도를 한 번에 계산한다.
@@ -88,14 +109,20 @@ export function DocumentList() {
       ? storedLanguageFilter
       : null
 
+  /** 지금 자리의 직접 아이 폴더 — 뿌리에서는 부모 잃은 폴더도 뿌리로 올린다 */
+  const visibleFolders = useMemo(
+    () => (folderId === null ? visibleRoots(folders) : childrenOf(folders, folderId)),
+    [folders, folderId],
+  )
+
   const direction = documentSortDir[documentSort]
   /** 폴더 → 언어 → 정렬 — 골라 담은 실제 손글씨를 남겨 둔다 */
   const inFolder = useMemo(
     () =>
       folderId === null
-        ? documents
+        ? documents.filter((doc) => folderOfDocument(folders, doc.folderId) === null)
         : documents.filter((doc) => (doc.folderId ?? null) === folderId),
-    [documents, folderId],
+    [documents, folders, folderId],
   )
   const filtered = useMemo(
     () => documentsOfLanguage(inFolder, languageFilter),
@@ -106,8 +133,24 @@ export function DocumentList() {
     [filtered, documentSort, direction],
   )
 
+  /**
+   * 새 폴더를 만들고 곧바로 그 폴더로 간다 — 만들려고 누른 것이니 그곳이 다음
+   * 자리다. 빈 이름은 받지 않는다 (제목 없는 폴더는 길을 잃는다).
+   */
+  const commitCreate = async () => {
+    const created = await createFolder(draft, folderId)
+    setCreating(false)
+    setDraft('')
+    if (created) setPath([...validPath, created.id])
+  }
+
+  const cancelCreate = () => {
+    setCreating(false)
+    setDraft('')
+  }
+
   if (loading) return <p className="p-8 text-sm text-ink-muted">{t('list.loading')}</p>
-  if (documents.length === 0) {
+  if (documents.length === 0 && folders.length === 0) {
     return (
       <p className="text-ink-muted p-8 text-sm">
         {t('list.empty')}
@@ -125,9 +168,28 @@ export function DocumentList() {
 
   return (
     <>
-      {/* 폴더 칩 — 목록 위에서 고른다 (단어장의 언어 칩과 같은 모양이다) */}
-      <div className="border-line border-b pt-1 pb-2">
-        <FolderChips folderId={folderId} onPick={setBrowsingFolderId} />
+      {/* 자리 머리 — 뿌리에서는 '전체 문서', 폴더 안에서는 뒤로 + 폴더 이름 */}
+      <div className="border-line flex items-center gap-2 border-b px-5 py-2">
+        {currentFolder ? (
+          <>
+            <button
+              type="button"
+              onClick={goBack}
+              aria-label={t('list.backButton')}
+              title={t('list.backButton')}
+              className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-2 py-1 text-xs"
+            >
+              ←
+            </button>
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+              {currentFolder.name}
+            </span>
+          </>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+            {t('list.folderAll')}
+          </span>
+        )}
       </div>
       <div className="border-line flex flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
         <div className="flex flex-wrap items-center gap-3">
@@ -191,9 +253,9 @@ export function DocumentList() {
 
       {/*
         빈 곳이 '문서가 없다' 고 읽히지 않게 — 폴더·언어의 말이 먼저다.
-        칩 줄이 위에 살아 있으므로 여기서 벗어나는 길은 언제나 있다.
+        머리 줄이 위에 살아 있으므로 여기서 벗어나는 길은 언제나 있다.
       */}
-      {sorted.length === 0 ? (
+      {sorted.length === 0 && visibleFolders.length === 0 ? (
         <p className="text-ink-muted px-5 py-8 text-sm">
           {folderId !== null
             ? t('list.emptyFolder')
@@ -203,6 +265,9 @@ export function DocumentList() {
         </p>
       ) : (
         <ul className="divide-y divide-line">
+          {visibleFolders.map((folder) => (
+            <FolderRow key={folder.id} folder={folder} onEnter={() => enterFolder(folder.id)} />
+          ))}
           {sorted.map((doc) => (
             <li key={doc.id} className="flex items-stretch gap-1">
           <Link
@@ -226,15 +291,77 @@ export function DocumentList() {
               text={(p) => t('list.marked', { percent: p.percent, marked: p.marked, total: p.total })}
             />
           </Link>
-          {/* 폴더로 옮기기 — 행 안의 단추로 고른다 (drag 없이, 손·마우스 둘 다) */}
-          <span className="flex flex-col justify-center pr-4">
-            <MoveToFolder doc={doc} />
-          </span>
             </li>
           ))}
         </ul>
       )}
+
+      {/* 새 폴더 — 지금 있는 자리에 만든다 */}
+      <div className="px-5 py-3">
+        {creating ? (
+          <span className="border-accent flex items-center rounded-lg border px-2 py-1">
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => void commitCreate()}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void commitCreate()
+                if (event.key === 'Escape') cancelCreate()
+              }}
+              aria-label={t('list.folderNamePlaceholder')}
+              placeholder={t('list.folderNamePlaceholder')}
+              className="w-full bg-transparent text-sm outline-none"
+            />
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="text-ink-muted hover:text-ink text-sm"
+          >
+            + {folderId === null ? t('list.newFolder') : t('list.newSubfolder')}
+          </button>
+        )}
+      </div>
     </>
+  )
+}
+
+/**
+ * 폴더 한 줄 — 누르면 그 안으로 들어간다.
+ *
+ * ⋯는 자기 자리만 여는 별도 단추다 — 눌러도 들어가지 않는다.
+ */
+function FolderRow({ folder, onEnter }: { folder: Folder; onEnter: () => void }) {
+  const t = useTranslation()
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
+
+  return (
+    <li className="flex items-stretch gap-1">
+      <button
+        type="button"
+        onClick={onEnter}
+        className="flex min-w-0 flex-1 items-center gap-3 px-5 py-3 text-left hover:bg-surface-hover"
+      >
+        <span aria-hidden>📁</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{folder.name}</span>
+      </button>
+      <span className="flex flex-col justify-center pr-4">
+        <button
+          type="button"
+          onClick={(event) => setMenuAnchor(event.currentTarget)}
+          aria-label={t('list.folderMenu')}
+          title={t('list.folderMenu')}
+          className="text-ink-muted hover:text-ink rounded-lg px-2 py-1 text-sm"
+        >
+          ⋯
+        </button>
+      </span>
+      {menuAnchor && (
+        <FolderMenu folder={folder} anchor={menuAnchor} onClose={() => setMenuAnchor(null)} />
+      )}
+    </li>
   )
 }
 

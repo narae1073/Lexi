@@ -78,6 +78,8 @@ export default function App() {
   // 휴지통에 있는 문서는 목록에도 없으니 진도 계산도 필요 없다
   const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
   const trashedCount = allDocuments.length - documents.length
+  // 폴더가 있으면 목록이 빈 문서와 함께 보여야 한다 — 작성 화면으로만 가면
+  // 폴더에 닿을 길이 사라진다
   const {
     needRefresh: [needRefresh],
     updateServiceWorker,
@@ -87,6 +89,7 @@ export default function App() {
   const refreshStaleDocuments = useOccurrencesStore((s) => s.refreshStaleDocuments)
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const enrolled = useLanguagesStore((s) => s.enrolled)
+  const folders = useFoldersStore((s) => s.folders)
 
   useEffect(() => {
     void load()
@@ -143,7 +146,13 @@ export default function App() {
             빈 작성 화면만 남으면 버린 문서를 되돌릴 곳이 사라진다 */}
         <Route
           path="/"
-          element={documents.length === 0 && trashedCount === 0 ? <ComposeDocument /> : <DocumentList />}
+          element={
+            documents.length === 0 && trashedCount === 0 && folders.length === 0 ? (
+              <ComposeDocument />
+            ) : (
+              <DocumentList />
+            )
+          }
         />
         <Route path="/languages" element={<LanguagePicker onDone={() => history.back()} />} />
         <Route path="/compose" element={<ComposeDocument />} />
