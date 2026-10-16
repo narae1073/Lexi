@@ -8,6 +8,7 @@ import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
 import { buildWordbook } from '../wordbook/buildWordbook'
+import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
 import {
   drawWords,
@@ -246,9 +247,11 @@ export function QuizView() {
         {t('quiz.progress', { done: index + 1, total: words.length })}
       </p>
 
-      <p data-quiz-word className="mt-10 text-center text-3xl font-semibold break-words">
-        {word.surface}
-      </p>
+      {/*
+        별은 상태와 무관하므로 문제를 푸는 도중 계속 보인다 — 붙이거나 뗄 수 있다.
+        key 는 단어가 바뀔 때 색창을 닫기 위함이다.
+      */}
+      <QuizPrompt key={word.lemma} word={word} languageCode={languageCode} />
 
       <div className="mt-10 flex justify-center gap-2">
         {/* 답은 한 번뿐이다 — 답한 뒤에는 세 단추 모두 잠긴다.

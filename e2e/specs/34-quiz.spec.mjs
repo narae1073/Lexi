@@ -54,6 +54,50 @@ export async function run(ctx) {
     (await ctx.page.evaluate(`document.querySelector('[data-quiz-progress]')?.innerText ?? ''`)).includes('1 / 10'),
     await ctx.page.evaluate(`document.querySelector('[data-quiz-progress]')?.innerText ?? ''`))
 
+  // ── 즐겨찾기 별 — 본문과 같은 스티커, 퀴즈에서 켜고 끌 수 있다 ──
+  const starState = () => ctx.page.evaluate(`(() => {
+    const b = document.querySelector('[data-quiz-favorite]');
+    if (!b) return null;
+    return {
+      text: b.innerText.trim(),
+      pressed: b.getAttribute('aria-pressed'),
+      color: b.style.color || null,
+      tilt: b.style.transform || null,
+    };
+  })()`)
+  const starBefore = await starState()
+  ctx.check('단어 옆에 별이 있다 — 아직 빈 별 ☆',
+    starBefore?.text === '☆' && starBefore.pressed === 'false', JSON.stringify(starBefore))
+
+  await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-favorite]').click(); return true })()`)
+  await sleep(300)
+  const starOn = await starState()
+  ctx.check('별을 누르면 켜진다 ★',
+    starOn?.text === '★' && starOn.pressed === 'true', JSON.stringify(starOn))
+  // 인라인 색은 브라우저가 rgb() 로 읽어 돌려준다 — 그 모양으로 비교한다
+  ctx.check('별에 색과 기울기가 있다',
+    /^rgb\(\d+, \d+, \d+\)$/.test(starOn?.color ?? '') && /^rotate\(.+\)$/.test(starOn.tilt ?? ''),
+    JSON.stringify(starOn))
+
+  // 색창 — 별이 켜져 있을 때만 색을 고를 수 있다
+  await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-star-color]').click(); return true })()`)
+  await sleep(200)
+  const swatches = await ctx.page.evaluate(
+    `[...document.querySelectorAll('[data-star-color]')].map(b => b.getAttribute('data-star-color'))`,
+  )
+  ctx.check('색창에 9색이 있다', swatches.length === 9, swatches.join(' '))
+  await ctx.page.evaluate(`(() => { document.querySelector('[data-star-color="#ef4444"]').click(); return true })()`)
+  await sleep(200)
+  const colorAfter = await starState()
+  ctx.check('빨강을 고르면 별이 빨개진다', colorAfter?.color === 'rgb(239, 68, 68)', JSON.stringify(colorAfter))
+
+  // 다시 누르면 꺼진다
+  await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-favorite]').click(); return true })()`)
+  await sleep(300)
+  const starOff = await starState()
+  ctx.check('별을 다시 누르면 꺼진다 ☆',
+    starOff?.text === '☆' && starOff.pressed === 'false', JSON.stringify(starOff))
+
   const answers = await ctx.page.evaluate(
     `[...document.querySelectorAll('[data-quiz-answer]')].map(b => b.getAttribute('data-quiz-answer'))`,
   )
