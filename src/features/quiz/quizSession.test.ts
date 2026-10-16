@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordStatus } from '../../types'
 import {
+  defaultSessionSize,
   drawWords,
   nextStatus,
   quizPool,
@@ -103,6 +104,24 @@ describe('퀴즈에 낼 단어 고르기', () => {
       entry('alpha', 'unsure', ['alpha'], 'Alpha is first.', 'My Notes'),
     ])
     expect(pool[0].documentTitle).toBe('My Notes')
+  })
+})
+
+describe('기본 개수', () => {
+  it('50 이 있으면 50 을 쓴다', () => {
+    expect(defaultSessionSize([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])).toBe(50)
+  })
+
+  it('가진 것이 50 미만이면 그 안에서 가장 큰 것을 쓴다', () => {
+    expect(defaultSessionSize([10, 20, 30, 40])).toBe(40)
+  })
+
+  it('50 만 있어도 50 을 쓴다', () => {
+    expect(defaultSessionSize([50])).toBe(50)
+  })
+
+  it('낼 단어가 없으면 null 이다', () => {
+    expect(defaultSessionSize([])).toBeNull()
   })
 })
 

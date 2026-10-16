@@ -40,6 +40,18 @@ export function sessionSizeOptions(poolSize: number): number[] {
   return poolSize > 0 ? [poolSize] : []
 }
 
+/**
+ * 처음 고르기 전 기본 개수 — 50.
+ *
+ * 너무 적으면(10) 진도가 잘 보이지 않고 너무 많으면(100) 지루해지므로 50 을
+ * 기본으로 둔다. 가진 단어가 50 미만이면 50 을 고를 수 없으니 그 안에서 가장
+ * 큰 선택지를 쓴다. 낼 단어가 아예 없으면 null 이다.
+ */
+export function defaultSessionSize(sizeOptions: number[]): number | null {
+  if (sizeOptions.includes(50)) return 50
+  return sizeOptions[sizeOptions.length - 1] ?? null
+}
+
 /** 상태를 판정하는 데 필요한 최소 모양 — 단어장 항목(WordbookEntry)이 그대로 만족한다 */
 type StatusEntry = {
   lemma: string

@@ -11,6 +11,7 @@ import { buildWordbook } from '../wordbook/buildWordbook'
 import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
 import {
+  defaultSessionSize,
   drawWords,
   nextStatus,
   quizPool,
@@ -79,8 +80,9 @@ export function QuizView() {
   }, [languageCode, occurrences, byKey])
 
   const sizeOptions = useMemo(() => sessionSizeOptions(pool.length), [pool.length])
+  // 아직 고르지 않았으면 기본 개수(50) — 가진 것이 50 미만이면 그 안에서 가장 큰 것
   const chosenSize =
-    size !== null && sizeOptions.includes(size) ? size : (sizeOptions[sizeOptions.length - 1] ?? null)
+    size !== null && sizeOptions.includes(size) ? size : defaultSessionSize(sizeOptions)
 
   const start = () => {
     if (!languageCode || chosenSize === null) return
