@@ -112,4 +112,8 @@ export type WordState = {
   knownPresses: number
   unsurePresses: number
   unknownPresses: number
+  /** 사용자가 적은 메모 — 어원·연상·내 예문. 없으면 비어 있다 */
+  note?: string
+  /** 메모를 마지막으로 고친 시각. 없으면 고친 적이 없다 (마지막으로 본 시각과 다르다) */
+  noteUpdatedAt?: string
 }

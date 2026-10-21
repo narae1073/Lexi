@@ -10,11 +10,28 @@ export type QuizWord = {
   lemma: string
   surface: string
   status: WordStatus
-  /** 답한 뒤 보여 줄 문맥 예문 — 단어장의 예문과 같은 것 */
+  /** 답한 뒤 보여 줄 문맥 예문 — 이번 세션에 고른 것 */
   sentence: string
   /** 그 예문이 나온 문서 제목 — 어디서 온 문맥인지 밝힌다 */
   documentTitle: string
+  /** 이 단어가 나온 문장 전부 — 세션마다 다른 문맥을 골라 쓴다 */
+  contexts?: QuizContext[]
+  /** 마지막으로 본 시각 (ISO) — 간격 복습의 기한을 계산한다 */
+  lastSeenAt?: string
+  /** 앎 단추를 누른 횟수 — 앎 단어의 복습 간격을 늘린다 */
+  knownPresses?: number
 }
+
+export type QuizContext = {
+  sentence: string
+  documentTitle: string
+}
+
+/** 하루 — 복습 간격의 단위 */
+export const DAY_MS = 24 * 60 * 60 * 1000
+
+/** 한 세션에서 앎 복습이 차지할 수 있는 몫 — 다른 재료가 남아 있는 동안 */
+export const KNOWN_REVIEW_SHARE = 0.2
 
 /**
  * 상태 전이표.
@@ -61,6 +78,26 @@ type StatusEntry = {
   sentence: string
   /** 그 문장이 있는 문서 제목 */
   documentTitle: string
+  /** 그 단어가 나온 문장들 — 퀴즈가 골라 쓴다 */
+  contexts?: QuizContext[]
+  /** 마지막으로 본 시각 — 간격 복습 */
+  lastSeenAt?: string
+  /** 앎 단추를 누른 횟수 — 앎 복습 간격 */
+  knownPresses?: number
+}
+
+/** 단어장 항목 → 퀴즈 단어. 두 풀(헷갈림·모름 / 앎 복습)이 같은 모양을 쓴다 */
+function toQuizWord(entry: StatusEntry): QuizWord {
+  return {
+    lemma: entry.lemma,
+    surface: entry.surfaces[0] ?? entry.lemma,
+    status: entry.status as WordStatus,
+    sentence: entry.sentence,
+    documentTitle: entry.documentTitle,
+    contexts: entry.contexts,
+    lastSeenAt: entry.lastSeenAt,
+    knownPresses: entry.knownPresses,
+  }
 }
 
 /**
@@ -68,42 +105,164 @@ type StatusEntry = {
  *
  * '앎' 은 다시 물을 필요가 없고, '미표시' 는 아직 만나지도 않은 단어라
  * 여기서는 다루지 않는다. '헷갈림' 과 '모름' 이 이 퀴즈의 재료다.
+ * 앎 단어는 기한이 되면 reviewPool 로 따로 들어온다.
  */
 export function quizPool(entries: StatusEntry[]): QuizWord[] {
   return entries
     .filter((e) => e.status === 'unsure' || e.status === 'unknown')
-    .map((e) => ({
-      lemma: e.lemma,
-      surface: e.surfaces[0] ?? e.lemma,
-      status: e.status as WordStatus,
-      sentence: e.sentence,
-      documentTitle: e.documentTitle,
-    }))
+    .map(toQuizWord)
+}
+
+/**
+ * 이 상태의 복습 간격 (ms).
+ *
+ * 모름은 내일, 헷갈림은 사흘 뒤, 앎은 일주일 뒤에 다시 만난다. 앎을 세 번
+ * 이상 누른 단어는 21일로 벌린다 — 굳은 단어를 자주 꺼내면 다른 단어를 볼
+ * 시간을 빼앗을 뿐이다.
+ */
+export function reviewIntervalMs(status: WordStatus, knownPresses = 0): number {
+  if (status === 'unknown') return 1 * DAY_MS
+  if (status === 'unsure') return 3 * DAY_MS
+  return (knownPresses >= 3 ? 21 : 7) * DAY_MS
+}
+
+/**
+ * 이제 다시 볼 때인가.
+ *
+ * 마지막으로 본 시각이 없거나 해석할 수 없으면 true 다 — 건너뛰는 쪽보다
+ * 한 번 더 보는 쪽이 낫다.
+ */
+export function isDue(
+  state: { status: WordStatus; lastSeenAt?: string; knownPresses?: number },
+  now: number,
+): boolean {
+  const last = state.lastSeenAt ? Date.parse(state.lastSeenAt) : Number.NaN
+  if (Number.isNaN(last)) return true
+  return now - last >= reviewIntervalMs(state.status, state.knownPresses ?? 0)
+}
+
+/** 기한이 된 앎 단어 — 간격 복습 재료. now 를 생략하면 지금 시각 */
+export function reviewPool(entries: StatusEntry[], now: number = Date.now()): QuizWord[] {
+  return entries
+    .filter((e) => e.status === 'known' && isDue(
+      { status: 'known', lastSeenAt: e.lastSeenAt, knownPresses: e.knownPresses },
+      now,
+    ))
+    .map(toQuizWord)
+}
+
+/** 겹치지 않게 섞는다 — 원래 목록은 건드리지 않는다 */
+function shuffled<T>(items: T[], rng: () => number): T[] {
+  const copy = [...items]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.min(Math.floor(rng() * (i + 1)), i)
+    const swap = copy[i]
+    copy[i] = copy[j]
+    copy[j] = swap
+  }
+  return copy
+}
+
+/** 이번 세션에 보여 줄 문맥 하나를 고른다 — 없으면 원래 예문 그대로 */
+function withContext(word: QuizWord, rng: () => number): QuizWord {
+  const contexts =
+    word.contexts && word.contexts.length > 0
+      ? word.contexts
+      : [{ sentence: word.sentence, documentTitle: word.documentTitle }]
+  const index = Math.min(Math.floor(rng() * contexts.length), contexts.length - 1)
+  const context = contexts[index]
+  return {
+    ...word,
+    sentence: context.sentence,
+    documentTitle: context.documentTitle,
+  }
 }
 
 /**
  * 겹치지 않게 count 개를 무작위로 뽑는다.
  *
  * 원래 목록은 건드리지 않는다 (같은 풀을 세션마다 다시 쓸 수 있어야 한다).
- * rng 를 받는 이유는 테스트에서 순서를 고정하기 위해서다.
+ * rng 를 받는 이유는 테스트에서 순서를 고정하기 위해서다. 뽑힌 단어마다
+ * 문맥도 하나 골라 붙인다 — 같은 단어라도 세션마다 다른 문장에서 만난다.
  */
 export function drawWords(
   pool: QuizWord[],
   count: number,
   rng: () => number = Math.random,
 ): QuizWord[] {
-  const copy = [...pool]
-  const take = Math.min(Math.max(count, 0), copy.length)
-  // Fisher–Yates — 앞에서부터 take 개를 치우고 그만큼만 취한다
-  for (let i = 0; i < take; i++) {
-    const span = copy.length - i
-    const offset = Math.min(Math.floor(rng() * span), span - 1)
-    const j = i + offset
-    const swap = copy[i]
-    copy[i] = copy[j]
-    copy[j] = swap
+  const take = Math.min(Math.max(count, 0), pool.length)
+  return shuffled(pool, rng)
+    .slice(0, take)
+    .map((word) => withContext(word, rng))
+}
+
+/**
+ * 세션에 낼 단어를 고른다 — 헷갈림·모름과 앎 복습을 함께.
+ *
+ * 앎 복습은 세션의 20% 까지만 섞는다 (다른 재료가 남아 있는 동안). 낼 것이
+ * 모자라면 남는 자리는 앎으로 채운다 — 빈 세션보다는 복습이 낫다. 마지막에
+ * 다시 섞는 이유는 교차 연습이다: 같은 상태끼리 몰아 보면 구분이 약해진다.
+ */
+export function selectSession(
+  pool: QuizWord[],
+  reviews: QuizWord[],
+  count: number,
+  rng: () => number = Math.random,
+): QuizWord[] {
+  if (count <= 0) return []
+
+  const known = shuffled(reviews, rng)
+  const unsure = shuffled(pool, rng)
+  const cap = Math.max(1, Math.floor(count * KNOWN_REVIEW_SHARE))
+  const reviewTake = Math.min(cap, known.length, count)
+  const poolTake = Math.min(count - reviewTake, unsure.length)
+
+  const picked = [...unsure.slice(0, poolTake), ...known.slice(0, reviewTake)]
+
+  // 자리가 남으면 헷갈림·모름으로 먼저 채우고, 그래도 남으면 앎으로 채운다
+  const remainingAfterPool = count - picked.length
+  if (remainingAfterPool > 0) {
+    picked.push(...unsure.slice(poolTake, poolTake + remainingAfterPool))
   }
-  return copy.slice(0, take)
+  const remainingAfterKnown = count - picked.length
+  if (remainingAfterKnown > 0) {
+    picked.push(...known.slice(reviewTake, reviewTake + remainingAfterKnown))
+  }
+
+  return shuffled(picked, rng).map((word) => withContext(word, rng))
+}
+
+/** 빈칸 표시 — 폭이 일정해야 문장이 흔들리지 않는다 */
+const BLANK = '____'
+
+/** 띄어쓰기 없이 붙여 쓰는 문자 — 이 안에서는 낱말 경계를 따질 수 없다 */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
+
+/**
+ * 예문에서 표기 하나를 빈칸으로 가린다 — 앎 단어의 생산 연습.
+ *
+ * 문장에 그 표기가 정확히 한 번 나올 때만 가린다. 두 번 나오면 어느 자리를
+ * 가릴지 알 수 없고, 한 번도 없으면 이 문장으로는 낼 수 없다. null 을 주면
+ * 호출하는 쪽이 기존 방식(단어를 보여 주고 뜻을 묻는)으로 되돌아간다.
+ *
+ * 띄어쓰기가 있는 언어는 낱말 경계를 지킨다 — 'cat' 이 'concatenate' 속에서
+ * 걸리면 엉뚱한 자리를 가리게 된다. 일본어·중국어·한국어는 붙여 쓰므로
+ * 표기 그대로 찾는다 (조사가 붙어도 가릴 수 있어야 한다).
+ */
+export function blankWord(sentence: string, surface: string): string | null {
+  if (!sentence || !surface) return null
+
+  if (CJK.test(surface)) {
+    const parts = sentence.split(surface)
+    if (parts.length !== 2) return null
+    return `${parts[0]}${BLANK}${parts[1]}`
+  }
+
+  const escaped = surface.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'gu')
+  const matches = sentence.match(pattern)
+  if (!matches || matches.length !== 1) return null
+  return sentence.replace(pattern, BLANK)
 }
 
 /** 세션이 끝난 뒤의 상태별 개수 — 끝난 화면의 요약에 쓴다 */

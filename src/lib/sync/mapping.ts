@@ -60,6 +60,8 @@ export function wordStateToRow(
     known_presses: record.knownPresses,
     unsure_presses: record.unsurePresses,
     unknown_presses: record.unknownPresses,
+    note: record.note ?? null,
+    note_updated_at: record.noteUpdatedAt ?? null,
   }
 }
 
@@ -80,6 +82,10 @@ export function wordStateFromRow(row: WordStateRow): WordStateRecord & { status:
     knownPresses: row.known_presses ?? 0,
     unsurePresses: row.unsure_presses ?? 0,
     unknownPresses: row.unknown_presses ?? 0,
+    // null 은 '메모를 고친 적 없다' 이지 '빈 메모를 저장했다' 가 아니다 —
+    // 시각도 함께 null 로 둬야 다른 기기의 메모를 지우지 않는다
+    note: row.note ?? undefined,
+    noteUpdatedAt: row.note_updated_at ?? undefined,
   }
 }
 

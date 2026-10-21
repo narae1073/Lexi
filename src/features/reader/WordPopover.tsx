@@ -4,6 +4,7 @@ import { useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { StarPalette } from './StarPalette'
+import { WordNote } from './WordNote'
 import { STATUS_GLYPH, WORD_STATUSES, type LanguageCode, type Segment, type WordStatus } from '../../types'
 import { Popover } from './Popover'
 
@@ -137,6 +138,13 @@ export function WordPopover({
           )
         })}
       </div>
+
+      <WordNote
+        key={`${languageCode}:${lemma}`}
+        languageCode={languageCode}
+        lemma={lemma}
+        surface={segment.text}
+      />
 
       {showDictionary ? (
         <div className="mt-1 border-line border-t pt-1.5">

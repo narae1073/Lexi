@@ -25,6 +25,9 @@ export async function run(ctx) {
   ctx.check('퀴즈 화면이 열린다', (await body(ctx)).includes('Word Quiz'), await body(ctx))
   ctx.check('상태 전이 규칙을 미리 설명한다 — 새 단어는 곧바로 앎이 되지 않는다',
     (await body(ctx)).includes('cannot become "Know" right away'), 'Quiz 설명')
+  ctx.check('앎 단어도 때가 되면 다시 나온다고 밝힌다',
+    (await body(ctx)).includes('Known words come back now and then'),
+    (await body(ctx)).split('\n').find((line) => line.includes('Known words')) ?? '')
 
   // ── 언어 고르기 ──
   const hasLanguage = await ctx.page.evaluate(
@@ -109,6 +112,8 @@ export async function run(ctx) {
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-next]')`)) === false)
   ctx.check('아직 예문은 없다 — 답하기 전에는 보여 주지 않는다',
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-sentence]')`)) === false)
+  ctx.check('아직 뜻도 없다 — 답하기 전에는 보여 주지 않는다',
+    (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-meaning]')`)) === false)
 
   // ── 사전을 먼저 보면 '앎' 을 고를 수 없다 ──
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-dictionary]').click(); return true })()`)
@@ -128,6 +133,8 @@ export async function run(ctx) {
   await sleep(300)
   ctx.check('답하면 다음 단추가 나타난다',
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-next]')`)) === true)
+  ctx.check('답하면 뜻이 나타난다',
+    (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-meaning]')`)) === true)
 
   // ── 답하면 문맥(예문 + 번역)이 나타난다 ──
   //    문서가 한 문장이라 예문은 그 줄 전체다 — 모든 퀴즈 단어의 예문이 같다

@@ -105,6 +105,8 @@ export type Database = {
           known_presses: number
           unsure_presses: number
           unknown_presses: number
+          note: string | null
+          note_updated_at: string | null
         }
         Insert: {
           id?: string
@@ -122,6 +124,8 @@ export type Database = {
           known_presses?: number
           unsure_presses?: number
           unknown_presses?: number
+          note?: string | null
+          note_updated_at?: string | null
         }
         Update: {
           id?: string
@@ -139,6 +143,8 @@ export type Database = {
           known_presses?: number
           unsure_presses?: number
           unknown_presses?: number
+          note?: string | null
+          note_updated_at?: string | null
         }
         Relationships: []
       }

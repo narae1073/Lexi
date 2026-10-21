@@ -138,6 +138,8 @@ export const en = {
     lead: 'Pick a language and how many words to go through.',
     ruleHint:
       'A "New" word cannot become "Know" right away — pressing Know turns it into "Unsure". Press Know again on that word and it finally becomes "Know".',
+    reviewHint: 'Known words come back now and then — fill in the blank once enough time has passed.',
+    clozeHint: 'Recall the word that fills the blank.',
     pickLanguage: 'Pick the language to quiz.',
     countLabel: 'Words',
     none: 'Nothing to quiz yet — mark some words as Unsure or New first.',
@@ -154,6 +156,7 @@ export const en = {
     summaryNew: 'New',
     wordChanges: 'Word by word',
     changedCount: '{changed} of {total} changed',
+    meaning: 'Meaning',
     again: 'Choose a language again',
     sentenceFrom: 'From {title}',
   },
@@ -268,6 +271,12 @@ export const en = {
     offline: 'Offline — showing a copy saved on this device.',
     hide: 'Hide',
     baseForm: 'Base form',
+  },
+
+  note: {
+    label: 'Note',
+    placeholder: 'A mnemonic, origin, or your own example',
+    save: 'Save',
   },
 
   favorite: {

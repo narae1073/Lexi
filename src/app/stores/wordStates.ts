@@ -46,6 +46,13 @@ type WordStatesStore = {
    */
   setStarColor: (languageCode: LanguageCode, lemma: string, color: string, surface?: string) => void
   /**
+   * 단어 메모를 적는다 — 어원·연상·내 예문.
+   *
+   * 상태·별과 독립이고, 마지막으로 본 시각도 건드리지 않는다 (메모를 적은 것은
+   * 복습이 아니다). 메모의 시각을 따로 찍어 두 기기가 달라도 늦게 고친 쪽이 이긴다.
+   */
+  setNote: (languageCode: LanguageCode, lemma: string, note: string, surface?: string) => void
+  /**
    * 이 언어의 상태를 읽는다.
    *
    * `force` 는 **동기화가 방금 써 넣은 것을 화면에 반영할 때** 쓴다.
@@ -108,6 +115,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       knownPresses: previous?.knownPresses ?? 0,
       unsurePresses: previous?.unsurePresses ?? 0,
       unknownPresses: previous?.unknownPresses ?? 0,
+      note: previous?.note,
+      noteUpdatedAt: previous?.noteUpdatedAt,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -137,6 +146,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       knownPresses: previous?.knownPresses ?? 0,
       unsurePresses: previous?.unsurePresses ?? 0,
       unknownPresses: previous?.unknownPresses ?? 0,
+      note: previous?.note,
+      noteUpdatedAt: previous?.noteUpdatedAt,
     }
     next[field] = (previous?.[field] ?? 0) + 1
 
@@ -200,6 +211,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       knownPresses: previous?.knownPresses ?? 0,
       unsurePresses: previous?.unsurePresses ?? 0,
       unknownPresses: previous?.unknownPresses ?? 0,
+      note: previous?.note,
+      noteUpdatedAt: previous?.noteUpdatedAt,
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
@@ -231,6 +244,41 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
       favoriteUpdatedAt: timestamp,
     }).catch((error) => {
       console.error('별 색 저장 실패', error)
+    })
+  },
+
+  setNote: (languageCode, lemma, note, surface) => {
+    const key = wordKey(languageCode, lemma)
+    const previous = get().byKey[key]
+    const timestamp = new Date().toISOString()
+    const trimmed = note.trim()
+
+    const next: WordState = {
+      lemma,
+      languageCode,
+      // 메모만 적은 단어도 행이 생긴다 — 서버의 status 는 NOT NULL 이라 기본값이 필요하다
+      status: previous?.status ?? 'unsure',
+      seenCount: previous?.seenCount ?? 1,
+      firstSeenAt: previous?.firstSeenAt ?? timestamp,
+      // 메모를 적은 것은 복습이 아니다 — 있던 시각은 그대로 둔다
+      lastSeenAt: previous?.lastSeenAt ?? timestamp,
+      favorite: previous?.favorite ?? false,
+      starAngle: previous?.starAngle ?? 0,
+      starColor: previous?.starColor ?? STAR_COLOR_DEFAULT,
+      knownPresses: previous?.knownPresses ?? 0,
+      unsurePresses: previous?.unsurePresses ?? 0,
+      unknownPresses: previous?.unknownPresses ?? 0,
+      note: trimmed || undefined,
+      noteUpdatedAt: timestamp,
+    }
+
+    set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+
+    void idbPut(STORES.wordStates, {
+      ...next,
+      surface,
+    }).catch((error) => {
+      console.error('단어 메모 저장 실패', error)
     })
   },
 

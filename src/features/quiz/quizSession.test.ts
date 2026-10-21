@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordStatus } from '../../types'
 import {
+  DAY_MS,
+  blankWord,
   defaultSessionSize,
   drawWords,
+  isDue,
   nextStatus,
   quizPool,
+  reviewIntervalMs,
+  reviewPool,
+  selectSession,
   sessionChanges,
   sessionSizeOptions,
   summarize,
@@ -106,6 +112,20 @@ describe('퀴즈에 낼 단어 고르기', () => {
     ])
     expect(pool[0].documentTitle).toBe('My Notes')
   })
+
+  it('문맥과 복습 정보를 함께 들고 있다', () => {
+    const pool = quizPool([
+      {
+        ...entry('alpha', 'unsure'),
+        contexts: [{ sentence: 'Alpha is first.', documentTitle: 'Notes' }],
+        lastSeenAt: '2026-10-01T00:00:00.000Z',
+        knownPresses: 2,
+      },
+    ])
+    expect(pool[0].contexts).toHaveLength(1)
+    expect(pool[0].lastSeenAt).toBe('2026-10-01T00:00:00.000Z')
+    expect(pool[0].knownPresses).toBe(2)
+  })
 })
 
 describe('기본 개수', () => {
@@ -158,6 +178,151 @@ describe('단어 뽑기', () => {
     const before = pool.map((w) => w.lemma)
     drawWords(pool, 3, mulberry(7))
     expect(pool.map((w) => w.lemma)).toEqual(before)
+  })
+})
+
+describe('복습 간격', () => {
+  const now = Date.parse('2026-10-21T00:00:00.000Z')
+  const daysAgo = (days: number) => new Date(now - days * DAY_MS).toISOString()
+
+  it('모름은 하루, 헷갈림은 사흘, 앎은 일주일', () => {
+    expect(reviewIntervalMs('unknown')).toBe(DAY_MS)
+    expect(reviewIntervalMs('unsure')).toBe(3 * DAY_MS)
+    expect(reviewIntervalMs('known')).toBe(7 * DAY_MS)
+  })
+
+  it('앎을 세 번 이상 누른 단어는 21일로 벌린다', () => {
+    expect(reviewIntervalMs('known', 2)).toBe(7 * DAY_MS)
+    expect(reviewIntervalMs('known', 3)).toBe(21 * DAY_MS)
+  })
+
+  it('기한이 지났을 때만 다시 본다', () => {
+    expect(isDue({ status: 'unknown', lastSeenAt: daysAgo(2) }, now)).toBe(true)
+    expect(isDue({ status: 'unsure', lastSeenAt: daysAgo(2) }, now)).toBe(false)
+    expect(isDue({ status: 'unsure', lastSeenAt: daysAgo(4) }, now)).toBe(true)
+    expect(isDue({ status: 'known', lastSeenAt: daysAgo(6) }, now)).toBe(false)
+    expect(isDue({ status: 'known', lastSeenAt: daysAgo(8) }, now)).toBe(true)
+    expect(isDue({ status: 'known', lastSeenAt: daysAgo(22), knownPresses: 3 }, now)).toBe(true)
+  })
+
+  it('시각이 없거나 깨졌으면 한 번 더 본다', () => {
+    expect(isDue({ status: 'known' }, now)).toBe(true)
+    expect(isDue({ status: 'known', lastSeenAt: 'not-a-date' }, now)).toBe(true)
+  })
+
+  it('기한이 된 앎만 복습 재료로 고른다', () => {
+    const entries = [
+      entry('old', 'known'),
+      entry('fresh', 'known'),
+      entry('unsure', 'unsure'),
+    ].map((e) => ({
+      ...e,
+      lastSeenAt: e.lemma === 'fresh' ? daysAgo(1) : daysAgo(30),
+      knownPresses: 0,
+    }))
+    expect(reviewPool(entries, now).map((w) => w.lemma)).toEqual(['old'])
+  })
+})
+
+describe('세션 단어 고르기', () => {
+  const word = (lemma: string, status: WordStatus = 'unsure'): QuizWord => ({
+    lemma,
+    surface: lemma,
+    status,
+    sentence: '',
+    documentTitle: '',
+  })
+  const pool = Array.from({ length: 20 }, (_, i) => word(`p${i}`))
+  const reviews = Array.from({ length: 10 }, (_, i) => word(`k${i}`, 'known'))
+
+  it('앎 복습은 세션의 20% 까지만 섞인다', () => {
+    const picked = selectSession(pool, reviews, 10, mulberry(1))
+    expect(picked).toHaveLength(10)
+    expect(picked.filter((w) => w.status === 'known')).toHaveLength(2)
+  })
+
+  it('낼 것이 모자라면 남는 자리를 앎으로 채운다', () => {
+    const picked = selectSession(pool.slice(0, 3), reviews, 10, mulberry(2))
+    expect(picked).toHaveLength(10)
+    expect(picked.filter((w) => w.status === 'unsure')).toHaveLength(3)
+    expect(picked.filter((w) => w.status === 'known')).toHaveLength(7)
+  })
+
+  it('가진 것보다 많이 고르면 가진 것을 모두 낸다', () => {
+    expect(selectSession(pool.slice(0, 2), reviews.slice(0, 1), 10, mulberry(3))).toHaveLength(3)
+  })
+
+  it('개수가 0 이면 아무것도 내지 않는다', () => {
+    expect(selectSession(pool, reviews, 0)).toEqual([])
+  })
+
+  it('같은 단어를 두 번 내지 않는다', () => {
+    const picked = selectSession(pool, reviews, 10, mulberry(4))
+    expect(new Set(picked.map((w) => w.lemma)).size).toBe(10)
+  })
+
+  it('원래 목록을 건드리지 않는다', () => {
+    const before = pool.map((w) => w.lemma)
+    selectSession(pool, reviews, 10, mulberry(5))
+    expect(pool.map((w) => w.lemma)).toEqual(before)
+  })
+})
+
+describe('문맥 고르기', () => {
+  it('뽑힌 단어마다 문맥 하나를 붙인다 — 원래 목록은 그대로', () => {
+    const source: QuizWord = {
+      lemma: 'cat',
+      surface: 'cat',
+      status: 'unsure',
+      sentence: 'fallback',
+      documentTitle: 'Fallback',
+      contexts: [
+        { sentence: 'The cat sat.', documentTitle: 'A' },
+        { sentence: 'A cat ran.', documentTitle: 'B' },
+      ],
+    }
+    const drawn = drawWords([source], 1, () => 0)
+    expect(drawn[0].sentence).toBe('The cat sat.')
+    expect(drawn[0].documentTitle).toBe('A')
+    expect(source.sentence).toBe('fallback')
+  })
+
+  it('문맥이 없으면 원래 예문을 그대로 쓴다', () => {
+    const source: QuizWord = {
+      lemma: 'cat',
+      surface: 'cat',
+      status: 'unsure',
+      sentence: 'Only one.',
+      documentTitle: 'Doc',
+    }
+    expect(drawWords([source], 1, () => 0.9)[0].sentence).toBe('Only one.')
+  })
+})
+
+describe('빈칸 만들기', () => {
+  it('문장에 한 번 나오는 표기를 가린다', () => {
+    expect(blankWord('The cat sat on the mat.', 'cat')).toBe('The ____ sat on the mat.')
+  })
+
+  it('두 번 나오면 어느 자리인지 알 수 없으므로 가리지 않는다', () => {
+    expect(blankWord('The cat saw the cat.', 'cat')).toBeNull()
+  })
+
+  it('다른 낱말 속에만 나오면 가리지 않는다', () => {
+    expect(blankWord('Concatenate the strings.', 'cat')).toBeNull()
+  })
+
+  it('문장에 없으면 가리지 않는다', () => {
+    expect(blankWord('The cat sat.', 'dog')).toBeNull()
+  })
+
+  it('띄어쓰기가 없는 언어도 가린다', () => {
+    expect(blankWord('私は猫が好きです。', '猫')).toBe('私は____が好きです。')
+  })
+
+  it('빈 문자열은 가리지 않는다', () => {
+    expect(blankWord('', 'cat')).toBeNull()
+    expect(blankWord('The cat sat.', '')).toBeNull()
   })
 })
 

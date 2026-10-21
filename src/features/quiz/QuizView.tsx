@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
-import { useWordStatesStore } from '../../app/stores/wordStates'
+import { wordKey, useWordStatesStore } from '../../app/stores/wordStates'
 import { statusPillClass } from '../../lib/color'
 import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
@@ -12,15 +12,18 @@ import { buildWordbook } from '../wordbook/buildWordbook'
 import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
 import {
+  blankWord,
   defaultSessionSize,
-  drawWords,
   nextStatus,
   quizPool,
+  reviewPool,
+  selectSession,
   sessionChanges,
   sessionSizeOptions,
   summarize,
   type QuizWord,
 } from './quizSession'
+import { QuizCloze } from './QuizCloze'
 
 type Phase = 'setup' | 'session' | 'summary'
 
@@ -69,26 +72,40 @@ export function QuizView() {
   const [peeked, setPeeked] = useState(false)
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
-  /** 이 언어에서 낼 수 있는 단어 — 단어장과 같은 재료를 쓴다 */
-  const pool = useMemo(() => {
+  /** 지금 단어의 메모 — 답한 뒤 뜻과 함께 다시 본다 */
+  const sessionNote = useWordStatesStore((s) => {
+    const current = words[index]
+    if (!languageCode || !current) return undefined
+    return s.byKey[wordKey(languageCode, current.lemma)]?.note
+  })
+
+  /** 이 언어의 단어장 — 퀴즈와 복습의 공통 재료 */
+  const entries = useMemo(() => {
     if (!languageCode) return []
-    return quizPool(
-      buildWordbook({
-        languageCode,
-        occurrences: occurrences[languageCode] ?? [],
-        byKey,
-      }),
-    )
+    return buildWordbook({
+      languageCode,
+      occurrences: occurrences[languageCode] ?? [],
+      byKey,
+    })
   }, [languageCode, occurrences, byKey])
 
-  const sizeOptions = useMemo(() => sessionSizeOptions(pool.length), [pool.length])
+  /** 아직 확실하지 않은 단어 — 새로 배우는 재료 */
+  const pool = useMemo(() => quizPool(entries), [entries])
+
+  /** 기한이 된 앎 단어 — 잊을 때쯤 다시 꺼낸다 */
+  const reviews = useMemo(() => reviewPool(entries), [entries])
+
+  const sizeOptions = useMemo(
+    () => sessionSizeOptions(pool.length + reviews.length),
+    [pool.length, reviews.length],
+  )
   // 아직 고르지 않았으면 기본 개수(50) — 가진 것이 50 미만이면 그 안에서 가장 큰 것
   const chosenSize =
     size !== null && sizeOptions.includes(size) ? size : defaultSessionSize(sizeOptions)
 
   const start = () => {
     if (!languageCode || chosenSize === null) return
-    setWords(drawWords(pool, chosenSize))
+    setWords(selectSession(pool, reviews, chosenSize))
     setIndex(0)
     setAnswer(null)
     setResults([])
@@ -148,6 +165,10 @@ export function QuizView() {
         */}
         <p data-quiz-rule className="text-ink-muted mt-2 text-xs leading-relaxed">
           {t('quiz.ruleHint')}
+        </p>
+        {/* 앎 단어도 영영 빠지지 않는다 — 간격을 두고 다시 나온다는 것을 미리 밝힌다 */}
+        <p data-quiz-review className="text-ink-muted mt-1 text-xs leading-relaxed">
+          {t('quiz.reviewHint')}
         </p>
 
         <h2 className="text-ink-muted mt-6 mb-2 text-xs font-medium">{t('quiz.pickLanguage')}</h2>
@@ -275,6 +296,15 @@ export function QuizView() {
   const word = words[index]
   if (!word || !languageCode) return null
 
+  /**
+   * 앎 단어 복습은 빈칸으로 낸다 — 답을 누르기 전에는 단어를 보여 주지 않는다.
+   * 빈칸을 만들 수 없는 문장이면 기존 방식(단어 → 뜻)으로 되돌아간다.
+   */
+  const cloze =
+    answer === null && word.status === 'known'
+      ? blankWord(word.sentence, word.surface)
+      : null
+
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
       <p data-quiz-progress className="text-ink-muted text-xs">
@@ -283,9 +313,14 @@ export function QuizView() {
 
       {/*
         별은 상태와 무관하므로 문제를 푸는 도중 계속 보인다 — 붙이거나 뗄 수 있다.
-        key 는 단어가 바뀔 때 색창을 닫기 위함이다.
+        key 는 단어가 바뀔 때 색창을 닫기 위함이다. 빈칸 문제에서는 단어 자체를
+        숨기므로 답한 뒤에만 보인다.
       */}
-      <QuizPrompt key={word.lemma} word={word} languageCode={languageCode} />
+      {cloze !== null ? (
+        <QuizCloze text={cloze} />
+      ) : (
+        <QuizPrompt key={word.lemma} word={word} languageCode={languageCode} />
+      )}
 
       <div className="mt-10 flex justify-center gap-2">
         {/* 답은 한 번뿐이다 — 답한 뒤에는 세 단추 모두 잠긴다.
@@ -328,24 +363,43 @@ export function QuizView() {
         </button>
       </div>
 
-      {/* 답하기 전에도, 답한 뒤에도 쓸 수 있다. 먼저 보면 '앎' 이 잠길 뿐이다 */}
-      <div className="mt-4 flex justify-center">
-        <button
-          type="button"
-          data-quiz-dictionary
-          onClick={(event) => {
-            if (answer === null) setPeeked(true)
-            setDictionaryTarget({
-              lemma: word.lemma,
-              surface: word.surface,
-              anchor: event.currentTarget,
-            })
-          }}
-          className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-4 py-2 text-sm"
-        >
-          {t('dictionary.button')}
-        </button>
-      </div>
+      {/* 답하기 전에도, 답한 뒤에도 쓸 수 있다. 먼저 보면 '앎' 이 잠길 뿐이다.
+          빈칸 문제에서는 사전이 답을 알려 주므로 답한 뒤에만 보인다 */}
+      {cloze === null && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            data-quiz-dictionary
+            onClick={(event) => {
+              if (answer === null) setPeeked(true)
+              setDictionaryTarget({
+                lemma: word.lemma,
+                surface: word.surface,
+                anchor: event.currentTarget,
+              })
+            }}
+            className="border-line text-ink-muted hover:text-ink hover:border-accent rounded-lg border px-4 py-2 text-sm"
+          >
+            {t('dictionary.button')}
+          </button>
+        </div>
+      )}
+
+      {/* 답한 뒤에만 뜻을 보여 준다 — 답을 고르기 전에 보면 퀴즈가 아니다 */}
+      {answer !== null && (
+        <section data-quiz-meaning className="border-line mt-6 rounded-xl border px-4 py-3">
+          <h2 className="text-ink-muted mb-2 text-xs font-medium">{t('quiz.meaning')}</h2>
+          <DictionaryPanel languageCode={languageCode} lemma={word.lemma} surface={word.surface} />
+        </section>
+      )}
+
+      {/* 사용자가 적어 둔 메모도 답한 뒤에 다시 본다 — 뜻과 함께 기억을 붙잡는 재료 */}
+      {answer !== null && sessionNote && (
+        <section data-quiz-note className="border-line mt-3 rounded-xl border px-4 py-3">
+          <h2 className="text-ink-muted mb-1 text-xs font-medium">{t('note.label')}</h2>
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">{sessionNote}</p>
+        </section>
+      )}
 
       {/* 답한 뒤에만 문맥을 보여 준다 — 답을 고르기 전에 보면 퀴즈가 아니다 */}
       {answer !== null && word.sentence && (

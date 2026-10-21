@@ -250,6 +250,40 @@ describe('mergeWordStates — 즐겨찾기', () => {
   })
 })
 
+/**
+ * 메모도 자기 시각으로만 겨룬다 — 별과 같은 이유다. '고친 적 없음' 과
+ * '비웠음' 을 구분해야 상태만 바꾼 기기가 메모를 지우지 않는다.
+ */
+describe('mergeWordStates — 메모', () => {
+  it('메모를 늦게 고친 쪽이 이긴다', () => {
+    const local = [rec({ lemma: 'apple', note: 'old', noteUpdatedAt: T1 })]
+    const remote = [rec({ lemma: 'apple', note: 'new', noteUpdatedAt: T2 })]
+    expect(find(mergeWordStates(local, remote).merged, 'apple')?.note).toBe('new')
+  })
+
+  it('상태만 바꾼 기기가 다른 기기의 메모를 지우지 않는다', () => {
+    // 서버 행은 메모를 고친 적이 없다 (noteUpdatedAt 없음) — lastSeenAt 이 더 늦어도
+    // 메모는 메모를 적은 쪽이 남아야 한다
+    const local = [rec({ lemma: 'apple', note: 'mine', noteUpdatedAt: T1 })]
+    const remote = [rec({ lemma: 'apple', lastSeenAt: T2 })]
+    expect(find(mergeWordStates(local, remote).merged, 'apple')?.note).toBe('mine')
+  })
+
+  it('메모를 비운 것도 늦으면 이긴다', () => {
+    const local = [rec({ lemma: 'apple', noteUpdatedAt: T2 })]
+    const remote = [rec({ lemma: 'apple', note: 'old', noteUpdatedAt: T1 })]
+    expect(find(mergeWordStates(local, remote).merged, 'apple')?.note).toBeUndefined()
+  })
+
+  it('메모만 바뀌어도 서버에 보낸다', () => {
+    const local = [rec({ lemma: 'apple', status: 'known', note: 'mine', noteUpdatedAt: T2 })]
+    const remote = [rec({ lemma: 'apple', status: 'known', note: 'theirs', noteUpdatedAt: T1 })]
+    const { pushOnly } = mergeWordStates(local, remote)
+    expect(pushOnly).toHaveLength(1)
+    expect(pushOnly[0]?.note).toBe('mine')
+  })
+})
+
 describe('mergeWordStates — 반복해도 같다 (idempotent)', () => {
   it('같은 입력으로 몇 번 돌려도 결과가 변하지 않는다', () => {
     const local = [

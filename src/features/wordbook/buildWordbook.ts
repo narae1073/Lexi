@@ -25,6 +25,17 @@ export type WordbookEntry = {
   sentence: string
   documentId: string
   documentTitle: string
+  /**
+   * 이 단어가 나온 문장 전부 — 퀴즈가 세션마다 다른 문맥을 골라 쓴다.
+   * 같은 문장이 여러 문서에 있어도 한 번만 담는다.
+   */
+  contexts: { sentence: string; documentTitle: string }[]
+  /** 마지막으로 본 시각 — 간격 복습이 기한을 계산한다 */
+  lastSeenAt: string
+  /** 앎 단추를 누른 횟수 — 앎 단어의 복습 간격을 늘린다 */
+  knownPresses: number
+  /** 사용자가 적은 메모 — 단어장과 퀴즈에서 다시 본다 */
+  note?: string
   /** 전체 출현 횟수 */
   count: number
   /** 몇 개의 문서에 등장했는지 */
@@ -73,7 +84,12 @@ export function buildWordbook({
 
   for (const occurrence of scoped) {
     const existing = merged.get(occurrence.lemma)
-    const status = lookup(languageCode, occurrence.lemma)?.status ?? 'unmarked'
+    const state = lookup(languageCode, occurrence.lemma)
+    const status = state?.status ?? 'unmarked'
+    const context = {
+      sentence: occurrence.sentence,
+      documentTitle: occurrence.documentTitle,
+    }
     let newestRecordedAt = existing ? (mergedMeta.get(occurrence.lemma) ?? 0) : 0
 
     if (!existing) {
@@ -81,11 +97,14 @@ export function buildWordbook({
         lemma: occurrence.lemma,
         surfaces: [...occurrence.surfaces],
         status,
-        favorite: lookup(languageCode, occurrence.lemma)?.favorite ?? false,
-        starColor: lookup(languageCode, occurrence.lemma)?.starColor,
+        favorite: state?.favorite ?? false,
+        starColor: state?.starColor,
         sentence: occurrence.sentence,
         documentId: occurrence.documentId,
         documentTitle: occurrence.documentTitle,
+        contexts: occurrence.sentence ? [context] : [],
+        lastSeenAt: state?.lastSeenAt ?? '',
+        knownPresses: state?.knownPresses ?? 0,
         count: occurrence.count,
         documentCount: 1,
       })
@@ -97,6 +116,13 @@ export function buildWordbook({
     existing.documentCount += 1
     for (const surface of occurrence.surfaces) {
       if (!existing.surfaces.includes(surface)) existing.surfaces.push(surface)
+    }
+    // 문맥은 전부 모은다 — 퀴즈가 세션마다 다른 문장을 골라 쓴다
+    if (
+      occurrence.sentence &&
+      !existing.contexts.some((item) => item.sentence === occurrence.sentence)
+    ) {
+      existing.contexts.push(context)
     }
     // 예문은 가장 최근에 기록된 문서의 것으로 보여준다
     if (occurrence.recordedAt >= newestRecordedAt) {
@@ -112,9 +138,13 @@ export function buildWordbook({
 
   // 상태가 나중에 바뀌었을 수 있으므로 병합 후 다시 확인한다
   for (const entry of entries) {
-    entry.status = lookup(languageCode, entry.lemma)?.status ?? 'unmarked'
-    entry.favorite = lookup(languageCode, entry.lemma)?.favorite ?? false
-    entry.starColor = lookup(languageCode, entry.lemma)?.starColor
+    const state = lookup(languageCode, entry.lemma)
+    entry.status = state?.status ?? 'unmarked'
+    entry.favorite = state?.favorite ?? false
+    entry.starColor = state?.starColor
+    entry.lastSeenAt = state?.lastSeenAt ?? ''
+    entry.knownPresses = state?.knownPresses ?? 0
+    entry.note = state?.note
   }
 
   const needle = query?.trim().toLowerCase()

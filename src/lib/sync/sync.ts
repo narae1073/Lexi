@@ -89,7 +89,10 @@ export async function readLocal(): Promise<{
     idbGetAll<Document>(STORES.documents),
     idbGetAll<Folder>(STORES.folders),
     idbGetAll<
-      Omit<WordStateRecord, 'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor'> & {
+      Omit<
+        WordStateRecord,
+        'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor' | 'note' | 'noteUpdatedAt'
+      > & {
         surface?: string
         status: WordStatus
         /** 별 기능 이전에 쓰인 행에는 없다 */
@@ -97,6 +100,9 @@ export async function readLocal(): Promise<{
         favoriteUpdatedAt?: string
         starAngle?: number
         starColor?: string
+        /** 메모 기능 이전에 쓰인 행에는 없다 */
+        note?: string
+        noteUpdatedAt?: string
       }
     >(STORES.wordStates),
     idbGetAll<WordOccurrence>(STORES.wordOccurrences),
@@ -127,6 +133,9 @@ export async function readLocal(): Promise<{
       knownPresses: r.knownPresses ?? 0,
       unsurePresses: r.unsurePresses ?? 0,
       unknownPresses: r.unknownPresses ?? 0,
+      // null/undefined 는 '고친 적 없음' 이다 — 상태만 바꾼 기기가 메모를 지우지 않게
+      note: r.note,
+      noteUpdatedAt: r.noteUpdatedAt,
     })),
     occurrences,
   }

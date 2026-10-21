@@ -166,6 +166,35 @@ describe('buildWordbook', () => {
     expect(entries[0].documentId).toBe('new')
   })
 
+  it('문장들을 모두 모은다 — 같은 문장은 한 번만', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [
+        occurrence({ lemma: 'cat', documentId: 'd1', sentence: 'Cat one.', recordedAt: 1000 }),
+        occurrence({ lemma: 'cat', documentId: 'd2', sentence: 'Cat two.', recordedAt: 2000 }),
+        occurrence({ lemma: 'cat', documentId: 'd3', sentence: 'Cat one.', recordedAt: 3000 }),
+      ],
+    })
+    expect(entries[0].contexts.map((c) => c.sentence)).toEqual(['Cat one.', 'Cat two.'])
+    expect(entries[0].contexts[1].documentTitle).toBe('Doc 1')
+  })
+
+  it('마지막으로 본 시각과 앎 횟수를 상태에서 가져온다', () => {
+    const entries = buildWordbook({
+      languageCode: 'en',
+      occurrences: [occurrence({ lemma: 'cat' })],
+      byKey: {
+        'en::cat': {
+          ...state('cat', 'known'),
+          lastSeenAt: '2026-10-01T00:00:00.000Z',
+          knownPresses: 4,
+        },
+      },
+    })
+    expect(entries[0].lastSeenAt).toBe('2026-10-01T00:00:00.000Z')
+    expect(entries[0].knownPresses).toBe(4)
+  })
+
   it('표기를 여러 개 합쳐 담는다', () => {
     const entries = buildWordbook({
       languageCode: 'en',

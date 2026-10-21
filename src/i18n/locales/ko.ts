@@ -137,6 +137,8 @@ export const ko: Dictionary = {
     lead: '언어와 몇 개를 풀지 고르세요.',
     ruleHint:
       '"모름" 단어는 곧바로 "앎" 이 될 수 없습니다 — 모름에서 앎을 누르면 "헷갈림" 이 되고, 헷갈림에서 앎을 다시 누르면 "앎" 이 됩니다.',
+    reviewHint: '앎 단어도 잊을 때쯤 가끔 다시 나옵니다 — 빈칸을 채워 보게 됩니다.',
+    clozeHint: '빈칸에 들어갈 단어를 떠올려 보세요.',
     pickLanguage: '퀴즈로 풀 언어를 고르세요.',
     countLabel: '개수',
     none: '아직 낼 단어가 없습니다 — 먼저 몇 단어를 헷갈림·모름으로 표시하세요.',
@@ -153,6 +155,7 @@ export const ko: Dictionary = {
     summaryNew: '모르는 단어',
     wordChanges: '단어별 변화',
     changedCount: '{total}개 중 {changed}개 바뀜',
+    meaning: '뜻',
     again: '언어 다시 고르기',
     sentenceFrom: '{title} 에서',
   },
@@ -267,6 +270,12 @@ export const ko: Dictionary = {
     offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
     hide: '접기',
     baseForm: '기본형',
+  },
+
+  note: {
+    label: '메모',
+    placeholder: '어원·연상·내 예문을 적어 두세요',
+    save: '저장',
   },
 
   favorite: {

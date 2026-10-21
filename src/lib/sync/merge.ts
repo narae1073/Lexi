@@ -34,6 +34,15 @@ export type WordStateRecord = {
   knownPresses: number
   unsurePresses: number
   unknownPresses: number
+  /** 사용자가 적은 메모 — 없으면 비어 있다 */
+  note?: string
+  /**
+   * 메모를 마지막으로 고친 시각. 없으면 고친 적이 없다.
+   *
+   * lastSeenAt 으로 대신하지 않는다 — 상태만 바꾼 기기가 다른 기기의 메모를
+   * 지워 버리기 때문이다.
+   */
+  noteUpdatedAt?: string
 }
 
 export type MergeOutcome<T> = {
@@ -155,6 +164,7 @@ function pickWinner(mine: WordStateRecord, theirs: WordStateRecord): WordStateRe
     firstSeenAt: isNewer(mine.firstSeenAt, theirs.firstSeenAt) ? theirs.firstSeenAt : mine.firstSeenAt,
     lastSeenAt: isNewer(mine.lastSeenAt, theirs.lastSeenAt) ? mine.lastSeenAt : theirs.lastSeenAt,
     ...pickFavorite(mine, theirs),
+    ...pickNote(mine, theirs),
   }
 }
 
@@ -199,6 +209,35 @@ function pickFavorite(
   }
 }
 
+/**
+ * 메모는 메모의 시각으로만 겨룬다 — 별과 같은 이유다. '고친 적 없음' 과
+ * '비웠음' 을 구분해야 상태만 바꾼 기기가 다른 기기의 메모를 지우지 않는다.
+ */
+function pickNote(
+  mine: WordStateRecord,
+  theirs: WordStateRecord,
+): Pick<WordStateRecord, 'note' | 'noteUpdatedAt'> {
+  const mineEdited = mine.noteUpdatedAt !== undefined
+  const theirsEdited = theirs.noteUpdatedAt !== undefined
+
+  // 둘 다 고친 적이 없으면 있는 쪽을 쓴다 (옛 행·기능 이전 행)
+  if (!mineEdited && !theirsEdited) return { note: mine.note ?? theirs.note }
+  if (mineEdited && !theirsEdited) return { note: mine.note, noteUpdatedAt: mine.noteUpdatedAt }
+  if (theirsEdited && !mineEdited) return { note: theirs.note, noteUpdatedAt: theirs.noteUpdatedAt }
+
+  // 둘 다 고친 적이 있으면 늦은 쪽이 이긴다. 동률이면 내용이 있는 쪽을 남긴다
+  if (isNewer(mine.noteUpdatedAt ?? '', theirs.noteUpdatedAt ?? '')) {
+    return { note: mine.note, noteUpdatedAt: mine.noteUpdatedAt }
+  }
+  if (isNewer(theirs.noteUpdatedAt ?? '', mine.noteUpdatedAt ?? '')) {
+    return { note: theirs.note, noteUpdatedAt: theirs.noteUpdatedAt }
+  }
+  return {
+    note: mine.note ?? theirs.note,
+    noteUpdatedAt: mine.noteUpdatedAt ?? theirs.noteUpdatedAt,
+  }
+}
+
 /** 서버 행과 비교할 때 — id/user_id 같은 서버 관리 값은 보지 않는다 */
 function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
   return (
@@ -212,7 +251,9 @@ function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
     a.starColor === b.starColor &&
     a.knownPresses === b.knownPresses &&
     a.unsurePresses === b.unsurePresses &&
-    a.unknownPresses === b.unknownPresses
+    a.unknownPresses === b.unknownPresses &&
+    a.note === b.note &&
+    a.noteUpdatedAt === b.noteUpdatedAt
   )
 }
 

@@ -88,6 +88,15 @@ export function WordbookItem({
         </p>
       )}
 
+      {entry.note && (
+        <p
+          data-wordbook-note
+          className="text-ink-muted mt-0.5 line-clamp-2 text-xs leading-relaxed whitespace-pre-wrap italic"
+        >
+          {entry.note}
+        </p>
+      )}
+
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {/*
           목록에서도 별을 붙이거나 뗀다 — ★ 탭에 들어온 뒤에 해제할 길이 없으면

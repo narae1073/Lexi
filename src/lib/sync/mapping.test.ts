@@ -20,6 +20,7 @@ import type { WordStateRow } from './mapping'
 const USER = 'user-1'
 const T0 = '2026-01-01T00:00:00.000Z'
 const T1 = '2026-01-02T00:00:00.000Z'
+const T2 = '2026-01-03T00:00:00.000Z'
 
 const doc: Document = {
   id: 'doc-1',
@@ -50,6 +51,8 @@ describe('word_state 매핑', () => {
       knownPresses: 2,
       unsurePresses: 1,
       unknownPresses: 0,
+      note: 'apple = 사과 (기억)',
+      noteUpdatedAt: T2,
     }
     // 보낼 때는 자동 채번 열을 싣지 않는다 — upsert payload 에 id 가 들어가면
     // 갱신되는 행의 id 가 그 값으로 덮인다
@@ -82,7 +85,31 @@ describe('word_state 매핑', () => {
       lemma: '사과',
       status: 'unsure',
       seen_count: 1,
+      // 메모를 적지 않은 행은 null 로 보낸다 — 서버의 '없음'
+      note: null,
+      note_updated_at: null,
     })
+  })
+
+  it('메모가 없는 행은 undefined 로 읽는다 — 빈 메모와 구분한다', () => {
+    const sent = wordStateToRow(USER, {
+      languageCode: 'en',
+      lemma: 'apple',
+      status: 'known',
+      seenCount: 1,
+      firstSeenAt: T0,
+      lastSeenAt: T1,
+      favorite: false,
+      favoriteUpdatedAt: T0,
+      starAngle: 0,
+      starColor: '#eab308',
+      knownPresses: 0,
+      unsurePresses: 0,
+      unknownPresses: 0,
+    })
+    const row = { ...sent, id: 'generated' } as WordStateRow
+    expect(wordStateFromRow(row).note).toBeUndefined()
+    expect(wordStateFromRow(row).noteUpdatedAt).toBeUndefined()
   })
 
   it('세 가지 상태를 모두 그대로 옮긴다', () => {
