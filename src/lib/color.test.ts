@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { statusClass, statusDotClass } from './color'
+import { statusClass, statusDotClass, statusPillClass } from './color'
 
 describe('statusClass', () => {
   it('아는 단어는 색을 칠하지 않는다 — 본문색 그대로 (plan.txt 4줄)', () => {
@@ -27,6 +27,33 @@ describe('statusClass', () => {
 
   it('세 상태는 서로 다른 클래스를 갖는다', () => {
     const classes = (['known', 'unsure', 'unknown'] as const).map(statusClass)
+    expect(new Set(classes).size).toBe(classes.length)
+  })
+})
+
+describe('statusPillClass', () => {
+  it('아는 단어는 색을 칠하지 않는다 — 중립 테두리와 본문색뿐', () => {
+    const cls = statusPillClass('known')
+    expect(cls).not.toContain('status-')
+    expect(cls).toContain('text-ink')
+  })
+
+  it('헷갈림은 호박색, 모름은 빨강 — 배경까지 같은 말을 한다', () => {
+    expect(statusPillClass('unsure')).toContain('text-status-unsure')
+    expect(statusPillClass('unsure')).toContain('bg-status-unsure-bg')
+    expect(statusPillClass('unknown')).toContain('text-status-unknown')
+    expect(statusPillClass('unknown')).toContain('bg-status-unknown-bg')
+  })
+
+  it('배지에는 밑줄을 긋지 않는다 — 글자 장식이 읽기를 방해한다', () => {
+    for (const status of ['known', 'unsure', 'unknown'] as const) {
+      expect(statusPillClass(status)).not.toContain('underline')
+      expect(statusPillClass(status)).not.toContain('decoration')
+    }
+  })
+
+  it('세 상태는 서로 다른 클래스를 갖는다', () => {
+    const classes = (['known', 'unsure', 'unknown'] as const).map(statusPillClass)
     expect(new Set(classes).size).toBe(classes.length)
   })
 })

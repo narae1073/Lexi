@@ -4,6 +4,7 @@ import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
+import { statusPillClass } from '../../lib/color'
 import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
@@ -414,7 +415,7 @@ function ChangePill({ status }: { status: WordStatus }) {
   return (
     <span
       data-quiz-status={status}
-      className="border-line text-ink-muted rounded-md border px-2 py-0.5 text-xs"
+      className={`rounded-md border px-2 py-0.5 text-xs ${statusPillClass(status)}`}
     >
       {label}
     </span>

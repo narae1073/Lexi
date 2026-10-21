@@ -49,3 +49,19 @@ const STATUS_DOT_CLASS: Record<WordStatus | 'unmarked', string> = {
 export function statusDotClass(status: WordStatus | 'unmarked' | undefined): string {
   return STATUS_DOT_CLASS[status ?? 'unmarked']
 }
+
+/**
+ * 상태 배지의 색 — 테두리 상자 안에 상태를 쓸 때 (퀴즈 끝난 화면의 before/after).
+ *
+ * statusClass 는 본문 낱말에 쓰는 것이라 밑줄이 붙는다. 배지에서는 밑줄이 글자를
+ * 어지럽히므로 색과 배경만 가져온다. '아는' 은 색을 칠하지 않는 규칙 그대로다.
+ */
+const STATUS_PILL_CLASS: Record<WordStatus, string> = {
+  known: 'border-line text-ink',
+  unsure: 'border-status-unsure bg-status-unsure-bg text-status-unsure',
+  unknown: 'border-status-unknown bg-status-unknown-bg text-status-unknown',
+}
+
+export function statusPillClass(status: WordStatus): string {
+  return STATUS_PILL_CLASS[status]
+}

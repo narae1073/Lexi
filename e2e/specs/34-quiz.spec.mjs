@@ -228,6 +228,27 @@ export async function run(ctx) {
     (await ctx.page.evaluate(`document.querySelector('[data-quiz-changed-count]')?.innerText ?? ''`)).includes('9 of 10'),
     await ctx.page.evaluate(`document.querySelector('[data-quiz-changed-count]')?.innerText ?? ''`))
 
+  // ── 상태 색 — 모름은 빨강, 헷갈림은 호박색, 앎은 색을 칠하지 않는다 ──
+  const tones = await ctx.page.evaluate(`(() => {
+    return [...document.querySelectorAll('[data-quiz-change]')].map(li =>
+      [...li.querySelectorAll('[data-quiz-status]')].map(p => ({
+        status: p.getAttribute('data-quiz-status'),
+        className: p.className,
+      }))
+    );
+  })()`)
+  ctx.check('풀기 전(모름) 배지는 빨강이다',
+    tones.every(row => row[0].className.includes('text-status-unknown')),
+    JSON.stringify(tones[0]))
+  ctx.check('헷갈림으로 끝난 배지는 호박색이다',
+    tones.filter(row => row[1].status === 'unsure')
+      .every(row => row[1].className.includes('text-status-unsure')),
+    `${tones.filter(row => row[1].status === 'unsure').length}개`)
+  ctx.check('모름으로 남은 배지는 빨강이다',
+    tones.filter(row => row[1].status === 'unknown')
+      .every(row => row[1].className.includes('text-status-unknown')),
+    `${tones.filter(row => row[1].status === 'unknown').length}개`)
+
   // ── 누른 횟수가 저장된다 — 나중에 쓰려고 IndexedDB 에 남는다 ──
   //    세션에서 누른 것: 모름 1 (첫 단어) + 앎 9 (나머지). 헷갈림은 0.
   const presses = await ctx.page.evaluate(`(async () => {
