@@ -15,6 +15,7 @@ import {
   drawWords,
   nextStatus,
   quizPool,
+  sessionChanges,
   sessionSizeOptions,
   summarize,
   type QuizWord,
@@ -214,6 +215,9 @@ export function QuizView() {
   // ── 끝난 화면: 요약 ──
   if (phase === 'summary') {
     const counts = summarize(results)
+    // 단어별 변화 — 푼 순서 그대로, 강조 없이 나열한다
+    const changes = sessionChanges(words, results)
+    const changedCount = changes.filter((change) => change.changed).length
     return (
       <section className="mx-auto w-full max-w-2xl px-5 py-8">
         <h1 data-quiz-summary className="text-lg font-semibold">
@@ -226,6 +230,33 @@ export function QuizView() {
           <SummaryCount label={t('quiz.summaryUnsure')} status="unsure" count={counts.unsure} />
           <SummaryCount label={t('quiz.summaryNew')} status="unknown" count={counts.unknown} />
         </ul>
+
+        {changes.length > 0 && (
+          <section className="mt-8">
+            <div className="flex items-baseline justify-between">
+              <h2 className="text-ink-muted text-xs font-medium">{t('quiz.wordChanges')}</h2>
+              <span data-quiz-changed-count className="text-ink-muted text-xs">
+                {t('quiz.changedCount', { changed: changedCount, total: changes.length })}
+              </span>
+            </div>
+            <ul className="mt-3 flex flex-col gap-1.5">
+              {changes.map((change, i) => (
+                <li
+                  key={`${words[i]?.lemma ?? change.surface}:${i}`}
+                  data-quiz-change
+                  className="border-line flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+                >
+                  <span className="truncate text-sm">{change.surface}</span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <ChangePill status={change.before} />
+                    <span className="text-ink-muted text-xs">→</span>
+                    <ChangePill status={change.after} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <button
           type="button"
@@ -373,5 +404,19 @@ function SummaryCount({
       </span>
       <span className="text-ink-muted text-xs">{label}</span>
     </li>
+  )
+}
+
+/** 단어별 변화의 상태 배지 — 퀴즈 단추와 같은 말. 바뀌었는지와 무관하게 같은 모양이다 */
+function ChangePill({ status }: { status: WordStatus }) {
+  const t = useTranslation()
+  const label = status === 'known' ? t('quiz.know') : status === 'unsure' ? t('quiz.unsure') : t('quiz.new')
+  return (
+    <span
+      data-quiz-status={status}
+      className="border-line text-ink-muted rounded-md border px-2 py-0.5 text-xs"
+    >
+      {label}
+    </span>
   )
 }

@@ -112,3 +112,26 @@ export function summarize(statuses: WordStatus[]): Record<WordStatus, number> {
   for (const status of statuses) counts[status] += 1
   return counts
 }
+
+/** 끝난 화면의 한 줄 — 단어 하나의 풀기 전과 후 */
+export type SessionChange = {
+  surface: string
+  before: WordStatus
+  after: WordStatus
+  changed: boolean
+}
+
+/**
+ * 단어별 변화 — 푼 순서 그대로.
+ *
+ * 세션을 시작할 때의 상태가 before, 답한 뒤가 after 다. 순서를 섞거나 바뀐 줄을
+ * 따로 모으지 않는 것은 정한 것이다 — 푼 순서를 그대로 보여 주되 강조는 하지
+ * 않는다. 답하지 못한 줄은 before 로 두어 변화 없는 줄이 되게 한다.
+ */
+export function sessionChanges(words: QuizWord[], results: WordStatus[]): SessionChange[] {
+  return words.map((word, index) => {
+    const before = word.status
+    const after = results[index] ?? before
+    return { surface: word.surface, before, after, changed: after !== before }
+  })
+}

@@ -181,7 +181,10 @@ export async function run(ctx) {
 
   // ── 나머지 아홉 단어 — 모두 '앎' 을 누른다.
   //    모두 '모름' 이었으므로 규칙에 따라 '헷갈림' 이 되어야 한다 (한 번에 앎이 될 수 없다) ──
+  //    푼 순서를 기록해 둔다 — 끝난 화면의 단어별 목록과 같은 순서인지 보려고
+  const answered = [firstWord]
   for (let i = 0; i < 9; i++) {
+    answered.push(await ctx.page.evaluate(`document.querySelector('[data-quiz-word]')?.innerText ?? null`))
     await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-answer="known"]').click(); return true })()`)
     await sleep(150)
     await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-next]').click(); return true })()`)
@@ -198,6 +201,32 @@ export async function run(ctx) {
   ctx.check('모름에서 앎을 누른 단어는 헷갈림으로 센다', counts.unsure === '9',
     JSON.stringify(counts))
   ctx.check('그대로 모름으로 둔 단어는 하나다', counts.unknown === '1', JSON.stringify(counts))
+
+  // ── 단어별 변화 — 푼 순서 그대로, 풀기 전 → 푼 후 (강조는 없다) ──
+  const changes = await ctx.page.evaluate(`(() => {
+    return [...document.querySelectorAll('[data-quiz-change]')].map(li => ({
+      word: li.querySelector('span')?.textContent ?? null,
+      pills: [...li.querySelectorAll('[data-quiz-status]')].map(p => p.getAttribute('data-quiz-status')),
+    }));
+  })()`)
+  ctx.check('단어마다 풀기 전과 후를 보여 준다',
+    changes.length === 10 && changes.every(c => c.pills.length === 2),
+    JSON.stringify(changes).slice(0, 120))
+  ctx.check('변화 목록은 푼 순서 그대로다',
+    JSON.stringify(changes.map(c => c.word)) === JSON.stringify(answered),
+    JSON.stringify(changes.map(c => c.word)))
+  ctx.check('모든 단어는 모름에서 시작했다',
+    changes.every(c => c.pills[0] === 'unknown'),
+    `모름으로 시작한 줄 ${changes.filter(c => c.pills[0] === 'unknown').length}개`)
+  ctx.check('변화 목록에서 아홉 단어는 헷갈림으로 끝난다',
+    changes.filter(c => c.pills[1] === 'unsure').length === 9,
+    `헷갈림으로 끝난 줄 ${changes.filter(c => c.pills[1] === 'unsure').length}개`)
+  ctx.check('변화 목록에서 그대로 모름인 단어는 하나다',
+    changes.filter(c => c.pills[1] === 'unknown').length === 1,
+    `모름으로 끝난 줄 ${changes.filter(c => c.pills[1] === 'unknown').length}개`)
+  ctx.check('바뀐 개수를 보여 준다',
+    (await ctx.page.evaluate(`document.querySelector('[data-quiz-changed-count]')?.innerText ?? ''`)).includes('9 of 10'),
+    await ctx.page.evaluate(`document.querySelector('[data-quiz-changed-count]')?.innerText ?? ''`))
 
   // ── 누른 횟수가 저장된다 — 나중에 쓰려고 IndexedDB 에 남는다 ──
   //    세션에서 누른 것: 모름 1 (첫 단어) + 앎 9 (나머지). 헷갈림은 0.

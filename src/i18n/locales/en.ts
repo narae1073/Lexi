@@ -152,6 +152,8 @@ export const en = {
     summaryKnown: 'Known',
     summaryUnsure: 'Unsure',
     summaryNew: 'New',
+    wordChanges: 'Word by word',
+    changedCount: '{changed} of {total} changed',
     again: 'Choose a language again',
     sentenceFrom: 'From {title}',
   },

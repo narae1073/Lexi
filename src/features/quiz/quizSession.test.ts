@@ -6,6 +6,7 @@ import {
   drawWords,
   nextStatus,
   quizPool,
+  sessionChanges,
   sessionSizeOptions,
   summarize,
   type QuizWord,
@@ -171,6 +172,34 @@ describe('세션 요약', () => {
 
   it('아무것도 없으면 모두 0 이다', () => {
     expect(summarize([])).toEqual({ known: 0, unsure: 0, unknown: 0 })
+  })
+})
+
+describe('단어별 변화', () => {
+  const words: QuizWord[] = [
+    { lemma: 'a', surface: 'A', status: 'unknown', sentence: '', documentTitle: '' },
+    { lemma: 'b', surface: 'b', status: 'unsure', sentence: '', documentTitle: '' },
+    { lemma: 'c', surface: 'c', status: 'unknown', sentence: '', documentTitle: '' },
+  ]
+
+  it('푼 순서를 그대로 둔다 — 정렬하지 않는다', () => {
+    const changes = sessionChanges(words, ['unsure', 'known', 'unknown'])
+    expect(changes.map((c) => c.surface)).toEqual(['A', 'b', 'c'])
+  })
+
+  it('풀기 전과 후를 나란히 담는다', () => {
+    const changes = sessionChanges(words, ['unsure', 'known', 'unknown'])
+    expect(changes[0]).toEqual({ surface: 'A', before: 'unknown', after: 'unsure', changed: true })
+    expect(changes[1]).toEqual({ surface: 'b', before: 'unsure', after: 'known', changed: true })
+    expect(changes[2]).toEqual({ surface: 'c', before: 'unknown', after: 'unknown', changed: false })
+  })
+
+  it('답이 빠졌으면 풀기 전 상태로 둔다 — 부분 세션을 부수지 않는다', () => {
+    const changes = sessionChanges(words, ['unsure'])
+    expect(changes[1].after).toBe('unsure')
+    expect(changes[1].changed).toBe(false)
+    expect(changes[2].after).toBe('unknown')
+    expect(changes[2].changed).toBe(false)
   })
 })
 

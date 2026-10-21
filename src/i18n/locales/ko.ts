@@ -151,6 +151,8 @@ export const ko: Dictionary = {
     summaryKnown: '아는 단어',
     summaryUnsure: '헷갈리는 단어',
     summaryNew: '모르는 단어',
+    wordChanges: '단어별 변화',
+    changedCount: '{total}개 중 {changed}개 바뀜',
     again: '언어 다시 고르기',
     sentenceFrom: '{title} 에서',
   },
