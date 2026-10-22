@@ -25,6 +25,17 @@ export type DocumentTombstone = {
 }
 
 /**
+ * Sentinel `purgedAt` for a tombstone promoted from the legacy localStorage
+ * purge list.
+ *
+ * Those IDs carry no deletion time, and the tombstone may already have been
+ * written to IndexedDB by an older build with this exact value. The push path
+ * treats this sentinel as always eligible so a legacy deletion can never be
+ * suppressed forever by a tombstones watermark.
+ */
+export const LEGACY_PURGE_AT = new Date(0).toISOString()
+
+/**
  * 완전 삭제를 기기에 남긴다 — 동기화가 이 목록을 서버로 보낸다.
  *
  * localStorage 목록은 같은 기기에서 곧바로 다시 받지 않기 위한 빠른 방어다.

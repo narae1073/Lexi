@@ -11,10 +11,33 @@ import {
 } from '../../lib/storage/localDb'
 import type { Document } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
+import { LEGACY_PURGE_AT } from '../storage/purged'
 import { push, syncOnce, type PullWatermarks, type PushWatermarks } from './sync'
 import { memoryServer, type Server } from './testMemoryServer'
 
 const USER = 'user-1'
+
+const legacyStorage = (() => {
+  const map = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => (map.has(key) ? map.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      map.set(key, String(value))
+    },
+    removeItem: (key: string) => {
+      map.delete(key)
+    },
+    clear: () => {
+      map.clear()
+    },
+    key: (index: number) => [...map.keys()][index] ?? null,
+    get length() {
+      return map.size
+    },
+  }
+  ;(globalThis as { localStorage?: Storage }).localStorage = storage as unknown as Storage
+  return storage
+})()
 
 const doc = (id: string, over: Partial<Document> = {}): Document => ({
   id,
@@ -24,6 +47,21 @@ const doc = (id: string, over: Partial<Document> = {}): Document => ({
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-02T00:00:00.000Z',
   ...over,
+})
+
+/** A document row already on the server, as pulled by `pull`. */
+const serverDocument = (id: string) => ({
+  id,
+  user_id: USER,
+  title: `Title ${id}`,
+  language_code: 'fr',
+  raw_text: 'Le petit renard.',
+  created_at: '2026-10-01T00:00:00.000Z',
+  updated_at: '2026-10-02T00:00:00.000Z',
+  deleted_at: null,
+  folder_id: null,
+  folder_updated_at: null,
+  server_updated_at: '2026-10-02T00:00:00.000Z',
 })
 
 const wordState = (lemma: string) => ({
@@ -83,6 +121,7 @@ type PushFn = (input: Record<string, unknown>) => Promise<{
 const pushRows = push as unknown as PushFn
 
 beforeEach(async () => {
+  legacyStorage.clear()
   await clearStore(STORES.documents)
   await clearStore(STORES.folders)
   await clearStore(STORES.wordStates)
@@ -257,5 +296,43 @@ describe('dirty keys are the clock-safe fallback', () => {
     expect(await readDirtyKeys()).toContainEqual(
       expect.objectContaining({ store: 'documents', key: 'doc-1', revision: newerDirty.revision }),
     )
+  })
+})
+
+describe('legacy tombstones stay pushable', () => {
+  const FUTURE = '2027-01-01T00:00:00.000Z'
+
+  it('pushes a localStorage-only legacy purge despite a later tombstones watermark', async () => {
+    const server = memoryServer()
+    server.add('documents', serverDocument('doc-1'))
+    localStorage.setItem('lexi.purged', JSON.stringify(['doc-1']))
+
+    const report = await sync(server, { push: { tombstones: FUTURE } })
+
+    expect(server.count('documents')).toBe(0)
+    expect(server.rows('document_tombstones').map((row) => row.document_id)).toContain('doc-1')
+    expect(report.failures).toEqual([])
+    expect(report.pushWatermarks.tombstones).toBeDefined()
+  })
+
+  it('keeps an epoch-0 tombstone already in IndexedDB eligible without a dirty key', async () => {
+    const server = memoryServer()
+    server.add('documents', serverDocument('doc-1'))
+    // An older build promoted the legacy purge silently: no dirty journal entry.
+    await idbPut(
+      STORES.documentTombstones,
+      { documentId: 'doc-1', purgedAt: LEGACY_PURGE_AT },
+      { silent: true },
+    )
+    expect(await readDirtyKeys()).not.toContainEqual(
+      expect.objectContaining({ store: 'documentTombstones', key: 'doc-1' }),
+    )
+
+    const report = await sync(server, { push: { tombstones: FUTURE } })
+
+    expect(server.count('documents')).toBe(0)
+    expect(server.rows('document_tombstones').map((row) => row.document_id)).toContain('doc-1')
+    expect(report.failures).toEqual([])
+    expect(report.pushWatermarks.tombstones).toBeDefined()
   })
 })

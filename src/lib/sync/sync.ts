@@ -9,7 +9,7 @@ import {
   SYNC_META_KEY,
 } from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
-import { purgedDocumentIds, type DocumentTombstone } from '../storage/purged'
+import { purgedDocumentIds, LEGACY_PURGE_AT, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
@@ -192,7 +192,7 @@ async function planLocalWrite(
     ...local.tombstones,
     ...legacyPurged
       .filter((id) => !local.tombstones.some((t) => t.documentId === id))
-      .map((id) => ({ documentId: id, purgedAt: new Date(0).toISOString() })),
+      .map((id) => ({ documentId: id, purgedAt: LEGACY_PURGE_AT })),
   ]
   const tombstones = mergeTombstones(localTombstones, remote.tombstones)
   const tombstoneIds = new Set(tombstones.map((t) => t.documentId))
@@ -474,8 +474,17 @@ export async function syncOnce({
   const foldersToPush = changedFolders(folders, remote.folders).filter((folder) =>
     touchedAfter(folder.updatedAt, 'folders'),
   )
-  const tombstonesToPush = tombstones.filter((tombstone) =>
-    touchedAfter(tombstone.purgedAt, 'tombstones'),
+  /**
+   * A legacy tombstone has no real deletion time — the localStorage list holds
+   * only ids, and older builds already wrote the epoch-0 sentinel to IndexedDB.
+   * Keep it always eligible instead of letting an existing tombstones watermark
+   * hide it forever; a fresh `now` would still be suppressible after a clock
+   * rollback and cannot repair rows already written with the sentinel.
+   */
+  const tombstonesToPush = tombstones.filter(
+    (tombstone) =>
+      tombstone.purgedAt === LEGACY_PURGE_AT ||
+      touchedAfter(tombstone.purgedAt, 'tombstones'),
   )
 
   /**
