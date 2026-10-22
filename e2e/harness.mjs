@@ -113,7 +113,7 @@ class Ctx {
       `http://127.0.0.1:${this.cdpPort}/json/new?${encodeURIComponent(APP_ORIGIN)}`,
       { method: 'PUT' },
     )
-    if (!response.ok) throw new Error(`두 번째 페이지를 열지 못했습니다 (${response.status})`)
+    if (!response.ok) throw new Error(`Could not open the second page (${response.status})`)
     const target = await response.json()
     const page = await Page.open(target.webSocketDebuggerUrl)
     await page.send('Page.enable')
@@ -127,7 +127,7 @@ class Ctx {
       try {
         await page.send('Page.close')
       } catch {
-        // 이미 닫힌 페이지는 무시한다
+        // Ignore a page that is already closed
       }
       page.close()
     }

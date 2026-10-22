@@ -38,6 +38,7 @@ import {
   bumpLocalRevision,
   deleteLocalDatabase,
   readLocalSyncMeta,
+  subtractPending,
 } from '../../lib/storage/localDb'
 import type { LocalSyncMeta, SyncMessage } from '../../lib/sync/types'
 import { withSyncLock } from '../../lib/sync/syncLock'
@@ -166,13 +167,15 @@ describe('동기화 idle 대기', () => {
 })
 
 function createFakeLocks() {
+  const calls: Array<{ name: string; mode: LockMode }> = []
   let tail: Promise<unknown> = Promise.resolve()
   const locks = {
     request<T>(
-      _name: string,
-      _options: { mode?: LockMode },
+      name: string,
+      options: { mode?: LockMode },
       callback: () => Promise<T>,
     ): Promise<T> {
+      calls.push({ name, mode: options.mode ?? 'exclusive' })
       const result = tail.then(callback)
       tail = result.then(
         () => undefined,
@@ -181,7 +184,34 @@ function createFakeLocks() {
       return result
     },
   }
-  return locks as unknown as LockManager
+  return { locks: locks as unknown as LockManager, calls }
+}
+
+async function withNavigatorLocks(
+  locks: LockManager,
+  run: () => Promise<void>,
+): Promise<void> {
+  const navigatorLike = globalThis.navigator as { locks?: LockManager }
+  const hadLocks = 'locks' in navigatorLike
+  const previous = navigatorLike.locks
+  Object.defineProperty(navigatorLike, 'locks', {
+    configurable: true,
+    writable: true,
+    value: locks,
+  })
+  try {
+    await run()
+  } finally {
+    if (hadLocks) {
+      Object.defineProperty(navigatorLike, 'locks', {
+        configurable: true,
+        writable: true,
+        value: previous,
+      })
+    } else {
+      delete navigatorLike.locks
+    }
+  }
 }
 
 const localMeta = (pendingByStore: LocalSyncMeta['pendingByStore']): LocalSyncMeta => ({
@@ -194,7 +224,7 @@ const localMeta = (pendingByStore: LocalSyncMeta['pendingByStore']): LocalSyncMe
 
 describe('cross-tab idle wait', () => {
   it('waits for the shared lock after the tab-local single-flight is idle', async () => {
-    const locks = createFakeLocks()
+    const { locks } = createFakeLocks()
     let release!: () => void
     const held = withSyncLock(
       () =>
@@ -217,6 +247,51 @@ describe('cross-tab idle wait', () => {
     await held
     await waiting
     expect(idle).toBe(true)
+  })
+
+  it('runs the real sync path under the shared lock and waits for another tab', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useLanguagesStore.setState({ enrolled: [], ready: true })
+    vi.mocked(syncOnce).mockResolvedValue(report([]))
+    vi.spyOn(useDocumentsStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useFoldersStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useWordStatesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+    vi.spyOn(useOccurrencesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+
+    const { locks, calls } = createFakeLocks()
+    let release!: () => void
+
+    await withNavigatorLocks(locks, async () => {
+      // Another tab holds the shared lock. The real sync path must queue.
+      const held = withSyncLock(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve
+          }),
+        locks,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const before = calls.length
+      const syncing = useSyncStore.getState().syncQuietly()
+      try {
+        await Promise.resolve()
+        // The real path requested the same shared lock and is queued behind it.
+        expect(calls).toHaveLength(before + 1)
+        expect(calls.at(-1)).toEqual({ name: 'lexi-sync', mode: 'exclusive' })
+        expect(syncOnce).not.toHaveBeenCalled()
+      } finally {
+        release()
+      }
+
+      await held
+      await syncing
+    })
+
+    expect(syncOnce).toHaveBeenCalledTimes(1)
+    expect(calls).toContainEqual({ name: 'lexi-sync', mode: 'exclusive' })
   })
 })
 
@@ -247,13 +322,69 @@ describe('cross-tab convergence', () => {
     expect(syncChannelState.posted).toEqual([])
   })
 
-  it('refreshes pending from a local-write message sent by another tab', async () => {
+  it('refreshes pending from the record instead of a stale local-write snapshot', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
     useSyncStore.setState({ pendingByStore: {}, dirty: false })
 
-    await applySyncMessage({ type: 'local-write', meta: localMeta({ wordStates: 3 }) })
+    const earlier = await bumpLocalRevision(STORES.documents, 'doc-1')
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000run')
 
-    expect(useSyncStore.getState().pendingByStore).toEqual({ wordStates: 3 })
+    // The earlier write's message arrives after the later write committed.
+    await applySyncMessage({ type: 'local-write', meta: earlier })
+
+    expect(useSyncStore.getState().pendingByStore).toEqual({
+      documents: 1,
+      wordStates: 1,
+    })
     expect(useSyncStore.getState().dirty).toBe(true)
+  })
+
+  it('does not restore counts a syncing tab already subtracted', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useSyncStore.setState({ pendingByStore: {}, dirty: false })
+
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    await bumpLocalRevision(STORES.documents, 'doc-2')
+    const beforeSync = await readLocalSyncMeta()
+    await subtractPending({ documents: 1 })
+
+    // This local-write snapshot predates the subtraction; the record does not.
+    await applySyncMessage({ type: 'local-write', meta: beforeSync! })
+
+    expect(useSyncStore.getState().pendingByStore).toEqual({ documents: 1 })
+    expect(useSyncStore.getState().dirty).toBe(true)
+  })
+
+  it('ignores a local-write message from a different database epoch', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    useSyncStore.setState({ pendingByStore: { wordStates: 9 }, dirty: true })
+
+    await applySyncMessage({
+      type: 'local-write',
+      meta: { ...localMeta({ documents: 5 }), epoch: 'epoch-from-an-old-page' },
+    })
+
+    expect(useSyncStore.getState().pendingByStore).toEqual({ wordStates: 9 })
+  })
+
+  it('ignores a local-write message for a different account owner', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-b') })
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    const meta = await readLocalSyncMeta()
+    useSyncStore.setState({ status: 'synced', pendingByStore: {}, dirty: false })
+
+    await applySyncMessage({ type: 'local-write', meta: meta! })
+
+    expect(useSyncStore.getState()).toMatchObject({
+      status: 'local',
+      pendingByStore: {},
+      dirty: false,
+    })
   })
 
   it('applies a synced report and re-reads pending from the shared record', async () => {

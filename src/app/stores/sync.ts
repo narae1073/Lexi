@@ -379,14 +379,34 @@ export function applyLocalWrite(store: StoreName, meta: LocalSyncMeta): boolean 
 /**
  * Applies a message from another tab.
  *
- * `local-write` carries the shared meta, so pending counts are replaced (not
- * incremented). `synced` says a cycle finished; this tab adopts the report and
+ * `local-write` is a hint that the shared record changed; this tab validates
+ * the sender's epoch and re-reads the record instead of trusting the carried
+ * snapshot. `synced` says a cycle finished; this tab adopts the report and
  * re-reads the counts from IndexedDB so a write that landed during the cycle
  * is still counted.
  */
 export async function applySyncMessage(message: SyncMessage): Promise<void> {
   if (message.type === 'local-write') {
-    useSyncStore.setState(pendingFromMeta(message.meta))
+    // A broadcast is only a hint that the record changed. Concurrent writes and
+    // a syncing tab's subtraction can make the carried snapshot older than the
+    // record, so adopt the record (validated by epoch/owner) instead.
+    const current = useAuthStore.getState().user
+    if (!current || !canSyncForUser(current.id)) {
+      useSyncStore.setState({ status: 'local' })
+      return
+    }
+
+    let shared: LocalSyncMeta | null
+    try {
+      shared = await readLocalSyncMeta()
+    } catch {
+      // Leave the current counts alone; the next read will converge.
+      return
+    }
+    // A different epoch means the database was recreated (or the message came
+    // from an old page). Never apply its snapshot to this device's record.
+    if (shared === null || shared.epoch !== message.meta.epoch) return
+    useSyncStore.setState(pendingFromMeta(shared))
     return
   }
 
