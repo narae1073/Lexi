@@ -38,7 +38,7 @@
 -- 아래 제약 중 preflight 가 다루지 않는 것들도 staging 에서 함께 확인한다:
 --
 --   select 'word_states.star_angle', count(*) from public.word_states
---    where star_angle < 0 or star_angle > 360
+--    where star_angle < -360 or star_angle > 360
 --   union all
 --   select 'word_states.star_color', count(*) from public.word_states
 --    where star_color !~ '^#[0-9a-fA-F]{6}$'
@@ -55,10 +55,10 @@
 --   select 'word_occurrences.span', count(*) from public.word_occurrences
 --    where char_end < char_start or char_end - char_start > 1000;
 --
--- 주의: 현재 클라이언트의 randomStarAngle() 은 -25..25 를 만든다. 이 제약을
--- 적용하면 새로 붙이는 별의 약 절반이 거부된다. staging 검증 전에 각도 생성
--- 규칙(또는 이 범위)을 먼저 합의해야 한다 — 이 작업에서는 제약을 임의로 바꾸지
--- 않는다.
+-- 각도는 **부호 있는 기울기** 다 — 별을 왼쪽으로도 기울이므로 음수가 정상이다.
+-- 클라이언트의 randomStarAngle() 은 -25..25 를 만들고, 범위는 그보다 넓게
+-- -360..360 을 허용한다. 0..360 으로 두면 새로 붙이는 별의 약 절반이 거부되고
+-- 동기화가 막힌다. CSS transform 의 기울기 단위(도)를 그대로 쓴다.
 -- ---------------------------------------------------------------------------
 
 alter table public.documents
@@ -74,7 +74,7 @@ alter table public.word_states
   add constraint word_states_press_nonnegative check (
     known_presses >= 0 and unsure_presses >= 0 and unknown_presses >= 0
   ) not valid,
-  add constraint word_states_star_angle_range check (star_angle >= 0 and star_angle <= 360) not valid,
+  add constraint word_states_star_angle_range check (star_angle >= -360 and star_angle <= 360) not valid,
   add constraint word_states_star_color_format check (star_color ~ '^#[0-9a-fA-F]{6}$') not valid;
 
 alter table public.word_occurrences
