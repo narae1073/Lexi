@@ -1,7 +1,16 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { STORES, idbDelete, idbGetAll, idbPut, onLocalWrite } from './localDb'
+import {
+  STORES,
+  deleteLocalDatabase,
+  hasLocalLearningData,
+  idbCount,
+  idbDelete,
+  idbGetAll,
+  idbPut,
+  onLocalWrite,
+} from './localDb'
 
 /**
  * 저장이 끝났음을 알리는 신호.
@@ -115,5 +124,59 @@ describe('저장 완료 알림', () => {
     await Promise.resolve()
 
     expect(seen).toEqual([])
+  })
+})
+
+/**
+ * 기기에 학습 데이터가 있는지 세고, 계정 전환·초기화 때 통째로 지운다.
+ *
+ * owner 마커가 없는 기기(익명으로 쓰던 기기)를 새 계정에 붙일지 정하려면
+ * "이 기기에 남은 학습 데이터가 있는가" 를 알아야 한다. 초기화는 반대로
+ * 남김없이 지워야 한다 — 다음 로그인에서 옛 데이터가 새 계정으로 새지 않는다.
+ */
+describe('로컬 학습 데이터 존재 확인과 초기화', () => {
+  beforeEach(async () => {
+    await deleteLocalDatabase()
+  })
+
+  it('저장된 것이 없으면 세는 값은 0 이다', async () => {
+    expect(await idbCount(STORES.documents)).toBe(0)
+    expect(await idbCount(STORES.wordStates)).toBe(0)
+  })
+
+  it('문서를 하나 저장하면 세는 값은 1 이고 학습 데이터가 있다', async () => {
+    await idbPut(STORES.documents, { id: 'doc-1', title: '제목' })
+
+    expect(await idbCount(STORES.documents)).toBe(1)
+    await expect(hasLocalLearningData()).resolves.toBe(true)
+  })
+
+  /**
+   * 응답 캐시와 documentMeta 는 학습 데이터가 아니다.
+   *
+   * 사전을 한 번 본 것만으로 "이 기기에 쓸 만한 데이터가 있다" 고 판단하면
+   * 빈 기기를 계정에 붙이는 셈이 된다.
+   */
+  it('응답 캐시만 있으면 학습 데이터가 없다', async () => {
+    await idbPut(STORES.responseCache, { key: 'k', value: 1 })
+    await idbPut(STORES.documentMeta, { documentId: 'doc-1', lemmaVersion: 3 })
+
+    await expect(hasLocalLearningData()).resolves.toBe(false)
+  })
+
+  it('초기화하면 문서와 단어 상태가 비고 세는 값도 0 이 된다', async () => {
+    await idbPut(STORES.documents, { id: 'doc-1', title: '제목' })
+    await idbPut(STORES.wordStates, { languageCode: 'en', lemma: 'run' })
+
+    await deleteLocalDatabase()
+
+    expect(await idbCount(STORES.documents)).toBe(0)
+    expect(await idbCount(STORES.wordStates)).toBe(0)
+    await expect(hasLocalLearningData()).resolves.toBe(false)
+  })
+
+  it('한 번 더 초기화해도 실패하지 않는다', async () => {
+    await deleteLocalDatabase()
+    await expect(deleteLocalDatabase()).resolves.toBeUndefined()
   })
 })
