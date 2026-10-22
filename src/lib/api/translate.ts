@@ -3,6 +3,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js'
 
 import { supabase } from '../supabase/client'
 import { cacheKey, fetchOrCached } from './offlineCache'
+import { readOrCreateInstallId } from './installId'
 import type { AppLanguage } from '../../i18n'
 
 export type TranslateResult = {
@@ -63,6 +64,8 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         async () => {
           const { data, error } = await client.functions.invoke<TranslateResult>('translate', {
             body: { sourceLanguage: source, targetLanguage: target, text: trimmed },
+            // 계정 없이도 기기 단위 쿼터를 셀 수 있게 설치 ID 를 함께 보낸다
+            headers: { 'x-lexi-install': readOrCreateInstallId() },
           })
 
           if (error) {

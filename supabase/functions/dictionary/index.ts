@@ -8,6 +8,7 @@ import {
   type Candidate,
 } from '../_shared/inflection.ts'
 import { pinyinToneMarks } from '../_shared/ccCedict.ts'
+import { enforceQuota, makeQuotaLimits } from '../_shared/quota.ts'
 
 /**
  * POST /functions/v1/dictionary
@@ -34,9 +35,16 @@ import { pinyinToneMarks } from '../_shared/ccCedict.ts'
 
 const UPSTREAM = 'https://freedictionaryapi.com/api/v1/entries'
 const UPSTREAM_TIMEOUT_MS = 8000
+/** 후보/원형어를 모두 조회해도 이 시간을 넘기지 않는다 */
+const OVERALL_TIMEOUT_MS = 20_000
+
+/** 본문 전체 상한 — JSON 을 읽기 전에 Content-Length 로 거른다 */
+const MAX_BODY_BYTES = 20_000
 
 /** 조작을 막기 위한 상한 */
 const MAX_LEMMA_CHARS = 64
+/** 표기는 원문 그대로 오므로 넉넉히 두되 문장이 들어오지는 못하게 한다 */
+const MAX_SURFACE_CHARS = 128
 /** 표기 → 활용형 후보를 모두 합쳐도 이 수를 넘지 않는다 */
 const MAX_CANDIDATES = 6
 /** 형식 참조를 따라갈 때 시도할 원형어 수 */
@@ -74,11 +82,17 @@ const PAYLOAD_VERSION = `${SCHEMA_VERSION}/infl${INFLECTION_VERSION}`
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-lexi-install',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 const LANGUAGE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/
+/** 설치 ID 는 UUID 모양만 받는다 — 아니면 익명 버킷으로 묶는다 */
+const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** 전체 조회 데드라인을 넘겼다는 내부 신호 — 바깥 catch 가 504 로 바꾼다 */
+class DeadlineExceededError extends Error {}
 
 /**
  * 명사를 관례적으로 대문자로 쓰는 언어.
@@ -226,6 +240,27 @@ function createServiceClient() {
   return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 }
 
+/** 형식이 틀린 설치 ID 는 조용히 익명으로 본다 — 요청 자체를 막지는 않는다 */
+function readInstallId(req: Request): string {
+  const raw = req.headers.get('x-lexi-install')?.trim() ?? ''
+  return INSTALL_ID_RE.test(raw) ? raw.toLowerCase() : 'anonymous'
+}
+
+/** 프록시가 준 첫 클라이언트 IP. 없으면 모두를 한 버킷에 묶는다. */
+function readClientIp(req: Request): string {
+  const forwarded = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+  if (forwarded) return forwarded
+  return req.headers.get('x-real-ip')?.trim() || 'unknown'
+}
+
+/** 선언된 본문 길이만 본다 — 실제 바이트 수는 읽은 뒤에야 알 수 있다 */
+function bodyTooLarge(req: Request): boolean {
+  const declared = req.headers.get('content-length')
+  if (declared === null) return false
+  const bytes = Number(declared)
+  return Number.isFinite(bytes) && bytes > MAX_BODY_BYTES
+}
+
 type CedictRow = {
   simplified: string
   traditional: string
@@ -277,6 +312,9 @@ function cedictSections(word: string, rows: CedictRow[]): Section[] {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
+  // 본문을 읽기 전에 걸러야 큰 요청이 파싱 비용을 쓰지 않는다
+  if (bodyTooLarge(req)) return json({ error: 'request body too large' }, 413)
+
   try {
     let payload: { languageCode?: string; lemma?: string; surface?: string; targetLanguage?: string }
     try {
@@ -296,12 +334,40 @@ Deno.serve(async (req) => {
     if (!/^[a-z]{2}$/.test(targetLanguage)) return json({ error: 'invalid target language' }, 400)
     if (lemma.length === 0) return json({ error: 'lemma is required' }, 400)
     if (lemma.length > MAX_LEMMA_CHARS) return json({ error: 'lemma too long' }, 400)
+    if (surface.length > MAX_SURFACE_CHARS) return json({ error: 'surface too long' }, 400)
     // 공백이 섞이면 단어가 아니다 — 문장 조회로 남용되는 것을 막는다
     if (/\s/.test(lemma) || /\s/.test(surface)) {
       return json({ error: 'lemma must not contain whitespace' }, 400)
     }
 
     const client = createServiceClient()
+
+    // 로그인을 강제하지 않는다 — 대신 설치 ID / IP / 전역 버킷으로 비용을 제한한다.
+    // 하드 인증은 Release 5 의 제품 결정이라 여기서는 쿼터가 안전장치다.
+    try {
+      const limits = await makeQuotaLimits('dictionary', readInstallId(req), readClientIp(req))
+      const allowed = await enforceQuota(async (bucket, limit, windowSeconds) => {
+        const { data, error } = await client.rpc('consume_function_quota', {
+          p_bucket: bucket,
+          p_limit: limit,
+          p_window_seconds: windowSeconds,
+        })
+        if (error) throw error
+        return Boolean(data)
+      }, limits)
+
+      if (!allowed) return json({ error: 'rate limit exceeded' }, 429)
+    } catch (error) {
+      // 쿼터를 확인할 수 없으면 통과시키지 않는다 (fail closed)
+      console.error('dictionary quota check failed', error)
+      return json({ error: 'quota check unavailable' }, 503)
+    }
+
+    // 후보/원형어 조회가 겹쳐도 전체 시간을 넘기지 않게 한다
+    const deadline = Date.now() + OVERALL_TIMEOUT_MS
+    const checkDeadline = () => {
+      if (Date.now() >= deadline) throw new DeadlineExceededError()
+    }
 
     const { data: cached } = await client
       .from('dictionary_entries')
@@ -369,6 +435,7 @@ Deno.serve(async (req) => {
     // 성공한 항목은 모두 기억한다 — 표기는 첫 번째 후보라 표기 항목을 그대로 재사용한다
     const fetched = new Map<string, UpstreamBody>()
     for (const candidate of candidates) {
+      checkDeadline()
       const body = await fetchUpstream(languageCode, candidate.word)
       if (body === null) return json({ error: 'dictionary provider unreachable' }, 504)
       if ((body as { failed?: boolean }).failed) {
@@ -383,6 +450,7 @@ Deno.serve(async (req) => {
       for (const word of words.slice(0, MAX_HEADWORDS)) {
         let body = fetched.get(word)
         if (!body) {
+          checkDeadline()
           const fetchedBody = await fetchUpstream(languageCode, word)
           if (fetchedBody === null) return null
           if ((fetchedBody as { failed?: boolean }).failed || !fetchedBody.entries?.length) continue
@@ -459,6 +527,10 @@ Deno.serve(async (req) => {
 
     return json({ ...response, cached: false })
   } catch (error) {
+    // 조회 데드라인은 서버 오류가 아니라 게이트웨이 시간 초과로 알린다
+    if (error instanceof DeadlineExceededError) {
+      return json({ error: 'dictionary lookup timed out' }, 504)
+    }
     // 스택을 응답에 노출하지 않는다 — 내부 경로가 클라이언트에 새지 않게
     console.error('dictionary handler failed', error)
     return json({ error: 'internal error' }, 500)
