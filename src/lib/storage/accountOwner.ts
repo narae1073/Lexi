@@ -123,3 +123,55 @@ export function resolveAccountScope(input: {
   // 아직 주인이 없는 기기 기록 — 계정으로 넘겨받을지 물어본다
   return hasLocalData ? 'claim' : 'sync'
 }
+
+/** 기기 데이터 확인이 실패하면 '있을 수도 있다' 로 본다 — 남의 기록을 붙이지 않는다 */
+async function hasLocalDataSafely(check: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await check()
+  } catch {
+    return true
+  }
+}
+
+/**
+ * 저장된 소유자 표시를 지금 세션에 맞게 세운다.
+ *
+ * 기기 데이터가 있는지는 IndexedDB 를 아는 호출자가 `hasLocalData` 로 넣어 준다.
+ * 이 파일이 저장소를 직접 만지지 않게 하려는 것이다.
+ *
+ * - 표시가 없고 데이터도 없으면 곧바로 계정에 묶는다.
+ * - 표시가 없고 데이터가 있으면 **넘겨받기를 기다리는 기기 소유자**로 남긴다.
+ *   로그인한 계정이 그 기록의 주인인지 알 수 없으므로 자동으로 붙이지 않는다.
+ * - '이 기기만 쓰기'(kept) 는 이미 내린 결정이므로 건드리지 않는다.
+ * - 기기 데이터는 절대 지우지 않는다. 확인이 실패하면 데이터가 있는 것으로 본다.
+ * - 저장에 실패해도 계산한 값을 돌려준다 — 이번 세션은 그 값으로 일관되게 움직인다.
+ */
+export async function ensureLocalOwner(
+  userId: string | null,
+  options: { storage?: OwnerStorage; hasLocalData: () => Promise<boolean> },
+): Promise<LocalOwner> {
+  const { storage } = options
+  const owner = readLocalOwner(storage)
+
+  if (owner !== null) {
+    // 아직 넘겨받지 않은 기기 표시 — 데이터가 없다면 묶을 이유도, 물어볼 이유도 없다.
+    // kept: true 는 사용자가 고른 결정이므로 이 갈래에 들어오지 않는다.
+    if (owner.kind === 'local' && owner.kept !== true && userId !== null) {
+      const hasData = await hasLocalDataSafely(options.hasLocalData)
+      if (!hasData) {
+        const upgraded: LocalOwner = { kind: 'user', userId }
+        writeLocalOwner(upgraded, storage)
+        return upgraded
+      }
+    }
+
+    return owner
+  }
+
+  const hasData = await hasLocalDataSafely(options.hasLocalData)
+  const next: LocalOwner =
+    userId !== null && !hasData ? { kind: 'user', userId } : { kind: 'local' }
+
+  writeLocalOwner(next, storage)
+  return next
+}

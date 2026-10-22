@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   LOCAL_OWNER_KEY,
   clearLocalOwner,
+  ensureLocalOwner,
   readLocalOwner,
   resolveAccountScope,
   writeLocalOwner,
@@ -299,5 +300,131 @@ describe('계정 범위 판정', () => {
         hasLocalData: true,
       }),
     ).toBe('blocked')
+  })
+})
+
+/**
+ * 기기 데이터가 있는지는 이 모듈이 직접 알 수 없다 — IndexedDB 를 모르는 순수한
+ * 파일로 남기려고 호출자가 `hasLocalData` 로 넣어 준다.
+ *
+ * 핵심은 '자동으로 넘겨받지 않는다' 이다. 로그인한 계정이 그 기기 기록의 주인인지
+ * 알 수 없으므로, 데이터가 있으면 물어보는 상태(local, kept 없음)로 남긴다.
+ */
+describe('기기 소유자 초기화', () => {
+  it('소유자도 기기 데이터도 없으면 로그인한 계정으로 적는다', async () => {
+    const storage = new MemoryStorage()
+    const hasLocalData = vi.fn(async () => false)
+
+    const owner = await ensureLocalOwner('user-a', { storage, hasLocalData })
+
+    expect(owner).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(hasLocalData).toHaveBeenCalledTimes(1)
+  })
+
+  it('소유자는 없지만 기기 데이터가 있으면 넘겨받기를 기다린다 — 자동으로 붙이지 않는다', async () => {
+    const storage = new MemoryStorage()
+
+    const owner = await ensureLocalOwner('user-a', {
+      storage,
+      hasLocalData: async () => true,
+    })
+
+    expect(owner).toEqual({ kind: 'local' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'local', kept: false })
+  })
+
+  it('로그아웃 상태로 소유자가 없으면 기기 소유자로 적는다', async () => {
+    const storage = new MemoryStorage()
+
+    const owner = await ensureLocalOwner(null, { storage, hasLocalData: async () => true })
+
+    expect(owner).toEqual({ kind: 'local' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'local', kept: false })
+  })
+
+  it('아직 넘겨받지 않은 기기 소유자는 기기 데이터가 없으면 계정으로 올린다', async () => {
+    const storage = new MemoryStorage()
+    writeLocalOwner({ kind: 'local', kept: false }, storage)
+    const hasLocalData = vi.fn(async () => false)
+
+    const owner = await ensureLocalOwner('user-a', { storage, hasLocalData })
+
+    expect(owner).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(hasLocalData).toHaveBeenCalledTimes(1)
+  })
+
+  it('아직 넘겨받지 않은 기기 소유자는 기기 데이터가 있으면 그대로 둔다', async () => {
+    const storage = new MemoryStorage()
+    writeLocalOwner({ kind: 'local', kept: false }, storage)
+
+    const owner = await ensureLocalOwner('user-a', {
+      storage,
+      hasLocalData: async () => true,
+    })
+
+    expect(owner).toEqual({ kind: 'local', kept: false })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'local', kept: false })
+  })
+
+  it('이 기기만 쓰기를 고른 소유자는 기기 데이터가 없어도 계정으로 바꾸지 않는다', async () => {
+    const storage = new MemoryStorage()
+    writeLocalOwner({ kind: 'local', kept: true }, storage)
+
+    const owner = await ensureLocalOwner('user-a', {
+      storage,
+      hasLocalData: async () => false,
+    })
+
+    expect(owner).toEqual({ kind: 'local', kept: true })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'local', kept: true })
+  })
+
+  it('계정 소유자 표시는 같은 계정이든 다른 계정이든 바꾸지 않는다', async () => {
+    const storage = new MemoryStorage()
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+
+    expect(
+      await ensureLocalOwner('user-a', { storage, hasLocalData: async () => true }),
+    ).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(
+      await ensureLocalOwner('user-b', { storage, hasLocalData: async () => true }),
+    ).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'user', userId: 'user-a' })
+  })
+
+  /**
+   * 기기 데이터 확인이 실패하면 '데이터가 있을 수도 있다' 로 본다. 여기서
+   * 계정에 붙이거나 기기 표시를 지우면 남의 기록이 섞이거나 사라질 수 있다.
+   */
+  it('기기 데이터 확인이 실패하면 기기 소유자로 남긴다', async () => {
+    const throwing = async () => {
+      throw new Error('IndexedDB 를 읽을 수 없음')
+    }
+
+    const empty = new MemoryStorage()
+    expect(await ensureLocalOwner('user-a', { storage: empty, hasLocalData: throwing })).toEqual({
+      kind: 'local',
+    })
+
+    const unclaimed = new MemoryStorage()
+    writeLocalOwner({ kind: 'local', kept: false }, unclaimed)
+    expect(
+      await ensureLocalOwner('user-a', { storage: unclaimed, hasLocalData: throwing }),
+    ).toEqual({ kind: 'local', kept: false })
+    expect(readLocalOwner(unclaimed)).toEqual({ kind: 'local', kept: false })
+  })
+
+  it('기기 소유자를 적지 못해도 계산한 소유자를 돌려준다', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const owner = await ensureLocalOwner('user-a', {
+      storage: explodingWrite(),
+      hasLocalData: async () => false,
+    })
+
+    expect(owner).toEqual({ kind: 'user', userId: 'user-a' })
+    expect(error).toHaveBeenCalled()
   })
 })
