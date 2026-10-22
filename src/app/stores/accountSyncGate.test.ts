@@ -19,8 +19,12 @@ vi.mock('../../lib/sync/sync', () => ({
 import { LOCAL_OWNER_KEY, readLocalOwner, writeLocalOwner, type OwnerStorage } from '../../lib/storage/accountOwner'
 import { useLanguagesStore } from './languages'
 import { useAuthStore } from './auth'
-import { canSyncForUser, ownerSyncState, useSyncStore } from './sync'
+import { canSyncForUser, initializeLocalOwner, ownerSyncState, useSyncStore } from './sync'
 import { syncOnce, type SyncReport } from '../../lib/sync/sync'
+import { useDocumentsStore } from './documents'
+import { useFoldersStore } from './folders'
+import { useOccurrencesStore } from './occurrences'
+import { useWordStatesStore } from './wordStates'
 
 class MemoryStorage implements OwnerStorage {
   #map = new Map<string, string>()
@@ -78,6 +82,7 @@ beforeEach(() => {
   globals.localStorage = storage as unknown as Storage
 
   useAuthStore.setState({ user: null, restoring: false, error: null, code: '', codeSent: false })
+  useLanguagesStore.setState({ enrolled: [], ready: false })
   useSyncStore.setState({
     status: 'local',
     lastSyncedAt: null,
@@ -205,6 +210,47 @@ describe('계정 하나에 대해서만 동기화한다', () => {
 
   it('저장소를 읽지 못하면 거짓이다 — 모르면 동기화하지 않는다', () => {
     expect(canSyncForUser('user-a', explodingRead())).toBe(false)
+  })
+})
+
+describe('소유자 초기화 순서', () => {
+  /**
+   * 늦게 끝난 로그아웃 초기화가 나중에 시작한 로그인을 덮어쓰면, 계정에 묶인 기기가
+   * 주인 없는 기기로 되돌아간다. 그러면 다음 계정이 그 기록을 넘겨받을 수 있다.
+   * 초기화는 시작한 순서대로 실행되어 마지막 로그인이 최종 소유자가 되어야 한다.
+   */
+  it('겹친 초기화는 호출 순서대로 실행되어 나중 계정이 이긴다', async () => {
+    let releaseFirst: (value: boolean) => void = () => {}
+    const firstProbe = new Promise<boolean>((resolve) => {
+      releaseFirst = resolve
+    })
+
+    // 먼저 시작한 로그아웃 초기화가 느리게 끝난다
+    const first = initializeLocalOwner(null, {
+      storage,
+      hasLocalData: () => firstProbe,
+    })
+    // 그 사이 로그인 초기화가 시작된다 — 이쪽이 최종 소유자가 되어야 한다
+    const second = initializeLocalOwner('user-b', {
+      storage,
+      hasLocalData: async () => false,
+    })
+
+    let secondFinished = false
+    void second.then(() => {
+      secondFinished = true
+    })
+    await Promise.resolve()
+
+    // 첫 초기화가 끝나기 전에 두 번째가 먼저 쓸 수 없다
+    const secondFinishedEarly = secondFinished
+    releaseFirst(true)
+    const [firstOwner, secondOwner] = await Promise.all([first, second])
+
+    expect(secondFinishedEarly).toBe(false)
+    expect(firstOwner).toEqual({ kind: 'local' })
+    expect(secondOwner).toEqual({ kind: 'user', userId: 'user-b' })
+    expect(readLocalOwner(storage)).toEqual({ kind: 'user', userId: 'user-b' })
   })
 })
 
@@ -382,5 +428,47 @@ describe('동기화 도중 계정이 바뀌면', () => {
     // 계정 A 의 워터마크도 남기지 않는다 — 다음에 A 로 돌아오면 처음부터 맞춘다
     const stored = JSON.parse(storage.getItem('lexi.syncState') ?? '{}') as Record<string, unknown>
     expect(stored['user-a']).toBeUndefined()
+  })
+
+  /**
+   * `syncOnce` 뒤의 첫 확인만으로는 부족하다. 화면 스토어를 읽는 동안에도 계정이
+   * 바뀔 수 있고, 그때 나머지 읽기와 성공 상태를 그대로 적용하면 B 화면에 A 의
+   * 보고서가 남는다.
+   */
+  it('화면 스토어를 읽는 도중 계정이 바뀌면 나머지 읽기와 결과를 멈춘다', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useLanguagesStore.setState({ enrolled: ['ja'], ready: true })
+    useSyncStore.setState({
+      status: 'synced',
+      lastSyncedAt: '2026-01-01T00:00:00.000Z',
+      report: null,
+    })
+    vi.mocked(syncOnce).mockResolvedValue(report(['ja']))
+
+    const documentsLoad = vi
+      .spyOn(useDocumentsStore.getState(), 'load')
+      .mockImplementation(async () => {
+        useAuthStore.setState({ user: account('user-b') })
+      })
+    const foldersLoad = vi
+      .spyOn(useFoldersStore.getState(), 'load')
+      .mockImplementation(async () => {})
+    const wordStatesLoad = vi
+      .spyOn(useWordStatesStore.getState(), 'loadLanguage')
+      .mockImplementation(async () => {})
+    const occurrencesLoad = vi
+      .spyOn(useOccurrencesStore.getState(), 'loadLanguage')
+      .mockImplementation(async () => {})
+
+    await useSyncStore.getState().syncQuietly()
+
+    expect(documentsLoad).toHaveBeenCalledTimes(1)
+    // 첫 읽기 뒤에 계정이 바뀌었으므로 나머지는 이 계정의 화면을 건드리지 않는다
+    expect(foldersLoad).not.toHaveBeenCalled()
+    expect(wordStatesLoad).not.toHaveBeenCalled()
+    expect(occurrencesLoad).not.toHaveBeenCalled()
+    expect(useSyncStore.getState().lastSyncedAt).toBe('2026-01-01T00:00:00.000Z')
+    expect(useSyncStore.getState().report).toBeNull()
   })
 })

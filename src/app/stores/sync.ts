@@ -182,6 +182,41 @@ export function canSyncForUser(userId: string, storage?: OwnerStorage): boolean 
 }
 
 /**
+ * 소유자 초기화를 호출 순서대로 하나씩 실행한다.
+ *
+ * `ensureLocalOwner` 는 IndexedDB 를 읽은 **뒤에** 소유자를 쓴다. 로그아웃 초기화와
+ * 로그인 초기화가 겹치면, 늦게 끝난 쪽이 나중에 시작한 계정을 덮어쓸 수 있다 —
+ * 그러면 기기 데이터가 주인 없는 것으로 남아 다음 계정이 넘겨받게 된다.
+ *
+ * 그래서 초기화 자체를 직렬화한다. 먼저 시작한 초기화가 끝난 뒤에 다음 초기화가
+ * 소유자를 읽으므로, 마지막으로 시작한 계정이 언제나 최종 소유자가 된다. 호출자가
+ * `cancelled` 로 화면 반영을 막는 것과 별개로, 저장된 값도 순서를 지킨다.
+ *
+ * 저장소·기기 데이터 확인을 주입할 수 있게 둔 것은 시험을 위해서다.
+ */
+let ownerInitialization: Promise<void> = Promise.resolve()
+
+export function initializeLocalOwner(
+  userId: string | null,
+  options: { storage?: OwnerStorage; hasLocalData?: () => Promise<boolean> } = {},
+): Promise<LocalOwner> {
+  const run = ownerInitialization.then(() =>
+    ensureLocalOwner(userId, {
+      storage: options.storage,
+      hasLocalData: options.hasLocalData ?? hasLocalLearningData,
+    }),
+  )
+
+  // 실패해도 다음 초기화는 자기 차례를 얻어야 한다 — 사슬은 항상 이어 둔다
+  ownerInitialization = run.then(
+    () => undefined,
+    () => undefined,
+  )
+
+  return run
+}
+
+/**
  * 계정 동기화 상태.
  *
  * 로그인하지 않은 상태는 'local' 다 — 오류가 아니라 정상이다.
@@ -277,6 +312,7 @@ async function doRun(set: Setter) {
   // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다 — 문에서 다시 확인한다
   if (!user || !canSyncForUser(user.id)) return
   const startedUserId = user.id
+  const accountChanged = () => useAuthStore.getState().user?.id !== startedUserId
 
   // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
   // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다
@@ -303,7 +339,7 @@ async function doRun(set: Setter) {
      * 채택하거나 B 의 워터마크로 남기면 안 된다. A 로 다시 돌아오면 같은 동기화를
      * 한 번 더 하면 되고, 그 동기화는 멱등이다.
      */
-    if (useAuthStore.getState().user?.id !== startedUserId) return
+    if (accountChanged()) return
 
     // 성공한 뒤에만 워터마크를 옮긴다 — 실패하면 같은 구간을 다시 읽고 다시 보낸다
     writeStoredSyncState(user.id, {
@@ -328,8 +364,12 @@ async function doRun(set: Setter) {
     // 받은 내용을 화면 스토어에 불어넣는다 — 안 하면 기록은 있어도 안 보인다
     const documents = useDocumentsStore.getState()
     await documents.load()
+    // 읽는 사이 계정이 바뀌었으면 이 기기의 병합 결과를 새 계정 화면에 밀어 넣지 않는다.
+    // 이후 읽기도, 마지막 성공 상태도 모두 이번 계정의 것이어야 한다.
+    if (accountChanged()) return
     // 폴더도 다른 기기에서 온다 — 만들어진 폴더가 여기에도 나와야 한다
     await useFoldersStore.getState().load()
+    if (accountChanged()) return
 
     /**
      * 방금 써 넣은 병합 결과를 화면에 반영한다.
@@ -339,12 +379,17 @@ async function doRun(set: Setter) {
      */
     const wordStates = useWordStatesStore.getState()
     await Promise.all(languages.map((code) => wordStates.loadLanguage(code, { force: true })))
+    if (accountChanged()) return
 
     const occurrences = useOccurrencesStore.getState()
     await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
+    if (accountChanged()) return
 
     // 기록이 없는/옛 기록인 문서의 재계산은 App 이 문서 목록에 반응해 맡는다.
     // 여기서 다시 부르면 같은 계산을 두 번 한다.
+
+    // 마지막 확인 — 여기까지 왔어도 set 직전에 바뀔 수 있다
+    if (accountChanged()) return
 
     set((s) => {
       const pendingByStore: Record<string, number> = { ...s.pendingByStore }
@@ -367,7 +412,7 @@ async function doRun(set: Setter) {
     })
   } catch (error) {
     // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
-    if (useAuthStore.getState().user?.id !== startedUserId) return
+    if (accountChanged()) return
 
     // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
     if (error instanceof SyncUnavailable) {
@@ -406,9 +451,10 @@ export function useCloudSync() {
    * 이 기기의 소유자를 먼저 정한다 — 동기화의 유일한 입구다.
    *
    * 소유자를 확인하기 전에는 `accountReady` 가 거짓이라 화면이 동기화 여부를 말하지
-   * 않는다. `ensureLocalOwner` 는 IndexedDB 를 읽으므로 늦게 끝날 수 있다. 그 사이
-   * 사용자가 바뀌면 예전 계정 기준의 판정을 새 계정에 적용하면 안 되므로 `cancelled`
-   * 로 막는다.
+   * 않는다. `ensureLocalOwner` 는 IndexedDB 를 읽으므로 늦게 끝날 수 있고, 그 사이
+   * 사용자가 바뀌면 예전 계정 기준의 판정을 새 계정에 적용하면 안 된다. 화면 반영은
+   * `cancelled` 로, 저장된 소유자는 `initializeLocalOwner` 의 직렬화로 막는다 —
+   * 늦게 끝난 초기화가 나중에 시작한 계정을 덮어쓰지 않는다.
    *
    * 계정이 바뀌면 이전 계정의 화면 상태(보고서·밀린 개수)는 지운다. 기기 기록과
    * 소유자 표시는 지우지 않는다 — 로그아웃했다고 학습 기록을 잃으면 안 된다.
@@ -427,7 +473,7 @@ export function useCloudSync() {
 
     void (async () => {
       const userId = user?.id ?? null
-      const owner = await ensureLocalOwner(userId, { hasLocalData: hasLocalLearningData })
+      const owner = await initializeLocalOwner(userId)
       if (cancelled) return
 
       const scope = ownerSyncState(owner, userId)
