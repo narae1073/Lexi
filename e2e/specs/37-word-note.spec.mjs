@@ -22,6 +22,16 @@ export async function run(ctx) {
   ctx.check('저장하면 메모가 그 자리에 남는다',
     (await ctx.page.evaluate(`document.querySelector('[data-word-note]')?.value ?? null`)) === NOTE,
     await ctx.page.evaluate(`document.querySelector('[data-word-note]')?.value ?? null`))
+
+  // 메모만으로는 상태가 생기지 않는다 (Release 1). 이 스펙은 단어장과 퀴즈에서
+  // 메모가 다시 보이는지도 확인하므로, 퀴즈 풀에 들어가도록 Unsure로 표시한다.
+  await ctx.page.evaluate(`(() => {
+    const b = [...document.querySelectorAll('button[aria-label="Unsure"]')]
+      .find(el => !el.closest('[data-wordbook-note]'));
+    if (b) b.click();
+    return true;
+  })()`)
+  await sleep(300)
   await ctx.pressEscape()
   await sleep(200)
 
@@ -32,7 +42,7 @@ export async function run(ctx) {
   await ctx.clickSelector('a[href="/wordbook"]')
   await ctx.waitFor(`!!document.querySelector('input[placeholder]')`, '단어장')
   await sleep(500)
-  // 메모만 적어도 그 단어는 '헷갈림' 으로 들어온다 — 그 탭에서 찾는다
+  // 메모와 함께 Unsure로 표시했으므로 그 탭에서 찾는다
   await ctx.page.evaluate(`(() => {
     const tab = [...document.querySelectorAll('div.border-b button')]
       .find(b => /^Unsure/.test(b.innerText.trim()));

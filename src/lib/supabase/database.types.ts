@@ -224,7 +224,6 @@ export type Database = {
           source_language: string
           target_language: string
           source_hash: string
-          source_text: string
           translated_text: string
           created_at: string
         }
@@ -232,7 +231,6 @@ export type Database = {
           source_language: string
           target_language?: string
           source_hash: string
-          source_text: string
           translated_text: string
           created_at?: string
         }
@@ -240,7 +238,6 @@ export type Database = {
           source_language?: string
           target_language?: string
           source_hash?: string
-          source_text?: string
           translated_text?: string
           created_at?: string
         }
