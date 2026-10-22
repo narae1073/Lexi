@@ -110,12 +110,12 @@ Deno.serve(async (req) => {
 
   const decoded = decodeEntities(translatedText)
 
-  // 캐시 저장이 실패해도 번역 결과는 그대로 돌려준다
+  // 캐시 저장이 실패해도 번역 결과는 그대로 돌려준다.
+  // 원문은 저장하지 않는다 — 조회 키인 source_hash 만 남긴다.
   const { error: cacheError } = await client.from('translation_cache').insert({
     source_language: source,
     target_language: target,
     source_hash: hash,
-    source_text: text,
     translated_text: decoded,
   })
   if (cacheError) console.error('translation cache insert failed', cacheError.message)
