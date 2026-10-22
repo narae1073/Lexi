@@ -4,6 +4,8 @@ import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { Document, Folder } from '../../types'
 import {
   documentFromRow,
+  documentTombstoneFromRow,
+  documentTombstoneToRow,
   documentToRow,
   folderFromRow,
   folderToRow,
@@ -13,6 +15,7 @@ import {
   wordStateFromRow,
   wordStateToRow,
   type DocumentRow,
+  type DocumentTombstoneRow,
   type FolderRow,
 } from './mapping'
 import type { WordStateRow } from './mapping'
@@ -332,5 +335,13 @@ describe('word_occurrences 매핑', () => {
   it('옛 행에 횟수 열이 없어도 1 로 읽는다 — 마이그레이션 이전 데이터', () => {
     const { occurrences_count: _dropped, ...legacy } = occurrenceToRows(USER, record)[0]
     expect(occurrenceFromRows([legacy], doc).count).toBe(1)
+  })
+})
+
+describe('document_tombstones 매핑', () => {
+  it('양방향으로 값이 보존된다', () => {
+    const tombstone = { documentId: 'doc-1', purgedAt: T1 }
+    const row = documentTombstoneToRow(USER, tombstone) as DocumentTombstoneRow
+    expect(documentTombstoneFromRow(row)).toEqual(tombstone)
   })
 })

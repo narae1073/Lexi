@@ -1,6 +1,7 @@
 import type { Database } from '../supabase/database.types'
 import type { Document, Folder, LanguageCode } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
+import type { DocumentTombstone } from '../storage/purged'
 import type { WordStateRecord } from './merge'
 
 /**
@@ -12,6 +13,7 @@ import type { WordStateRecord } from './merge'
 
 export type WordStateRow = Database['public']['Tables']['word_states']['Row']
 export type DocumentRow = Database['public']['Tables']['documents']['Row']
+export type DocumentTombstoneRow = Database['public']['Tables']['document_tombstones']['Row']
 export type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Row']
 
 /**
@@ -22,6 +24,7 @@ export type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Ro
  * 기본키가 부딪힌다.
  */
 type WordStateInsert = Database['public']['Tables']['word_states']['Insert']
+type DocumentTombstoneInsert = Database['public']['Tables']['document_tombstones']['Insert']
 type OccurrenceInsert = Database['public']['Tables']['word_occurrences']['Insert']
 
 export type OccurrenceGroup = { documentId: string; lemma: string; rows: OccurrenceKey[] }
@@ -82,6 +85,30 @@ export function wordStateFromRow(row: WordStateRow): WordStateRecord {
     // 시각도 함께 null 로 둬야 다른 기기의 메모를 지우지 않는다
     note: row.note ?? undefined,
     noteUpdatedAt: row.note_updated_at ?? undefined,
+  }
+}
+
+/**
+ * 문서 묘비 → 서버 행.
+ *
+ * 문서 행을 지운 뒤에도 남는 유일한 흔적이다. 다른 기기는 이 행을 받아 로컬의
+ * 문서를 지우고, 다시 올리지 않는다.
+ */
+export function documentTombstoneToRow(
+  userId: string,
+  tombstone: DocumentTombstone,
+): DocumentTombstoneInsert {
+  return {
+    user_id: userId,
+    document_id: tombstone.documentId,
+    purged_at: tombstone.purgedAt,
+  }
+}
+
+export function documentTombstoneFromRow(row: DocumentTombstoneRow): DocumentTombstone {
+  return {
+    documentId: row.document_id,
+    purgedAt: row.purged_at,
   }
 }
 

@@ -27,7 +27,7 @@ const URL_BASE = env.VITE_SUPABASE_URL
 const ANON = env.VITE_SUPABASE_ANON_KEY
 
 /** 사용자 데이터 — 절대 보이면 안 된다 */
-const PRIVATE_TABLES = ['user_languages', 'documents', 'word_states', 'word_occurrences']
+const PRIVATE_TABLES = ['user_languages', 'documents', 'document_tombstones', 'word_states', 'word_occurrences']
 /** 공유 캐시 — anon 읽기가 허용된다 */
 const PUBLIC_TABLES = ['translation_cache', 'dictionary_entries']
 

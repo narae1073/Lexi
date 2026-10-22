@@ -6,7 +6,7 @@ import type { Document } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
-import { changedOccurrenceDocuments, pushOccurrences, syncOnce } from './sync'
+import { changedOccurrenceDocuments, mergeTombstones, pushOccurrences, syncOnce } from './sync'
 
 /**
  * 서버를 흉내낸다 — 두 기기 사이에서만 나타나는 문제를 잡으려면 그것이 필요하다.
@@ -20,6 +20,7 @@ function memoryServer(rowCap = 1000) {
   const tables: Record<string, Record<string, unknown>[]> = {
     user_languages: [],
     documents: [],
+    document_tombstones: [],
     folders: [],
     word_states: [],
     word_occurrences: [],
@@ -31,6 +32,7 @@ function memoryServer(rowCap = 1000) {
   const keyOf = (table: string, row: Record<string, unknown>): string => {
     if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
     if (table === 'documents') return String(row.id)
+    if (table === 'document_tombstones') return `${row.user_id}|${row.document_id}`
     if (table === 'folders') return String(row.id)
     if (table === 'user_languages') return `${row.user_id}|${row.language_code}`
     return String(row.id ?? `${row.user_id}|${row.lemma}|${row.surface}`)
@@ -205,6 +207,7 @@ beforeEach(async () => {
   await idbDelete(STORES.documents, doc.id)
   await idbDelete(STORES.documentMeta, doc.id)
   await idbDelete(STORES.wordOccurrences, [doc.id, 'chat'])
+  await idbDelete(STORES.documentTombstones, doc.id)
 })
 
 /**
@@ -574,4 +577,63 @@ describe('큰 변경은 나눠 보낸다', () => {
     // 500개씩 나뉘어 두 번 간다 — 한 요청의 본문이 서버 한도를 넘지 않게
     expect(server.upsertCalls('word_states')).toBeGreaterThan(1)
   }, 30_000)
+})
+
+describe('완전 삭제', () => {
+  it('A 가 완전 삭제한 문서는 B 에서 되살아나지 않는다', async () => {
+    const server = memoryServer()
+    server.add('documents', {
+      id: doc.id,
+      user_id: 'user-1',
+      title: doc.title,
+      language_code: 'fr',
+      raw_text: doc.rawText,
+      created_at: doc.createdAt,
+      updated_at: doc.updatedAt,
+      deleted_at: null,
+      folder_id: null,
+      folder_updated_at: null,
+    })
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.documentTombstones, {
+      documentId: doc.id,
+      purgedAt: '2026-10-07T00:00:00.000Z',
+    })
+
+    // A 의 purge 는 오프라인이라 서버 삭제가 실패했다고 하자 — 묘비 동기화가 재시도한다
+    expect(server.count('documents')).toBe(1)
+
+    // A 동기화: 묘비가 서버로 가고, 서버 문서도 지워지며, 로컬 문서도 정리된다
+    await sync(server)
+    expect(server.count('documents')).toBe(0)
+    expect(server.count('document_tombstones')).toBe(1)
+    expect(await idbGetAll(STORES.documents)).toHaveLength(0)
+
+    // B: 문서를 아직 들고 있다가 동기화 — 묘비를 받고 다시 올리지 않는다
+    await idbPut(STORES.documents, doc)
+    const report = await sync(server)
+    expect(report.pushed).toBe(0)
+    expect(await idbGetAll(STORES.documents)).toHaveLength(0)
+    expect(server.count('documents')).toBe(0)
+    expect(server.count('document_tombstones')).toBe(1)
+  })
+})
+
+describe('문서 묘비 합치기', () => {
+  const T1 = '2026-10-01T00:00:00.000Z'
+  const T2 = '2026-10-02T00:00:00.000Z'
+
+  it('한 번 지운 것은 남고, 같은 문서는 이른 시각을 쓴다', () => {
+    const merged = mergeTombstones(
+      [{ documentId: 'd1', purgedAt: T1 }],
+      [
+        { documentId: 'd1', purgedAt: T2 },
+        { documentId: 'd2', purgedAt: T1 },
+      ],
+    )
+    expect(merged).toEqual([
+      { documentId: 'd1', purgedAt: T1 },
+      { documentId: 'd2', purgedAt: T1 },
+    ])
+  })
 })

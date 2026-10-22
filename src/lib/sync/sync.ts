@@ -1,8 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { STORES, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { STORES, idbDelete, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
-import { purgedDocumentIds } from '../storage/purged'
+import { purgedDocumentIds, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
@@ -12,6 +12,8 @@ import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
 import { isNewer, mergeLanguages, mergeWordStates, type WordStateRecord } from './merge'
 import {
   documentFromRow,
+  documentTombstoneFromRow,
+  documentTombstoneToRow,
   documentToRow,
   folderFromRow,
   folderToRow,
@@ -19,6 +21,7 @@ import {
   wordStateFromRow,
   wordStateToRow,
   type DocumentRow,
+  type DocumentTombstoneRow,
   type FolderRow,
   type OccurrenceRow,
   type WordStateRow,
@@ -84,8 +87,9 @@ export async function readLocal(): Promise<{
   folders: Folder[]
   wordStates: WordStateRecord[]
   occurrences: WordOccurrence[]
+  tombstones: DocumentTombstone[]
 }> {
-  const [documents, folders, wordStates, occurrences] = await Promise.all([
+  const [documents, folders, wordStates, occurrences, tombstones] = await Promise.all([
     idbGetAll<Document>(STORES.documents),
     idbGetAll<Folder>(STORES.folders),
     idbGetAll<
@@ -106,6 +110,7 @@ export async function readLocal(): Promise<{
       }
     >(STORES.wordStates),
     idbGetAll<WordOccurrence>(STORES.wordOccurrences),
+    idbGetAll<DocumentTombstone>(STORES.documentTombstones),
   ])
 
   return {
@@ -138,6 +143,7 @@ export async function readLocal(): Promise<{
       noteUpdatedAt: r.noteUpdatedAt,
     })),
     occurrences,
+    tombstones,
   }
 }
 
@@ -189,6 +195,9 @@ function idbKeyOf(
       ? [state.languageCode, state.lemma]
       : undefined
   }
+  if (store === STORES.documentTombstones) {
+    return (value as { documentId?: IDBValidKey }).documentId
+  }
   return undefined
 }
 
@@ -197,11 +206,15 @@ export async function writeLocal(
   wordStates: WordStateRecord[],
   occurrences: WordOccurrence[],
   folders: Folder[],
+  tombstones: DocumentTombstone[] = [],
 ): Promise<void> {
   await Promise.all([
     ...documents.map((doc) => idbPutIfChanged(STORES.documents, doc)),
     ...folders.map((folder) => idbPutIfChanged(STORES.folders, folder)),
     ...wordStates.map((state) => idbPutIfChanged(STORES.wordStates, state)),
+    ...tombstones.map((tombstone) =>
+      idbPutIfChanged(STORES.documentTombstones, tombstone),
+    ),
   ])
 
   // 등장 기록은 문서 단위로 갈아끼운다 — 일부만 덮으면 옛 표기가 남는다
@@ -213,6 +226,13 @@ export async function writeLocal(
   }
   for (const [documentId, rows] of byDocument) {
     await replaceOccurrences(documentId, rows)
+  }
+
+  // 다른 기기에서 완전 삭제된 문서는 이 기기에서도 지운다 — 묘비가 이긴다
+  for (const tombstone of tombstones) {
+    await idbDelete(STORES.documents, tombstone.documentId, { silent: true })
+    await idbDelete(STORES.documentMeta, tombstone.documentId, { silent: true })
+    await replaceOccurrences(tombstone.documentId, [])
   }
 }
 
@@ -235,7 +255,13 @@ const MAX_ROWS = 200_000
  */
 async function fetchAll<T>(
   db: SupabaseClient<Database>,
-  table: 'user_languages' | 'documents' | 'folders' | 'word_states' | 'word_occurrences',
+  table:
+    | 'user_languages'
+    | 'documents'
+    | 'document_tombstones'
+    | 'folders'
+    | 'word_states'
+    | 'word_occurrences',
   userId: string,
   order: string,
   columns = '*',
@@ -281,9 +307,10 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
    * 실제로는 그 이상인데 잘린 것이었다. 그 숫자를 믿은 나는 '서버에 다 있다' 고
    * 잘못 읽었다.
    */
-  const [languageRows, documents, folders, wordStates, occurrences] = await Promise.all([
+  const [languageRows, documents, tombstones, folders, wordStates, occurrences] = await Promise.all([
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
     fetchAll<DocumentRow>(db, 'documents', userId, 'id'),
+    fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id'),
     fetchAll<FolderRow>(db, 'folders', userId, 'id'),
     fetchAll<WordStateRow>(db, 'word_states', userId, 'id'),
     fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id'),
@@ -292,6 +319,7 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
   return {
     languages: languageRows.map((r) => r.language_code),
     documents: documents.map(documentFromRow),
+    tombstones: tombstones.map(documentTombstoneFromRow),
     folders: folders.map(folderFromRow),
     wordStates: wordStates.map(wordStateFromRow),
     occurrences: occurrences as OccurrenceRow[],
@@ -328,9 +356,29 @@ export async function syncOnce({
    * 삭제 요청과 이 조회가 겹치면 지운 문서가 그대로 내려온다. 병합은 그걸 되살리고,
    * 다음 동기화는 되살아난 것을 서버에 다시 올린다 — 지운 문서가 영구히 되돌아온다.
    */
-  const purged = purgedDocumentIds()
-  const liveRemote = remote.documents.filter((d) => !purged.includes(d.id))
-  const liveOccurrences = remote.occurrences.filter((o) => !purged.includes(o.document_id))
+  /**
+   * 완전 삭제는 묘비로 나른다.
+   *
+   * 문서 행이 서버에서 사라진 것을 다른 기기가 '이 기기에만 있는 문서' 로 오해해
+   * 다시 올리면 삭제가 무효가 된다. 이 기기의 묘비와 서버의 묘비를 합쳐, 지운
+   * 문서는 어느 쪽에서도 살아나지 않게 한다.
+   *
+   * 옛 버전의 localStorage 목록에만 남은 삭제도 묘비로 승격한다 — 그러지 않으면
+   * 그 문서는 이 기기에서만 지워진 채로 남는다.
+   */
+  const legacyPurged = purgedDocumentIds()
+  const localTombstones = [
+    ...local.tombstones,
+    ...legacyPurged
+      .filter((id) => !local.tombstones.some((t) => t.documentId === id))
+      .map((id) => ({ documentId: id, purgedAt: new Date(0).toISOString() })),
+  ]
+  const tombstones = mergeTombstones(localTombstones, remote.tombstones)
+  const tombstoneIds = new Set(tombstones.map((t) => t.documentId))
+  const isLive = (id: string) => !tombstoneIds.has(id)
+
+  const liveRemote = remote.documents.filter((d) => isLive(d.id))
+  const liveOccurrences = remote.occurrences.filter((o) => isLive(o.document_id))
   const remoteDocs = liveRemote
 
   /**
@@ -350,17 +398,18 @@ export async function syncOnce({
     local.occurrences,
     liveOccurrences,
     recomputed,
-    [...local.documents, ...remoteDocs],
-    new Set(purged),
+    [...local.documents.filter((d) => isLive(d.id)), ...remoteDocs],
+    tombstoneIds,
   )
 
-  const mergedDocuments = mergeDocuments(local.documents, remoteDocs)
-    // 로컬에 남은 지운 문서가 있어도 서버로 다시 올리지 않는다
-    .filter((d) => !purged.includes(d.id))
+  const mergedDocuments = mergeDocuments(
+    local.documents.filter((d) => isLive(d.id)),
+    remoteDocs,
+  )
   // 없앤 표시도 status = null 인 행으로 남긴다 — 행 자체가 즐겨찾기·메모·횟수를 든다
   const mergedWords = words.merged
 
-  await writeLocal(mergedDocuments, mergedWords, occurrences, folders)
+  await writeLocal(mergedDocuments, mergedWords, occurrences, folders, tombstones)
 
   /**
    * 바뀐 문서만 보낸다.
@@ -410,7 +459,15 @@ export async function syncOnce({
   const foldersToPush = changedFolders(folders, remote.folders)
 
   // 상태·문서·폴더를 먼저 보낸다 — 진도가 문서에 지면 안 된다
-  await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly, folders: foldersToPush })
+  await push({
+    userId,
+    db,
+    languages,
+    documents: documentsToPush,
+    words: words.pushOnly,
+    folders: foldersToPush,
+    tombstones,
+  })
 
   /**
    * 등장 기록도 **달라진 문서만** 보낸다.
@@ -439,6 +496,28 @@ export async function syncOnce({
     localWords: mergedWords.length,
     occurrencePush,
   }
+}
+
+/**
+ * 문서 묘비 합치기 — 삭제는 되돌릴 수 없으므로 한 번이라도 지웠으면 남긴다.
+ * 같은 문서를 두 기기에서 지웠다면 이른 시각을 쓴다.
+ */
+export function mergeTombstones(
+  local: DocumentTombstone[],
+  remote: DocumentTombstone[],
+): DocumentTombstone[] {
+  const byId = new Map<string, DocumentTombstone>()
+  for (const tombstone of [...local, ...remote]) {
+    const existing = byId.get(tombstone.documentId)
+    if (!existing) {
+      byId.set(tombstone.documentId, tombstone)
+      continue
+    }
+    if (Date.parse(tombstone.purgedAt) < Date.parse(existing.purgedAt)) {
+      byId.set(tombstone.documentId, tombstone)
+    }
+  }
+  return [...byId.values()]
 }
 
 /** 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다 */
@@ -666,6 +745,7 @@ export async function push({
   documents,
   words,
   folders,
+  tombstones,
 }: {
   userId: string
   db: SupabaseClient<Database>
@@ -673,6 +753,7 @@ export async function push({
   documents: Document[]
   words: WordStateRecord[]
   folders: Folder[]
+  tombstones: DocumentTombstone[]
 }): Promise<void> {
   const failures: string[] = []
 
@@ -684,6 +765,23 @@ export async function push({
     } catch (error) {
       failures.push(`${table}: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  // 묘비 먼저 — 문서가 실패해도 '지웠다' 는 사실은 나가야 한다
+  for (const part of chunk(tombstones, WRITE_CHUNK)) {
+    await send('document_tombstones', () =>
+      db
+        .from('document_tombstones')
+        .upsert(part.map((tombstone) => documentTombstoneToRow(userId, tombstone)), {
+          onConflict: 'user_id,document_id',
+        }),
+    )
+  }
+  // 지운 문서는 서버에서도 지운다 — 오프라인에서 실패했어도 다음 동기화가 재시도한다
+  for (const part of chunk(tombstones.map((tombstone) => tombstone.documentId), 100)) {
+    await send('documents', () =>
+      db.from('documents').delete().eq('user_id', userId).in('id', part),
+    )
   }
 
   // 진도 먼저 — 문서가 실패해도 이것은 나가야 한다.

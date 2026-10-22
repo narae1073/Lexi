@@ -14,7 +14,32 @@
  * 쓰이지 않으므로, 목록이 조금 자라는 것이 되살아나는 것보다 낫다.
  */
 
+import { STORES, idbGetAll, idbPut } from './localDb'
+
 const KEY = 'lexi.purged'
+
+/** 이 기기에서 완전 삭제한 문서 — 행이 사라진 뒤에도 남는 묘비 */
+export type DocumentTombstone = {
+  documentId: string
+  purgedAt: string
+}
+
+/**
+ * 완전 삭제를 기기에 남긴다 — 동기화가 이 목록을 서버로 보낸다.
+ *
+ * localStorage 목록은 같은 기기에서 곧바로 다시 받지 않기 위한 빠른 방어다.
+ * 계정 사이에 지운 사실을 나누는 것은 이 IndexedDB 묘비가 맡는다.
+ */
+export async function putDocumentTombstone(
+  documentId: string,
+  purgedAt = new Date().toISOString(),
+): Promise<void> {
+  await idbPut(STORES.documentTombstones, { documentId, purgedAt })
+}
+
+export async function readDocumentTombstones(): Promise<DocumentTombstone[]> {
+  return idbGetAll<DocumentTombstone>(STORES.documentTombstones)
+}
 
 export function markPurged(id: string): void {
   try {

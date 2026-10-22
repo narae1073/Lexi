@@ -57,6 +57,24 @@ export type Database = {
         }
         Relationships: []
       }
+      document_tombstones: {
+        Row: {
+          user_id: string
+          document_id: string
+          purged_at: string
+        }
+        Insert: {
+          user_id: string
+          document_id: string
+          purged_at?: string
+        }
+        Update: {
+          user_id?: string
+          document_id?: string
+          purged_at?: string
+        }
+        Relationships: []
+      }
       folders: {
         Row: {
           id: string

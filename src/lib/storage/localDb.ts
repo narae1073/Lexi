@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'lexi'
-const DB_VERSION = 5
+const DB_VERSION = 6
 
 export const STORES = {
   documents: 'documents',
@@ -27,6 +27,13 @@ export const STORES = {
    * 만 알면 언제든 다시 계산할 수 있다.
    */
   documentMeta: 'documentMeta',
+  /**
+   * 완전 삭제한 문서의 묘비 — 계정으로 동기화된다.
+   *
+   * 문서 행이 서버에서 사라진 것을 다른 기기가 '이 기기에만 있는 문서' 로 오해해
+   * 다시 올리면 완전 삭제가 무효가 된다. 지운 사실을 남겨 되살아나지 않게 한다.
+   */
+  documentTombstones: 'documentTombstones',
 } as const
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
@@ -38,7 +45,13 @@ export type StoreName = (typeof STORES)[keyof typeof STORES]
  * 재사용용이고, documentMeta 는 기기 안의 계산 기록이라 서버와 상관없다.
  */
 /** 폴더 — 문서를 모으는 자리. 문서·상태와 함께 계정 동기화 대상이다 */
-const SYNCED_STORES: readonly StoreName[] = ['documents', 'folders', 'wordStates', 'wordOccurrences']
+const SYNCED_STORES: readonly StoreName[] = [
+  'documents',
+  'folders',
+  'wordStates',
+  'wordOccurrences',
+  'documentTombstones',
+]
 
 type LocalWriteListener = (store: StoreName) => void
 
@@ -107,6 +120,9 @@ function openDb(): Promise<IDBDatabase> {
         s.createIndex('languageCode', 'languageCode')
         s.createIndex('lemma', 'lemma')
         s.createIndex('documentId', 'documentId')
+      }
+      if (!db.objectStoreNames.contains(STORES.documentTombstones)) {
+        db.createObjectStore(STORES.documentTombstones, { keyPath: 'documentId' })
       }
     }
     req.onsuccess = () => resolve(req.result)

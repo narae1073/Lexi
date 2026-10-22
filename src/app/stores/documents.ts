@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
-import { markPurged } from '../../lib/storage/purged'
+import { markPurged, putDocumentTombstone } from '../../lib/storage/purged'
 import { deleteDocumentRemote } from '../../lib/sync/sync'
 import { useAuthStore } from './auth'
 import { useOccurrencesStore } from './occurrences'
@@ -159,6 +159,9 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
    */
   purge: async (id) => {
     markPurged(id)
+    await putDocumentTombstone(id).catch((error) => {
+      console.error('문서 묘비 저장 실패', error)
+    })
     set((s) => ({ documents: s.documents.filter((d) => d.id !== id) }))
 
     try {
