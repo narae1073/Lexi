@@ -9,6 +9,8 @@ import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
 import { buildWordbook } from '../wordbook/buildWordbook'
+import { QuizAnswerButtons } from './QuizAnswerButtons'
+import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
 import {
@@ -23,7 +25,6 @@ import {
   summarize,
   type QuizWord,
 } from './quizSession'
-import { QuizCloze } from './QuizCloze'
 
 type Phase = 'setup' | 'session' | 'summary'
 
@@ -300,10 +301,8 @@ export function QuizView() {
    * 앎 단어 복습은 빈칸으로 낸다 — 답을 누르기 전에는 단어를 보여 주지 않는다.
    * 빈칸을 만들 수 없는 문장이면 기존 방식(단어 → 뜻)으로 되돌아간다.
    */
-  const cloze =
-    answer === null && word.status === 'known'
-      ? blankWord(word.sentence, word.surface)
-      : null
+  const clozeText = word.status === 'known' ? blankWord(word.sentence, word.surface) : null
+  const isCloze = clozeText !== null
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -313,59 +312,42 @@ export function QuizView() {
 
       {/*
         별은 상태와 무관하므로 문제를 푸는 도중 계속 보인다 — 붙이거나 뗄 수 있다.
-        key 는 단어가 바뀔 때 색창을 닫기 위함이다. 빈칸 문제에서는 단어 자체를
-        숨기므로 답한 뒤에만 보인다.
+        key 는 단어가 바뀔 때 색창을 닫기 위함이다. 빈칸 문제에서는 답한 뒤에만
+        단어를 공개한다 (그 전에는 선택지 안에 숨어 있다).
       */}
-      {cloze !== null ? (
-        <QuizCloze text={cloze} />
+      {isCloze ? (
+        <>
+          <QuizClozeQuestion
+            key={word.lemma}
+            word={word}
+            cloze={clozeText}
+            entries={entries}
+            sessionWords={words}
+            answer={answer}
+            onAnswer={answerWord}
+          />
+          {answer !== null && (
+            <QuizPrompt key={`reveal:${word.lemma}`} word={word} languageCode={languageCode} />
+          )}
+        </>
       ) : (
         <QuizPrompt key={word.lemma} word={word} languageCode={languageCode} />
       )}
 
-      <div className="mt-10 flex justify-center gap-2">
-        {/* 답은 한 번뿐이다 — 답한 뒤에는 세 단추 모두 잠긴다.
-            사전을 먼저 본 단어는 '앎' 이 잠긴다 (아래 사전 단추 참고) */}
-        <button
-          type="button"
-          data-quiz-answer="known"
-          aria-pressed={answer === 'known'}
-          disabled={answer !== null || peeked}
-          onClick={() => answerWord('known')}
-          className={`rounded-lg border px-5 py-2.5 text-sm transition disabled:opacity-30 ${
-            answer === 'known' ? 'border-accent text-ink' : 'border-line text-ink-muted hover:text-ink'
-          }`}
-        >
-          {t('quiz.know')}
-        </button>
-        <button
-          type="button"
-          data-quiz-answer="unsure"
-          aria-pressed={answer === 'unsure'}
-          disabled={answer !== null}
-          onClick={() => answerWord('unsure')}
-          className={`rounded-lg border px-5 py-2.5 text-sm transition disabled:opacity-30 ${
-            answer === 'unsure' ? 'border-accent text-ink' : 'border-line text-ink-muted hover:text-ink'
-          }`}
-        >
-          {t('quiz.unsure')}
-        </button>
-        <button
-          type="button"
-          data-quiz-answer="unknown"
-          aria-pressed={answer === 'unknown'}
-          disabled={answer !== null}
-          onClick={() => answerWord('unknown')}
-          className={`rounded-lg border px-5 py-2.5 text-sm transition disabled:opacity-30 ${
-            answer === 'unknown' ? 'border-accent text-ink' : 'border-line text-ink-muted hover:text-ink'
-          }`}
-        >
-          {t('quiz.new')}
-        </button>
-      </div>
+      {/* 앎 복습은 선택지가 답을 대신한다 — 세 단추는 새 단어·헷갈림의 몫이다 */}
+      {!isCloze && (
+        <div className="mt-10">
+          <QuizAnswerButtons
+            answer={answer}
+            knownDisabled={answer !== null || peeked}
+            onAnswer={answerWord}
+          />
+        </div>
+      )}
 
-      {/* 답하기 전에도, 답한 뒤에도 쓸 수 있다. 먼저 보면 '앎' 이 잠길 뿐이다.
-          빈칸 문제에서는 사전이 답을 알려 주므로 답한 뒤에만 보인다 */}
-      {cloze === null && (
+      {/* 새 단어·헷갈림 문제에서만 사전을 연다. 앎 복습은 답한 뒤 뜻이 자동으로 나온다.
+          먼저 보면 '앎' 이 잠긴다 */}
+      {!isCloze && (
         <div className="mt-4 flex justify-center">
           <button
             type="button"

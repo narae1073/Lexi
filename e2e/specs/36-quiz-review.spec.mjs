@@ -68,6 +68,10 @@ export async function run(ctx) {
     (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-word]')`)) === false)
   ctx.check('빈칸에 답이 새지 않는다',
     typeof cloze === 'string' && !cloze.includes('alpha'), String(cloze))
+  ctx.check('오답을 만들 단어가 모자라면 세 단추로 돌아간다',
+    (await ctx.page.evaluate(`!!document.querySelector('[data-quiz-choices-few]')`)) === true &&
+    (await ctx.page.evaluate(`document.querySelectorAll('[data-quiz-choice]').length`)) === 0,
+    await ctx.page.evaluate(`document.querySelector('[data-quiz-choices-few]')?.innerText ?? ''`))
   ctx.check('최근에 본 앎 단어는 나오지 않는다 — 한 문제뿐이다',
     (await ctx.page.evaluate(`document.querySelector('[data-quiz-progress]')?.innerText ?? ''`)).includes('1 / 1'),
     await ctx.page.evaluate(`document.querySelector('[data-quiz-progress]')?.innerText ?? ''`))

@@ -138,8 +138,11 @@ export const en = {
     lead: 'Pick a language and how many words to go through.',
     ruleHint:
       'A "New" word cannot become "Know" right away — pressing Know turns it into "Unsure". Press Know again on that word and it finally becomes "Know".',
-    reviewHint: 'Known words come back now and then — fill in the blank once enough time has passed.',
-    clozeHint: 'Recall the word that fills the blank.',
+    reviewHint: 'Known words come back now and then — pick the word that fills the blank.',
+    clozeHint: 'Pick the word that fills the blank.',
+    correct: 'Correct',
+    wrong: 'Not quite',
+    choicesFew: 'Not enough words to offer choices — mark it yourself.',
     pickLanguage: 'Pick the language to quiz.',
     countLabel: 'Words',
     none: 'Nothing to quiz yet — mark some words as Unsure or New first.',
