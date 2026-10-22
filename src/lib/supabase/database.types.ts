@@ -273,6 +273,10 @@ export type Database = {
     }
     Views: Record<never, never>
     Functions: {
+      sync_snapshot: {
+        Args: Record<PropertyKey, never>
+        Returns: string
+      }
       replace_word_occurrences: {
         Args: { p_document_id: string; p_rows: Json }
         Returns: undefined
