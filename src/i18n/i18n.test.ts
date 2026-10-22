@@ -17,6 +17,33 @@ describe('사전 무결성', () => {
     const enKeys = flatten(en).sort()
     expect(flatten(ko).sort()).toEqual(enKeys)
   })
+
+  /** Recovery controls and storage status must be readable in both app languages. */
+  it('recovery and storage copy exists in every dictionary', () => {
+    const flatten = (obj: object, prefix = ''): string[] =>
+      Object.entries(obj).flatMap(([key, value]) =>
+        typeof value === 'object' && value !== null
+          ? flatten(value, `${prefix}${key}.`)
+          : [`${prefix}${key}`],
+      )
+
+    const required = [
+      'account.refreshAll',
+      'account.refreshAllHint',
+      'account.clockRollback',
+      'settings.storageTitle',
+      'settings.storagePersisted',
+      'settings.storageNotPersisted',
+      'settings.storageRequest',
+      'settings.storageUsage',
+      'settings.storageUnavailable',
+    ]
+
+    for (const key of required) {
+      expect(flatten(en)).toContain(key)
+      expect(flatten(ko)).toContain(key)
+    }
+  })
 })
 
 describe('interpolate', () => {

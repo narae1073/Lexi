@@ -229,6 +229,9 @@ export const en = {
     pendingHint: 'Counted as saves, not as words',
     clockRollback:
       "This device's clock moved back. Push progress was reset and local changes are being sent again.",
+    refreshAll: 'Refresh all data',
+    refreshAllHint:
+      'Reads everything from the server again and merges it with this device. Local changes are kept — nothing is deleted.',
     notSentYet: '{count} change(s) not sent to the server yet',
     nothingSent: 'Nothing was sent — there was nothing new to send.',
     errorRateLimit:
@@ -346,6 +349,13 @@ export const en = {
     appLanguage: 'App language',
     theme: 'Theme',
     system: 'System',
+    storageTitle: 'Storage',
+    storagePersisted: 'This browser keeps local data even when space runs low.',
+    storageNotPersisted:
+      'This browser may clear local data when space runs low. Ask it to keep the data.',
+    storageRequest: 'Ask the browser to keep data',
+    storageUsage: 'Local data: {used} of {quota}',
+    storageUnavailable: 'This browser does not report storage status.',
     close: 'Close',
   },
 

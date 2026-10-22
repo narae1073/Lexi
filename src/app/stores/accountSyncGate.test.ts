@@ -37,6 +37,8 @@ import {
   STORES,
   bumpLocalRevision,
   deleteLocalDatabase,
+  ensureLocalSyncMeta,
+  idbPut,
   readLocalSyncMeta,
   subtractPending,
 } from '../../lib/storage/localDb'
@@ -751,7 +753,7 @@ describe('동기화 입구', () => {
       version: 2 as const,
       pull: { snapshot: '2026-01-01T00:00:00.000Z' },
       push: {},
-      localEpoch: 'epoch-a',
+      localEpoch: (await ensureLocalSyncMeta()).epoch,
       lastSyncedAt: '2026-01-01T00:00:00.000Z',
     }
     writeStoredSyncState('user-a', seeded)
@@ -781,6 +783,9 @@ describe('동기화 입구', () => {
     useAuthStore.setState({ user: account('user-a') })
     useLanguagesStore.setState({ enrolled: ['fr'], ready: true })
     const pull = { snapshot: '2026-01-01T00:00:00.000Z' }
+    // Keep local learning data so the empty-device full pull does not also
+    // force `since = {}` — this test isolates the clock rollback.
+    await idbPut(STORES.documents, { id: 'doc-1', title: '남아 있는 문서' })
     writeStoredSyncState('user-a', {
       version: 2,
       pull,
@@ -788,7 +793,7 @@ describe('동기화 입구', () => {
         documents: '2027-01-01T00:00:00.000Z',
         wordStates: '2026-01-02T00:00:00.000Z',
       },
-      localEpoch: 'epoch-a',
+      localEpoch: (await ensureLocalSyncMeta()).epoch,
     })
 
     vi.mocked(syncOnce).mockResolvedValue({
@@ -833,7 +838,7 @@ describe('동기화 입구', () => {
       version: 2,
       pull: {},
       push: {},
-      localEpoch: 'epoch-a',
+      localEpoch: (await ensureLocalSyncMeta()).epoch,
     })
 
     const wordWatermark = '2026-01-02T00:00:00.000Z'
@@ -932,5 +937,126 @@ describe('동기화 도중 계정이 바뀌면', () => {
     expect(occurrencesLoad).not.toHaveBeenCalled()
     expect(useSyncStore.getState().lastSyncedAt).toBe('2026-01-01T00:00:00.000Z')
     expect(useSyncStore.getState().report).toBeNull()
+  })
+})
+
+/**
+ * 기기 저장소가 사라졌는지 알아채는 일.
+ *
+ * localStorage 의 워터마크는 **그때 있던 IndexedDB** 를 설명한다. 브라우저가 저장소를
+ * 비우면 DB 의 epoch 가 새로 생기지만 localStorage 는 남을 수 있다. 그때 옛 워터마크를
+ * 그대로 믿으면 서버의 옛 행을 건너뛰고, 옛 시각을 기준으로 로컬 변경을 빠뜨린다.
+ *
+ * 그래서 epoch 가 다르거나 v2 상태가 없으면 **받기도 보내기도 처음부터** 한다.
+ * 지우는 것이 아니다 — 서버에서 다시 읽고, 로컬은 다시 올린다.
+ */
+describe('로컬 저장소의 epoch 와 전체 재동기화', () => {
+  const pull = { snapshot: '2026-01-01T00:00:00.000Z' }
+  const push = { documents: '2020-01-01T00:00:00.000Z' }
+
+  function stubScreenLoads() {
+    vi.spyOn(useDocumentsStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useFoldersStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useWordStatesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+    vi.spyOn(useOccurrencesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+  }
+
+  function signedIn() {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useLanguagesStore.setState({ enrolled: ['fr'], ready: true })
+    stubScreenLoads()
+  }
+
+  it('forces a full pull and full push when the local epoch no longer matches', async () => {
+    signedIn()
+    const currentEpoch = (await ensureLocalSyncMeta()).epoch
+    // localStorage survived, but the database under it did not.
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push,
+      localEpoch: `evicted-${currentEpoch}`,
+    })
+    await idbPut(STORES.documents, { id: 'doc-1', title: '이 기기에 남은 문서' })
+    vi.mocked(syncOnce).mockResolvedValue(report([]))
+
+    await useSyncStore.getState().syncQuietly()
+
+    // Both watermarks belong to the database that no longer exists.
+    expect(syncOnce).toHaveBeenCalledWith(expect.objectContaining({ since: {}, push: {} }))
+    // The new state records the epoch that is actually here now.
+    expect(readStoredSyncState('user-a')?.localEpoch).toBe(currentEpoch)
+  })
+
+  it('does a full pull and full push when no version 2 state exists', async () => {
+    signedIn()
+    vi.mocked(syncOnce).mockResolvedValue(report([]))
+
+    await useSyncStore.getState().syncQuietly()
+
+    expect(syncOnce).toHaveBeenCalledWith(expect.objectContaining({ since: {}, push: {} }))
+    expect(readStoredSyncState('user-a')?.version).toBe(2)
+  })
+
+  it('forces a full pull when local learning data is empty but a snapshot exists', async () => {
+    signedIn()
+    const currentEpoch = (await ensureLocalSyncMeta()).epoch
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push,
+      localEpoch: currentEpoch,
+    })
+    // No documents, words, folders, occurrences, or tombstones — responseCache
+    // and documentMeta alone must not count as learning data.
+    await idbPut(STORES.responseCache, { key: 'cache-1', value: 1 })
+    vi.mocked(syncOnce).mockResolvedValue(report([]))
+
+    await useSyncStore.getState().syncQuietly()
+
+    // The pull restarts from the beginning; push progress is still valid.
+    expect(syncOnce).toHaveBeenCalledWith(expect.objectContaining({ since: {}, push }))
+  })
+
+  it('keeps both watermarks when local data exists and the epoch matches', async () => {
+    signedIn()
+    const currentEpoch = (await ensureLocalSyncMeta()).epoch
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push,
+      localEpoch: currentEpoch,
+    })
+    await idbPut(STORES.documents, { id: 'doc-1', title: '남아 있는 문서' })
+    vi.mocked(syncOnce).mockResolvedValue(report([]))
+
+    await useSyncStore.getState().syncQuietly()
+
+    expect(syncOnce).toHaveBeenCalledWith(expect.objectContaining({ since: pull, push }))
+  })
+
+  it('keeps push watermarks during a manual full resync and clears the request after the cycle', async () => {
+    signedIn()
+    const currentEpoch = (await ensureLocalSyncMeta()).epoch
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push,
+      localEpoch: currentEpoch,
+    })
+    await idbPut(STORES.documents, { id: 'doc-1', title: '남아 있는 문서' })
+    const nextPull = { snapshot: '2026-02-01T00:00:00.000Z' }
+    vi.mocked(syncOnce).mockResolvedValue({ ...report([]), watermarks: nextPull })
+
+    await useSyncStore.getState().fullResync()
+
+    expect(syncOnce).toHaveBeenNthCalledWith(1, expect.objectContaining({ since: {}, push }))
+
+    // The request is one cycle only: the next ordinary sync resumes from the
+    // pull watermark the resync just stored.
+    vi.mocked(syncOnce).mockClear()
+    await useSyncStore.getState().syncQuietly()
+    expect(syncOnce).toHaveBeenNthCalledWith(1, expect.objectContaining({ since: nextPull }))
   })
 })

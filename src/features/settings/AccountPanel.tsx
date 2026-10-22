@@ -39,6 +39,7 @@ export function AccountPanel() {
   const shown = useSyncStatus(status, notice, pending.count)
   const report = useSyncStore((s) => s.report)
   const syncNow = useSyncStore((s) => s.syncNow)
+  const fullResync = useSyncStore((s) => s.fullResync)
   const accountBlocked = useSyncStore((s) => s.accountBlocked)
   const claimNeeded = useSyncStore((s) => s.claimNeeded)
   const localOnly = useSyncStore((s) => s.localOnly)
@@ -229,14 +230,29 @@ export function AccountPanel() {
           <p className="text-status-unsure mt-2 text-xs">{t('account.clockRollback')}</p>
         )}
 
-        <button
-          type="button"
-          disabled={status === 'syncing'}
-          onClick={() => void syncNow()}
-          className="border-line hover:border-accent mt-3 rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
-        >
-          {t('account.syncNow')}
-        </button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={status === 'syncing'}
+            onClick={() => void syncNow()}
+            className="border-line hover:border-accent rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
+          >
+            {t('account.syncNow')}
+          </button>
+          {/*
+            기기 저장소가 비워졌다고 느낄 때의 출구. 지우지 않고 서버에서 다시
+            읽어 합치므로, 눌러서 잃을 것이 없다.
+          */}
+          <button
+            type="button"
+            disabled={status === 'syncing'}
+            onClick={() => void fullResync()}
+            className="border-line hover:border-accent rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
+          >
+            {t('account.refreshAll')}
+          </button>
+        </div>
+        <p className="text-ink-muted mt-1 text-[10px]">{t('account.refreshAllHint')}</p>
 
         {/*
           마지막 동기화가 무엇을 했는지.

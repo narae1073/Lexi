@@ -227,6 +227,9 @@ export const ko: Dictionary = {
     pending: '아직 안 올라간 변경',
     pendingHint: '저장 횟수 기준입니다 — 단어 수가 아닙니다',
     clockRollback: '이 기기의 시계가 뒤로 이동했습니다. 보내기 진행을 다시 잡고 로컬 변경을 다시 올립니다.',
+    refreshAll: '모든 데이터 새로 받기',
+    refreshAllHint:
+      '서버에서 모든 데이터를 다시 읽어 이 기기와 합칩니다. 이 기기의 변경은 그대로 두며, 지우는 것은 없습니다.',
     notSentYet: '아직 서버에 못 올린 변경 {count}번',
     nothingSent: '보낸 것이 0입니다 — 새로 보낼 것이 없습니다.',
     errorRateLimit:
@@ -344,6 +347,12 @@ export const ko: Dictionary = {
     appLanguage: '앱 언어',
     theme: '테마',
     system: '시스템 설정',
+    storageTitle: '저장 공간',
+    storagePersisted: '이 브라우저는 공간이 부족해도 로컬 데이터를 지우지 않습니다.',
+    storageNotPersisted: '이 브라우저는 공간이 부족하면 로컬 데이터를 지울 수 있습니다. 데이터를 보관해 달라고 요청하세요.',
+    storageRequest: '브라우저에 데이터 보관 요청',
+    storageUsage: '로컬 데이터: {used} / {quota}',
+    storageUnavailable: '이 브라우저는 저장 공간 상태를 알려주지 않습니다.',
     close: '닫기',
   },
 

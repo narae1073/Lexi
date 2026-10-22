@@ -99,6 +99,14 @@ export type SyncState = {
   syncNow: () => Promise<void>
   /** 로그인·앱 시작·온라인 복귀 때 조용히 돌린다 (실패해도 조용히) */
   syncQuietly: () => Promise<void>
+  /**
+   * 서버에서 모든 것을 한 번 다시 읽는다 — 사람이 고른 복구 동작.
+   *
+   * 지우는 것이 아니다. 로컬에 남은 변경은 그대로 두고 다시 올리며, 다음 주기부터는
+   * 평소처럼 워터마크를 이어 쓴다. 기기 저장소가 비워졌을 때 사용자가 직접 누르는
+   * 출구다.
+   */
+  fullResync: () => Promise<void>
   /** 주인 없는 기기 기록을 지금 계정으로 넘겨받는다 */
   claimLocalData: (userId: string) => void
   /** 이 기기에서만 쓰기로 정한다 — 다시 묻지 않는다 */
@@ -277,6 +285,19 @@ export const useSyncStore = create<SyncState>((set) => ({
     }
   },
 
+  fullResync: async () => {
+    const user = useAuthStore.getState().user
+    // 소유자가 이 계정이 아니면 서버에서 읽을 범위도 정할 수 없다
+    if (!user || !canSyncForUser(user.id)) {
+      set({ status: 'local', error: null })
+      return
+    }
+    // 사람이 고른 동작이므로 결과를 말한다. 요청은 다음 계획에서 한 번만 쓰인다.
+    requestFullResync()
+    useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
+    await run(set)
+  },
+
   claimLocalData: (userId) => {
     // 화면이 다른 계정으로 바뀌었는데 예전 화면의 버튼이 늦게 눌릴 수 있다
     if (useAuthStore.getState().user?.id !== userId) return
@@ -436,6 +457,38 @@ export async function applySyncMessage(message: SyncMessage): Promise<void> {
 let exclusive: SingleFlight | null = null
 
 /**
+ * One-shot request for the next cycle to read every server row.
+ *
+ * Module-level because the UI action and the planner are separate; the flag is
+ * consumed as the cycle starts planning, so it cannot leak into later cycles.
+ */
+let fullResyncRequested = false
+
+function requestFullResync(): void {
+  fullResyncRequested = true
+}
+
+function takeFullResyncRequest(): boolean {
+  const requested = fullResyncRequested
+  fullResyncRequested = false
+  return requested
+}
+
+/**
+ * Whether this device has no learning data left.
+ *
+ * A failed count is treated as "not empty": a full pull is safe but expensive,
+ * and a storage error will fail the cycle anyway, so do not plan around it.
+ */
+async function localLearningDataIsEmpty(): Promise<boolean> {
+  try {
+    return !(await hasLocalLearningData())
+  } catch {
+    return false
+  }
+}
+
+/**
  * Wait until the active sync and any queued rerun have both finished, then
  * wait for the shared cross-tab lock. Acquiring and immediately releasing the
  * lock is how this tab learns another tab is not mid-cycle.
@@ -451,6 +504,9 @@ async function run(set: Setter): Promise<void> {
 }
 
 async function doRun(set: Setter) {
+  // Consume the one-shot request before any early return: a request made for
+  // one account must never turn the next account's first cycle into a full pull.
+  const fullResyncWasRequested = takeFullResyncRequest()
   const user = useAuthStore.getState().user
   // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다 — 문에서 다시 확인한다
   if (!user || !canSyncForUser(user.id)) return
@@ -468,6 +524,34 @@ async function doRun(set: Setter) {
   const stored = readStoredSyncState(user.id)
   // 이 시각 이전에 바뀐 것은 지난 동기화가 이미 보냈다. 이번에 바뀐 것만 다음에 보낸다
   const startedAt = new Date().toISOString()
+  const localEpoch = await readLocalEpochSafely(stored?.localEpoch ?? '')
+  if (accountChanged()) return
+
+  /**
+   * A version 2 state describes **one** local database through its epoch.
+   *
+   * When the browser evicts IndexedDB, the next open mints a new epoch while
+   * localStorage still holds the old entry. Both watermarks then belong to a
+   * database that no longer exists: the pull snapshot would skip rows older
+   * than it, and push timestamps would hide local writes made in this new
+   * database. Restart both — nothing is deleted, this is only a full read and
+   * a full re-push.
+   *
+   * Version 1 reads as absent and takes the same path. An ordinary database
+   * that is merely empty (words/docs gone, epoch intact) only needs a full
+   * pull; its push progress still describes this database and is kept.
+   */
+  const epochMismatch = stored === null || stored.localEpoch !== localEpoch
+  const hasPullSnapshot =
+    typeof stored?.pull.snapshot === 'string' && stored.pull.snapshot !== ''
+  const localIsEmpty =
+    !epochMismatch && hasPullSnapshot ? await localLearningDataIsEmpty() : false
+  if (accountChanged()) return
+
+  const since = epochMismatch || fullResyncWasRequested || localIsEmpty ? {} : stored?.pull
+  // A manual refresh merges: local dirty rows still need to go up, so push
+  // watermarks stay unless the database itself changed underneath them.
+  const push = epochMismatch ? {} : (stored?.push ?? {})
 
   set({ status: 'syncing', error: null })
 
@@ -475,11 +559,11 @@ async function doRun(set: Setter) {
     const languages = useLanguagesStore.getState().enrolled
     // A future push watermark means the clock moved back. Retry from the local
     // snapshot instead of trusting timestamps; pull is a server clock and stays.
-    const clockGuard = clearPushOnClockRollback(stored?.push ?? {})
+    const clockGuard = clearPushOnClockRollback(push)
     const report = await syncOnce({
       userId: user.id,
       languages,
-      since: stored?.pull,
+      since,
       push: clockGuard.push,
     })
     if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
@@ -500,7 +584,9 @@ async function doRun(set: Setter) {
       version: 2,
       pull: report.watermarks,
       push: report.pushWatermarks,
-      localEpoch: await readLocalEpochSafely(stored?.localEpoch ?? ''),
+      // Persist the epoch this cycle actually ran against, so the next cycle
+      // can tell whether the database was replaced in between.
+      localEpoch,
       lastSyncedAt: startedAt,
     })
 
@@ -593,6 +679,8 @@ async function doRun(set: Setter) {
      * private timer would pull again every couple of seconds during a burst.
      */
     if (error instanceof SyncDeferredError) {
+      // No cycle happened, so a manual full-refresh request is still owed.
+      if (fullResyncWasRequested) requestFullResync()
       set({ status: 'local', error: null })
       return
     }

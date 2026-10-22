@@ -2,6 +2,7 @@ import { useSettingsStore, useTranslation } from '../../app/stores/settings'
 import { AccountPanel } from './AccountPanel'
 import { AppLanguageSwitcher } from './AppLanguageSwitcher'
 import { FavoriteStarControl } from './FavoriteStarControl'
+import { StoragePanel } from './StoragePanel'
 import { ThemePicker } from './ThemePicker'
 import { TextScaleControl } from './TextScaleControl'
 import { UnmarkedDimControl } from './UnmarkedDimControl'
@@ -28,6 +29,8 @@ export function SettingsPanel() {
       </div>
 
       <AccountPanel />
+
+      <StoragePanel />
 
       <TextScaleControl />
 
