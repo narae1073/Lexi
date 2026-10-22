@@ -9,6 +9,7 @@ import {
 } from '../_shared/inflection.ts'
 import { pinyinToneMarks } from '../_shared/ccCedict.ts'
 import { enforceQuota, makeQuotaLimits } from '../_shared/quota.ts'
+import { readJsonBody } from '../_shared/http.ts'
 
 /**
  * POST /functions/v1/dictionary
@@ -218,9 +219,13 @@ function dedupeCandidates(candidates: Candidate[]): Candidate[] {
 }
 
 /** 404 는 '없음' 으로 취급하고, 그 밖의 실패만 전체 실패로 본다. */
-async function fetchUpstream(languageCode: string, word: string): Promise<UpstreamBody | null> {
+async function fetchUpstream(
+  languageCode: string,
+  word: string,
+  timeoutMs: number,
+): Promise<UpstreamBody | null> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
     const res = await fetch(`${UPSTREAM}/${languageCode}/${encodeURIComponent(word)}`, {
@@ -251,14 +256,6 @@ function readClientIp(req: Request): string {
   const forwarded = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
   if (forwarded) return forwarded
   return req.headers.get('x-real-ip')?.trim() || 'unknown'
-}
-
-/** 선언된 본문 길이만 본다 — 실제 바이트 수는 읽은 뒤에야 알 수 있다 */
-function bodyTooLarge(req: Request): boolean {
-  const declared = req.headers.get('content-length')
-  if (declared === null) return false
-  const bytes = Number(declared)
-  return Number.isFinite(bytes) && bytes > MAX_BODY_BYTES
 }
 
 type CedictRow = {
@@ -312,16 +309,17 @@ function cedictSections(word: string, rows: CedictRow[]): Section[] {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
-  // 본문을 읽기 전에 걸러야 큰 요청이 파싱 비용을 쓰지 않는다
-  if (bodyTooLarge(req)) return json({ error: 'request body too large' }, 413)
-
   try {
-    let payload: { languageCode?: string; lemma?: string; surface?: string; targetLanguage?: string }
-    try {
-      payload = await req.json()
-    } catch {
-      return json({ error: 'invalid JSON body' }, 400)
-    }
+    // 본문 상한은 helper 가 선언 길이와 실제 스트림 둘 다로 지킨다
+    const parsed = await readJsonBody<{
+      languageCode?: string
+      lemma?: string
+      surface?: string
+      targetLanguage?: string
+    }>(req, MAX_BODY_BYTES)
+    if (!parsed.ok) return json({ error: parsed.error }, parsed.status)
+
+    const payload = parsed.value
 
     const languageCode = payload.languageCode ?? ''
     const lemma = (payload.lemma ?? '').trim().toLowerCase()
@@ -340,11 +338,13 @@ Deno.serve(async (req) => {
       return json({ error: 'lemma must not contain whitespace' }, 400)
     }
 
-    const client = createServiceClient()
+    let client: ReturnType<typeof createServiceClient>
 
     // 로그인을 강제하지 않는다 — 대신 설치 ID / IP / 전역 버킷으로 비용을 제한한다.
     // 하드 인증은 Release 5 의 제품 결정이라 여기서는 쿼터가 안전장치다.
+    // 서비스 설정이 빠졌거나 쿼터 RPC 가 실패하면 요청을 통과시키지 않는다.
     try {
+      client = createServiceClient()
       const limits = await makeQuotaLimits('dictionary', readInstallId(req), readClientIp(req))
       const allowed = await enforceQuota(async (bucket, limit, windowSeconds) => {
         const { data, error } = await client.rpc('consume_function_quota', {
@@ -363,23 +363,33 @@ Deno.serve(async (req) => {
       return json({ error: 'quota check unavailable' }, 503)
     }
 
-    // 후보/원형어 조회가 겹쳐도 전체 시간을 넘기지 않게 한다
+    // 후보/원형어 조회가 겹쳐도 전체 시간을 넘기지 않게 한다.
+    // 남은 시간이 없으면 다음 fetch 를 시작하지 않고 504 로 끝낸다.
     const deadline = Date.now() + OVERALL_TIMEOUT_MS
-    const checkDeadline = () => {
-      if (Date.now() >= deadline) throw new DeadlineExceededError()
+    const upstreamTimeout = () => {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw new DeadlineExceededError()
+      return Math.min(UPSTREAM_TIMEOUT_MS, remaining)
     }
 
-    const { data: cached } = await client
-      .from('dictionary_entries')
-      .select('payload')
-      .eq('language_code', languageCode)
-      .eq('lemma', lemma)
-      .eq('target_language', targetLanguage)
-      .maybeSingle()
+    // 캐시 조회 실패도 서비스 실패다 — 원시 500 으로 새지 않게 503 으로 매핑한다.
+    try {
+      const { data: cached, error: cacheError } = await client
+        .from('dictionary_entries')
+        .select('payload')
+        .eq('language_code', languageCode)
+        .eq('lemma', lemma)
+        .eq('target_language', targetLanguage)
+        .maybeSingle()
 
-    if (cached) {
-      const stored = cached.payload as Record<string, unknown>
-      if (stored.schemaVersion === PAYLOAD_VERSION) return json({ ...stored, cached: true })
+      if (cacheError) throw cacheError
+      if (cached) {
+        const stored = cached.payload as Record<string, unknown>
+        if (stored.schemaVersion === PAYLOAD_VERSION) return json({ ...stored, cached: true })
+      }
+    } catch (error) {
+      console.error('dictionary cache lookup failed', error)
+      return json({ error: 'service temporarily unavailable' }, 503)
     }
 
     // 중국어 + 영어 뜻은 CC-CEDICT 자체 테이블을 본다 — 외부 API 쿼터가 없다
@@ -435,8 +445,7 @@ Deno.serve(async (req) => {
     // 성공한 항목은 모두 기억한다 — 표기는 첫 번째 후보라 표기 항목을 그대로 재사용한다
     const fetched = new Map<string, UpstreamBody>()
     for (const candidate of candidates) {
-      checkDeadline()
-      const body = await fetchUpstream(languageCode, candidate.word)
+      const body = await fetchUpstream(languageCode, candidate.word, upstreamTimeout())
       if (body === null) return json({ error: 'dictionary provider unreachable' }, 504)
       if ((body as { failed?: boolean }).failed) {
         return json({ error: 'dictionary provider rejected the request' }, 502)
@@ -450,8 +459,7 @@ Deno.serve(async (req) => {
       for (const word of words.slice(0, MAX_HEADWORDS)) {
         let body = fetched.get(word)
         if (!body) {
-          checkDeadline()
-          const fetchedBody = await fetchUpstream(languageCode, word)
+          const fetchedBody = await fetchUpstream(languageCode, word, upstreamTimeout())
           if (fetchedBody === null) return null
           if ((fetchedBody as { failed?: boolean }).failed || !fetchedBody.entries?.length) continue
           fetched.set(word, fetchedBody)

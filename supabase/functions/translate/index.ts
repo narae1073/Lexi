@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 import { enforceQuota, makeQuotaLimits } from '../_shared/quota.ts'
+import { readJsonBody } from '../_shared/http.ts'
 
 /**
  * POST /functions/v1/translate
@@ -15,7 +16,7 @@ const GOOGLE_ENDPOINT = 'https://translation.googleapis.com/language/translate/v
 
 /** 과도한 요청으로 할당량 소진을 막는다 */
 const MAX_CHARS = 5000
-/** 본문 전체 상한 — JSON 을 읽기 전에 Content-Length 로 거른다 */
+/** 본문 전체 상한 — helper 가 선언 길이와 실제 스트림 둘 다로 지킨다 */
 const MAX_BODY_BYTES = 20_000
 /** Google 이 응답하지 않을 때 기다리는 시간 */
 const PROVIDER_TIMEOUT_MS = 10_000
@@ -72,29 +73,21 @@ function readClientIp(req: Request): string {
   return req.headers.get('x-real-ip')?.trim() || 'unknown'
 }
 
-/** 선언된 본문 길이만 본다 — 실제 바이트 수는 읽은 뒤에야 알 수 있다 */
-function bodyTooLarge(req: Request): boolean {
-  const declared = req.headers.get('content-length')
-  if (declared === null) return false
-  const bytes = Number(declared)
-  return Number.isFinite(bytes) && bytes > MAX_BODY_BYTES
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
-
-  // 본문을 읽기 전에 걸러야 큰 요청이 파싱 비용을 쓰지 않는다
-  if (bodyTooLarge(req)) return json({ error: 'request body too large' }, 413)
 
   const apiKey = Deno.env.get('GOOGLE_TRANSLATE_API_KEY')
   if (!apiKey) return json({ error: 'GOOGLE_TRANSLATE_API_KEY is not configured' }, 500)
 
-  let payload: { sourceLanguage?: string; targetLanguage?: string; text?: string }
-  try {
-    payload = await req.json()
-  } catch {
-    return json({ error: 'invalid JSON body' }, 400)
-  }
+  // 본문 상한은 helper 가 선언 길이와 실제 스트림 둘 다로 지킨다
+  const parsed = await readJsonBody<{
+    sourceLanguage?: string
+    targetLanguage?: string
+    text?: string
+  }>(req, MAX_BODY_BYTES)
+  if (!parsed.ok) return json({ error: parsed.error }, parsed.status)
+
+  const payload = parsed.value
 
   const source = payload.sourceLanguage ?? ''
   const target = payload.targetLanguage ?? 'en'
@@ -106,11 +99,13 @@ Deno.serve(async (req) => {
   if (text.length === 0) return json({ error: 'text is required' }, 400)
   if (text.length > MAX_CHARS) return json({ error: `text exceeds ${MAX_CHARS} characters` }, 413)
 
-  const client = createServiceClient()
+  let client: ReturnType<typeof createServiceClient>
 
   // 로그인을 강제하지 않는다 — 대신 설치 ID / IP / 전역 버킷으로 비용을 제한한다.
   // 하드 인증은 Release 5 의 제품 결정이라 여기서는 쿼터가 안전장치다.
+  // 서비스 설정이 빠졌거나 쿼터 RPC 가 실패하면 요청을 통과시키지 않는다.
   try {
+    client = createServiceClient()
     const limits = await makeQuotaLimits('translate', readInstallId(req), readClientIp(req))
     const allowed = await enforceQuota(async (bucket, limit, windowSeconds) => {
       const { data, error } = await client.rpc('consume_function_quota', {
@@ -135,20 +130,28 @@ Deno.serve(async (req) => {
 
   const hash = await sha256Hex(text)
 
-  const { data: cached } = await client
-    .from('translation_cache')
-    .select('translated_text')
-    .eq('source_language', source)
-    .eq('target_language', target)
-    .eq('source_hash', hash)
-    .maybeSingle()
+  // 캐시 조회 실패도 서비스 실패다 — 원시 500 으로 새지 않게 503 으로 매핑한다.
+  try {
+    const { data: cached, error: cacheError } = await client
+      .from('translation_cache')
+      .select('translated_text')
+      .eq('source_language', source)
+      .eq('target_language', target)
+      .eq('source_hash', hash)
+      .maybeSingle()
 
-  if (cached) return json({ translatedText: cached.translated_text, cached: true })
+    if (cacheError) throw cacheError
+    if (cached) return json({ translatedText: cached.translated_text, cached: true })
+  } catch (error) {
+    console.error('translation cache lookup failed', error)
+    return json({ error: 'service temporarily unavailable' }, 503)
+  }
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS)
 
   let googleRes: Response
+  let body: { data?: { translations?: { translatedText?: string }[] } }
   try {
     googleRes = await fetch(`${GOOGLE_ENDPOINT}?key=${apiKey}`, {
       method: 'POST',
@@ -156,9 +159,22 @@ Deno.serve(async (req) => {
       body: JSON.stringify({ q: text, source, target, format: 'text' }),
       signal: controller.signal,
     })
+
+    if (!googleRes.ok) {
+      // Google 은 오류 본문에 원문을 그대로 돌려줄 수 있다 — 상태 코드만 남긴다
+      console.error('google translate failed', googleRes.status)
+      return json({ error: 'translation provider rejected the request' }, 502)
+    }
+
+    // 본문을 다 읽을 때까지 타이머를 살려 둔다 — 헤더만 받고 멈출 수 있다
+    body = await googleRes.json()
   } catch (error) {
     if (controller.signal.aborted) {
       return json({ error: 'translation provider timed out' }, 504)
+    }
+    if (error instanceof SyntaxError) {
+      console.error('google translate returned invalid JSON')
+      return json({ error: 'unexpected provider response' }, 502)
     }
     // 오류 메시지에 원문이 섞일 수 있으므로 이름만 남긴다
     console.error(
@@ -170,14 +186,7 @@ Deno.serve(async (req) => {
     clearTimeout(timer)
   }
 
-  if (!googleRes.ok) {
-    // Google 은 오류 본문에 원문을 그대로 돌려줄 수 있다 — 상태 코드만 남긴다
-    console.error('google translate failed', googleRes.status)
-    return json({ error: 'translation provider rejected the request' }, 502)
-  }
-
-  const body = await googleRes.json()
-  const translatedText = body?.data?.translations?.[0]?.translatedText
+  const translatedText = body.data?.translations?.[0]?.translatedText
   if (typeof translatedText !== 'string') {
     return json({ error: 'unexpected provider response' }, 502)
   }
