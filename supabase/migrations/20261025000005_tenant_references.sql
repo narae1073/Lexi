@@ -22,9 +22,13 @@
 -- folders 의 정책 안에서 folders 를 다시 select 하면 같은 정책이 재귀한다.
 -- security definer 로 그 select 만 테이블 소유자 권한으로 실행해 재귀를 끊는다.
 -- search_path 는 고정하고, anon/public 실행 권한은 회수한다.
+--
+-- 사용자 id 는 인자로 받지 않고 auth.uid() 로 직접 비교한다. 인자로 받으면
+-- 로그인한 누구나 (폴더 id, 사용자 id) 쌍을 넣어 남의 폴더 소유 여부를 물어볼
+-- 수 있기 때문이다. 정책은 어차피 호출자의 폴더만 통과시켜야 한다.
 -- ---------------------------------------------------------------------------
 
-create or replace function public.folder_is_owned_by(p_folder_id uuid, p_user_id uuid)
+create or replace function public.folder_is_owned_by(p_folder_id uuid)
 returns boolean
 language sql
 stable
@@ -35,12 +39,12 @@ as $$
     select 1
     from public.folders f
     where f.id = p_folder_id
-      and f.user_id = p_user_id
+      and f.user_id = auth.uid()
   );
 $$;
 
-revoke all on function public.folder_is_owned_by(uuid, uuid) from public, anon;
-grant execute on function public.folder_is_owned_by(uuid, uuid) to authenticated;
+revoke all on function public.folder_is_owned_by(uuid) from public, anon;
+grant execute on function public.folder_is_owned_by(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- documents.folder_id — 남의 폴더를 가리킬 수 없다. NULL 은 폴더 없음이다
@@ -93,13 +97,13 @@ create policy "word_occurrences document owner update" on public.word_occurrence
 create policy "folders parent owner" on public.folders
   as restrictive for insert
   with check (
-    parent_id is null or public.folder_is_owned_by(parent_id, auth.uid())
+    parent_id is null or public.folder_is_owned_by(parent_id)
   );
 
 create policy "folders parent owner update" on public.folders
   as restrictive for update
   with check (
-    parent_id is null or public.folder_is_owned_by(parent_id, auth.uid())
+    parent_id is null or public.folder_is_owned_by(parent_id)
   );
 
 -- ---------------------------------------------------------------------------
