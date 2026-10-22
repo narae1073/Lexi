@@ -577,7 +577,12 @@ class Ctx {
     })()`)
   }
 
-  /** 문서별 표기 규칙 버전 기록 */
+  /**
+   * 문서별 표기 규칙 버전 기록
+   *
+   * The reserved sync-metadata record (`__lexi_sync_meta__`) lives in the same
+   * store but is not a document's lemma-version record, so it is excluded.
+   */
   async readMeta() {
     return this.#eval(`(async () => {
       try {
@@ -590,13 +595,18 @@ class Ctx {
         return await new Promise((res) => {
           const t = db.transaction('documentMeta', 'readonly');
           const r = t.objectStore('documentMeta').getAll();
-          r.onsuccess = () => res(r.result);
+          r.onsuccess = () => res(r.result.filter((m) => m.documentId !== '__lexi_sync_meta__'));
         });
       } catch { return []; }
     })()`)
   }
 
-  /** 규칙 버전 기록을 비운다 — 옛 규칙으로 계산된 것처럼 만들려고 */
+  /**
+   * 규칙 버전 기록을 비운다 — 옛 규칙으로 계산된 것처럼 만들려고
+   *
+   * Only document records are removed. The reserved sync-metadata record is
+   * left alone so the sync engine keeps its epoch and pending state.
+   */
   async wipeMeta() {
     return this.#eval(`(async () => {
       try {
@@ -608,8 +618,18 @@ class Ctx {
         if (!db.objectStoreNames.contains('documentMeta')) return false;
         return await new Promise((res) => {
           const t = db.transaction('documentMeta', 'readwrite');
-          const r = t.objectStore('documentMeta').clear();
-          r.onsuccess = () => res(true);
+          const store = t.objectStore('documentMeta');
+          const cursor = store.openCursor();
+          cursor.onsuccess = () => {
+            const entry = cursor.result;
+            if (!entry) {
+              res(true);
+              return;
+            }
+            if (entry.key !== '__lexi_sync_meta__') entry.delete();
+            entry.continue();
+          };
+          cursor.onerror = () => res(false);
         });
       } catch { return false; }
     })()`)
