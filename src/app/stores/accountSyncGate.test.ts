@@ -13,6 +13,7 @@ import type { User } from '@supabase/supabase-js'
  */
 vi.mock('../../lib/sync/sync', () => ({
   SyncUnavailable: class SyncUnavailable extends Error {},
+  SyncDeferredError: class SyncDeferredError extends Error {},
   syncOnce: vi.fn(),
 }))
 
@@ -27,7 +28,8 @@ import {
   useSyncStore,
   waitForSyncIdle,
 } from './sync'
-import { syncOnce, type SyncReport } from '../../lib/sync/sync'
+import { syncOnce, SyncDeferredError, type SyncReport } from '../../lib/sync/sync'
+import { readStoredSyncState, writeStoredSyncState } from '../../lib/sync/syncState'
 import { useDocumentsStore } from './documents'
 import { useFoldersStore } from './folders'
 import { useOccurrencesStore } from './occurrences'
@@ -448,6 +450,38 @@ describe('동기화 입구', () => {
 
     expect(syncOnce).not.toHaveBeenCalled()
     expect(useSyncStore.getState().status).toBe('local')
+  })
+
+  /**
+   * A deferred cycle is not a failure: local writes kept landing while it was
+   * planning. It must not show an error and must not move the stored pull
+   * watermark — otherwise the next cycle would skip missed server rows.
+   */
+  it('defers quietly without showing an error or advancing watermarks', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    const seeded = {
+      version: 2 as const,
+      pull: { snapshot: '2026-01-01T00:00:00.000Z' },
+      push: {},
+      localEpoch: 'epoch-a',
+      lastSyncedAt: '2026-01-01T00:00:00.000Z',
+    }
+    writeStoredSyncState('user-a', seeded)
+    useSyncStore.setState({
+      status: 'syncing',
+      lastSyncedAt: seeded.lastSyncedAt,
+      error: 'stale error',
+    })
+
+    vi.mocked(syncOnce).mockRejectedValue(new SyncDeferredError())
+
+    await useSyncStore.getState().syncQuietly()
+
+    expect(syncOnce).toHaveBeenCalledTimes(1)
+    expect(useSyncStore.getState()).toMatchObject({ status: 'local', error: null })
+    expect(useSyncStore.getState().lastSyncedAt).toBe(seeded.lastSyncedAt)
+    expect(readStoredSyncState('user-a')).toEqual(seeded)
   })
 })
 

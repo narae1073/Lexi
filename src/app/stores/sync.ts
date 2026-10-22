@@ -42,23 +42,6 @@ const SYNC_DEBOUNCE_MS = 1_200
 const SYNC_MAX_WAIT_MS = 10_000
 
 /**
- * A deferred cycle wrote nothing because local writes kept landing while it
- * planned. Wait for the burst to settle before trying again — retrying in the
- * same tick would just plan against another in-flight write.
- */
-const DEFERRED_RETRY_MS = 2_000
-
-let deferredRetryTimer: ReturnType<typeof setTimeout> | undefined
-
-function scheduleDeferredRetry(): void {
-  if (deferredRetryTimer !== undefined) return
-  deferredRetryTimer = setTimeout(() => {
-    deferredRetryTimer = undefined
-    void useSyncStore.getState().syncQuietly()
-  }, DEFERRED_RETRY_MS)
-}
-
-/**
  * Where incremental sync stands — persisted in `src/lib/sync/syncState.ts`
  * as version 2.
  *
@@ -457,13 +440,14 @@ async function doRun(set: Setter) {
     if (accountChanged()) return
 
     /**
-     * 로컬 쓰기가 계속 들어와 계획이 낡은 경우다. 아무것도 쓰지 않았고
-     * 워터마크도 옮기지 않았으므로, 사용자에게 오류를 보여 줄 일이 아니다.
-     * 밀린 것은 그대로 두고 잠시 뒤 조용히 다시 시도한다.
+     * Local writes kept landing while this cycle planned. Nothing was written
+     * and no watermark moved, so there is no error for the user to act on.
+     * The write that caused the conflict already notified the debounced sync
+     * scheduler, so keep the pending batch and let that retry handle it — a
+     * private timer would pull again every couple of seconds during a burst.
      */
     if (error instanceof SyncDeferredError) {
       set({ status: 'local', error: null })
-      scheduleDeferredRetry()
       return
     }
 

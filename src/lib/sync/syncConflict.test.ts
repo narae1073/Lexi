@@ -112,6 +112,55 @@ describe('revision conflict detection', () => {
     )
   })
 
+  it('replans occurrence content changed while the pull is in flight', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc({ title: 'local' }))
+    await idbPut(
+      STORES.wordOccurrences,
+      occurrence({ lemma: 'chat', surfaces: ['chat'], sentence: 'stale local' }),
+    )
+    /**
+     * The pull carries an occurrence row for a document this device already has
+     * without naming that document in its document list. The merge keeps local
+     * rows it does not replace, but a stale plan still sees the remote row as a
+     * content change and rewrites the whole document — so only the re-read and
+     * replan can preserve a row the user added during the pull.
+     */
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: 'user-1',
+      document_id: 'doc-1',
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 0,
+      char_end: 4,
+      sentence: 'remote',
+      occurrences_count: 1,
+    })
+
+    const { run, release } = await startGatedSync(server)
+    // A real user write: adding a second occurrence for the same document.
+    await idbPut(
+      STORES.wordOccurrences,
+      occurrence({
+        lemma: 'chien',
+        surfaces: ['chien'],
+        charStart: 10,
+        charEnd: 15,
+        sentence: 'local during pull',
+      }),
+    )
+    release.resolve()
+    await run
+
+    const rows = await idbGetAll<WordOccurrence>(STORES.wordOccurrences)
+    // The stale plan would replace doc-1 with just the remote chat row and the
+    // new chien row would disappear.
+    expect(rows.map((row) => row.lemma).sort()).toEqual(['chat', 'chien'])
+    expect(rows.find((row) => row.lemma === 'chien')?.sentence).toBe('local during pull')
+  })
+
   it('defers without writing or advancing watermarks when writes keep landing', async () => {
     const server = memoryServer()
     addRemoteDocument(server)
