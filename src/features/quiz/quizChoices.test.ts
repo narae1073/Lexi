@@ -40,6 +40,11 @@ describe('문장에 나오는 표기인가', () => {
     expect(appearsInSentence('私は猫が好きです。', '猫')).toBe(true)
     expect(appearsInSentence('私は猫が好きです。', '犬')).toBe(false)
   })
+
+  it('구두점이 든 표기와 숙어도 찾는다', () => {
+    expect(appearsInSentence("Don't stop.", "don't")).toBe(true)
+    expect(appearsInSentence('I love New York.', 'New York')).toBe(true)
+  })
 })
 
 describe('오답 후보 고르기', () => {
@@ -65,10 +70,24 @@ describe('오답 후보 고르기', () => {
   it('이번 세션 단어를 먼저 쓴다', () => {
     const picked = pickDistractors(entries, 'cat', sentence, {
       count: 2,
-      sessionLemmas: new Set(['bird']),
+      sessionEntries: [entry('bird')],
       rng: mulberry(2),
     })
     expect(picked[0]?.lemma).toBe('bird')
+  })
+
+  it('세션 단어가 충분하면 단어장의 다른 단어를 쓰지 않는다', () => {
+    const picked = pickDistractors(
+      [entry('cat', 'known'), entry('zebra', 'known'), entry('yak', 'known')],
+      'target',
+      'A sentence.',
+      {
+        count: 2,
+        sessionEntries: [entry('dog', 'unsure'), entry('run', 'unknown')],
+        rng: mulberry(7),
+      },
+    )
+    expect(picked.map((c) => c.lemma).sort()).toEqual(['dog', 'run'])
   })
 
   it('표시한 단어를 미표시 단어보다 먼저 쓴다', () => {
@@ -98,6 +117,22 @@ describe('오답 후보 고르기', () => {
     const before = entries.map((e) => e.lemma)
     pickDistractors(entries, 'cat', sentence, { count: 2, rng: mulberry(6) })
     expect(entries.map((e) => e.lemma)).toEqual(before)
+  })
+
+  it('단어장이 커도 선택지를 만드는 데 오래 걸리지 않는다', () => {
+    // 예전에는 단어마다 유니코드 경계 정규식을 새로 만들어 20,000개에 20초가 걸렸다
+    const large = Array.from({ length: 20_000 }, (_, i) => entry('word' + i))
+    const started = performance.now()
+    const picked = pickDistractors(large, 'target', sentence, {
+      count: 2,
+      // 문장에 이미 나온 단어라 세션 후보로 쓸 수 없다 — 전체 훑기를 강제한다
+      sessionEntries: [entry('cat')],
+      rng: mulberry(8),
+    })
+    const elapsed = performance.now() - started
+
+    expect(picked).toHaveLength(2)
+    expect(elapsed).toBeLessThan(1000)
   })
 })
 

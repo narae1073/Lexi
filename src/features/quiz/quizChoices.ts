@@ -17,24 +17,50 @@ export type DistractorEntry = {
 /** 띄어쓰기 없이 붙여 쓰는 문자 — 이 안에서는 낱말 경계를 따질 수 없다 */
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+/** 공백·구두점이 없는 낱말인가 — 아니면 토큰 하나로 잡히지 않는다 */
+const PLAIN_WORD = /^[\p{L}\p{N}]+$/u
+
+/**
+ * 문장 하나를 한 번만 훑어 색인을 만든다.
+ *
+ * 예전에는 단어마다 유니코드 경계 정규식을 새로 컴파일했다. 단어장이 4천 개만
+ * 되어도 문제 하나에 몇 초가 걸렸다 — 이제 문장은 한 번만 훑고, 단어는 집합
+ * 조회로 끝낸다.
+ */
+type SentenceIndex = {
+  /** 원문 — CJK 는 붙여 쓰므로 부분 문자열로 본다 */
+  raw: string
+  lower: string
+  /** 소문자 낱말 집합 */
+  tokens: Set<string>
+}
+
+function indexSentence(sentence: string): SentenceIndex {
+  const lower = sentence.toLowerCase()
+  return {
+    raw: sentence,
+    lower,
+    tokens: new Set(lower.match(/[\p{L}\p{N}]+/gu) ?? []),
+  }
+}
+
+function appearsInIndex(index: SentenceIndex, form: string): boolean {
+  if (!form) return false
+  // 일본어·중국어·한국어는 붙여 쓰므로 조사가 붙어도 찾아야 한다
+  if (CJK.test(form)) return index.raw.includes(form)
+  // 공백·구두점이 든 표기(숙어, don't)는 토큰 하나로 잡히지 않는다
+  if (!PLAIN_WORD.test(form)) return index.lower.includes(form.toLowerCase())
+  return index.tokens.has(form.toLowerCase())
 }
 
 /**
  * 이 표기가 문장에 낱말로 나오는가.
  *
  * 오답으로 이미 문장에 있는 단어를 내면 빈칸 옆에 답이 또 있어 헷갈린다.
- * 띄어쓰기가 있는 언어는 낱말 경계를 지킨다 — 'at' 이 'sat' 속에서 걸리면 안 된다.
+ * 낱말 경계를 지킨다 — 'at' 이 'sat' 속에서 걸리면 안 된다.
  */
 export function appearsInSentence(sentence: string, form: string): boolean {
-  if (!form) return false
-  if (CJK.test(form)) return sentence.includes(form)
-  const pattern = new RegExp(
-    `(?<![\\p{L}\\p{N}])${escapeRegExp(form)}(?![\\p{L}\\p{N}])`,
-    'iu',
-  )
-  return pattern.test(sentence)
+  return appearsInIndex(indexSentence(sentence), form)
 }
 
 /** 겹치지 않게 섞는다 — 원래 목록은 건드리지 않는다 */
@@ -50,11 +76,11 @@ function shuffled<T>(items: T[], rng: () => number): T[] {
 }
 
 /**
- * 오답 후보 — 단어장의 다른 단어들.
+ * 오답 후보 — 이번 세션 단어를 먼저, 모자라면 단어장 전체에서.
  *
- * 문장에 이미 나온 단어는 뺀다. 이번 세션 단어 → 표시한 단어 → 나머지 순으로
- * 앞세운다: 방금 만난 얼굴이 섞여야 문제가 덜 낯설다. 순서는 섞고, 같은 표기는
- * 한 번만 담는다.
+ * 문장에 이미 나온 단어는 뺀다. 세션 단어만으로 두 개가 나오면 단어장 전체를
+ * 훑지 않는다 — 예전에는 문제마다 단어장을 전부 정규식으로 검사해 몇 초가 걸렸다.
+ * 순서는 섞고, 같은 표기는 한 번만 담는다.
  */
 export function pickDistractors(
   entries: DistractorEntry[],
@@ -62,45 +88,48 @@ export function pickDistractors(
   sentence: string,
   options: {
     count: number
-    sessionLemmas?: ReadonlySet<string>
+    /** 이번 세션에 뽑힌 단어들 — 단어장 전체보다 먼저 본다 */
+    sessionEntries?: DistractorEntry[]
     rng?: () => number
   },
 ): QuizChoice[] {
-  const { count, sessionLemmas = new Set<string>(), rng = Math.random } = options
+  const { count, sessionEntries = [], rng = Math.random } = options
   if (count <= 0) return []
 
-  const candidates = entries.filter((entry) => {
-    if (entry.lemma === targetLemma) return false
-    if (appearsInSentence(sentence, entry.lemma)) return false
-    return !entry.surfaces.some((surface) => appearsInSentence(sentence, surface))
-  })
-
-  const session: DistractorEntry[] = []
-  const marked: DistractorEntry[] = []
-  const rest: DistractorEntry[] = []
-  for (const entry of candidates) {
-    if (sessionLemmas.has(entry.lemma)) session.push(entry)
-    else if (entry.status !== 'unmarked') marked.push(entry)
-    else rest.push(entry)
-  }
-
-  const ordered = [
-    ...shuffled(session, rng),
-    ...shuffled(marked, rng),
-    ...shuffled(rest, rng),
-  ]
-
+  const index = indexSentence(sentence)
   const picked: QuizChoice[] = []
   const seenLemmas = new Set([targetLemma])
   const seenLabels = new Set<string>()
-  for (const entry of ordered) {
-    if (picked.length >= count) break
-    const label = entry.lemma
-    const labelKey = label.toLowerCase()
-    if (seenLemmas.has(entry.lemma) || seenLabels.has(labelKey)) continue
+
+  /** 넣었으면 true — 다 채웠으면 호출하는 쪽이 바로 끝낸다 */
+  const add = (entry: DistractorEntry): boolean => {
+    if (picked.length >= count) return true
+    if (entry.lemma === targetLemma) return false
+    const labelKey = entry.lemma.toLowerCase()
+    if (seenLemmas.has(entry.lemma) || seenLabels.has(labelKey)) return false
+    if (appearsInIndex(index, entry.lemma)) return false
+    if (entry.surfaces.some((surface) => appearsInIndex(index, surface))) return false
     seenLemmas.add(entry.lemma)
     seenLabels.add(labelKey)
-    picked.push({ lemma: entry.lemma, label })
+    picked.push({ lemma: entry.lemma, label: entry.lemma })
+    return picked.length >= count
+  }
+
+  // 1) 이번 세션 단어 — 대부분 여기서 끝난다
+  for (const entry of shuffled(sessionEntries, rng)) {
+    if (add(entry)) return picked
+  }
+
+  // 2) 단어장 전체 — 표시한 단어를 먼저, 그다음 나머지
+  const marked: DistractorEntry[] = []
+  const rest: DistractorEntry[] = []
+  for (const entry of entries) {
+    if (seenLemmas.has(entry.lemma)) continue
+    if (entry.status !== 'unmarked') marked.push(entry)
+    else rest.push(entry)
+  }
+  for (const entry of [...shuffled(marked, rng), ...shuffled(rest, rng)]) {
+    if (add(entry)) return picked
   }
   return picked
 }

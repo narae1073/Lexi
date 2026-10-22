@@ -43,7 +43,12 @@ export function QuizClozeQuestion({
     const correct: QuizChoice = { lemma: word.lemma, label: word.surface }
     const distractors = pickDistractors(entries, word.lemma, word.sentence, {
       count: 8,
-      sessionLemmas: new Set(sessionWords.map((item) => item.lemma)),
+      // 이번 세션 단어를 먼저 — 대부분 여기서 오답 둘이 채워진다
+      sessionEntries: sessionWords.map((item) => ({
+        lemma: item.lemma,
+        surfaces: [item.surface],
+        status: item.status,
+      })),
     })
     return buildChoices(correct, distractors, 2)
   })

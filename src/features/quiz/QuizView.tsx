@@ -8,7 +8,7 @@ import { statusPillClass } from '../../lib/color'
 import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
-import { buildWordbook } from '../wordbook/buildWordbook'
+import { buildWordbook, type WordbookEntry } from '../wordbook/buildWordbook'
 import { QuizAnswerButtons } from './QuizAnswerButtons'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
@@ -65,6 +65,8 @@ export function QuizView() {
 
   const [words, setWords] = useState<QuizWord[]>([])
   const [index, setIndex] = useState(0)
+  /** 세션을 시작할 때 떠 둔 단어장 — 답할 때마다 다시 만들지 않는다 */
+  const [sessionEntries, setSessionEntries] = useState<WordbookEntry[]>([])
   /** 지금 단어에 낸 답 (아직 없으면 null) */
   const [answer, setAnswer] = useState<WordStatus | null>(null)
   /** 낸 답들 — 끝난 화면의 요약이 이걸 센다 */
@@ -82,13 +84,16 @@ export function QuizView() {
 
   /** 이 언어의 단어장 — 퀴즈와 복습의 공통 재료 */
   const entries = useMemo(() => {
+    // 세션·요약에서는 시작할 때 떠 둔 사본을 쓴다. 답할 때마다 byKey 가 바뀌는데
+    // 그때마다 등장 기록 전체를 다시 훑으면 큰 단어장에서 화면이 멈춘다.
+    if (phase !== 'setup') return sessionEntries
     if (!languageCode) return []
     return buildWordbook({
       languageCode,
       occurrences: occurrences[languageCode] ?? [],
       byKey,
     })
-  }, [languageCode, occurrences, byKey])
+  }, [phase, languageCode, occurrences, byKey, sessionEntries])
 
   /** 아직 확실하지 않은 단어 — 새로 배우는 재료 */
   const pool = useMemo(() => quizPool(entries), [entries])
@@ -106,6 +111,8 @@ export function QuizView() {
 
   const start = () => {
     if (!languageCode || chosenSize === null) return
+    // 이 시점의 단어장을 세션 내내 쓴다 — 답할 때마다 다시 만들지 않는다
+    setSessionEntries(entries)
     setWords(selectSession(pool, reviews, chosenSize))
     setIndex(0)
     setAnswer(null)
