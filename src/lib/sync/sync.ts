@@ -28,12 +28,22 @@ import {
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
+export type PullWatermarks = {
+  /** 서버가 마지막으로 찍은 시각 — 이 이후에 바뀐 행만 다음에 읽는다 */
+  documents?: string
+  folders?: string
+  wordStates?: string
+  tombstones?: string
+}
+
 export type SyncReport = {
   pushed: number
   pulled: number
   documents: number
   /** 병합된 배운 언어 — 호출한 쪽이 이 기기에 채택해야 한다 */
   languages: string[]
+  /** 다음 동기화가 이어 읽을 서버 워터마크 */
+  watermarks: PullWatermarks
   /**
    * **서버에 지금 있는** 단어 상태와 문서 수.
    *
@@ -206,6 +216,8 @@ export async function writeLocal(
   occurrences: WordOccurrence[],
   folders: Folder[],
   tombstones: DocumentTombstone[] = [],
+  /** 이 문서들의 등장 기록은 건드리지 않는다 — 동기화 중에 새로 계산된 것 */
+  skipOccurrenceDocuments: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   await Promise.all([
     ...documents.map((doc) => idbPutIfChanged(STORES.documents, doc)),
@@ -224,6 +236,7 @@ export async function writeLocal(
     else byDocument.set(record.documentId, [record])
   }
   for (const [documentId, rows] of byDocument) {
+    if (skipOccurrenceDocuments.has(documentId)) continue
     await replaceOccurrences(documentId, rows)
   }
 
@@ -246,6 +259,14 @@ const PAGE_SIZE = 1000
 /** 안전망 — 넘으면 조용히 자르지 않고 동기화를 실패시킨다 */
 const MAX_ROWS = 200_000
 
+type FetchOptions = {
+  /** 이 시각 이후(>=)에 서버가 바꾼 행만 */
+  since?: string
+  sinceColumn?: string
+  /** 이 문서들의 등장 기록만 */
+  documentIds?: readonly string[]
+}
+
 /**
  * 한 사용자의 행을 **끝까지** 읽는다.
  *
@@ -265,6 +286,7 @@ async function fetchAll<T>(
   userId: string,
   order: string,
   columns = '*',
+  options: FetchOptions = {},
 ): Promise<T[]> {
   type PageResult = { data: unknown[] | null; error: { message: string } | null }
   type Ordered = {
@@ -273,25 +295,36 @@ async function fetchAll<T>(
       limit: (count: number) => PromiseLike<PageResult>
     }
   }
+  type Filterable = {
+    in: (column: string, values: readonly string[]) => Filterable
+    gte: (column: string, value: string) => Filterable
+    order: (column: string, opts: { ascending: boolean }) => Ordered
+  }
 
   const rows: T[] = []
   let last: string | number | undefined
 
   while (true) {
     // 반환 타입은 호출부가 T 로 정한다 — 여긴 '한 사용자의 행을 끝까지 읽는다' 만 한다
-    const ordered = (db as never as {
+    let filterable = (db as never as {
       from: (t: string) => {
         select: (c: string) => {
-          eq: (column: string, value: string) => {
-            order: (column: string, opts: { ascending: boolean }) => Ordered
-          }
+          eq: (column: string, value: string) => Filterable
         }
       }
     })
       .from(table)
       .select(columns)
       .eq('user_id', userId)
-      .order(order, { ascending: true })
+
+    if (options.documentIds && options.documentIds.length > 0) {
+      filterable = filterable.in('document_id', options.documentIds)
+    }
+    if (options.since !== undefined && options.sinceColumn !== undefined) {
+      filterable = filterable.gte(options.sinceColumn, options.since)
+    }
+
+    const ordered = filterable.order(order, { ascending: true })
 
     const result =
       last === undefined
@@ -322,23 +355,99 @@ async function fetchAll<T>(
   return rows
 }
 
-export async function pull(userId: string, db: SupabaseClient<Database> = client()) {
-  /**
-   * 모든 표를 끝까지 읽는다.
-   *
-   * 예전엔 한 번씩만 읽었다. 서버는 한 요청당 1000행까지만 주므로, **1000개를 넘는
-   * 단어 상태는 이 기기로 영영 오지 않았다.** 화면에는 '서버에 1000개' 라고Shows —
-   * 실제로는 그 이상인데 잘린 것이었다. 그 숫자를 믿은 나는 '서버에 다 있다' 고
-   * 잘못 읽었다.
-   */
-  const [languageRows, documents, tombstones, folders, wordStates, occurrences] = await Promise.all([
+/** 서버 워터마크 — 이번에 읽은 행 중 가장 늦은 server_updated_at, 없으면 이전 값 */
+function maxServerTimestamp(
+  rows: ReadonlyArray<{ server_updated_at?: string }>,
+  previous?: string,
+): string | undefined {
+  let max = previous
+  for (const row of rows) {
+    const value = row.server_updated_at
+    if (!value) continue
+    if (max === undefined || Date.parse(value) > Date.parse(max)) max = value
+  }
+  return max
+}
+
+/** 서버에 지금 있는 행 수 — 증분 읽기에서는 받은 행 수가 전체가 아니다 */
+async function countRows(
+  db: SupabaseClient<Database>,
+  table: 'documents' | 'word_states',
+  userId: string,
+): Promise<number> {
+  const result = await (db as never as {
+    from: (t: string) => {
+      select: (
+        columns: string,
+        options: { count: 'exact'; head: true },
+      ) => {
+        eq: (column: string, value: string) => PromiseLike<{
+          count: number | null
+          error: { message: string } | null
+        }>
+      }
+    }
+  })
+    .from(table)
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+  if (result.error) throw result.error
+  return result.count ?? 0
+}
+
+/**
+ * 서버에서 읽는다.
+ *
+ * `since` 가 있으면 그 이후에 **서버가** 바꾼 행만, 없으면 전부 읽는다.
+ * 등장 기록은 문서 단위다 — 첫 동기화에는 전부, 이후에는 이번에 바뀐 문서 것만
+ * 읽는다. 문서의 server_updated_at 은 replace_word_occurrences 에서도 올라간다.
+ */
+export async function pull(
+  userId: string,
+  db: SupabaseClient<Database> = client(),
+  since: PullWatermarks = {},
+) {
+  const [languageRows, documents, tombstones, folders, wordStates, totals] = await Promise.all([
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
-    fetchAll<DocumentRow>(db, 'documents', userId, 'id'),
-    fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id'),
-    fetchAll<FolderRow>(db, 'folders', userId, 'id'),
-    fetchAll<WordStateRow>(db, 'word_states', userId, 'id'),
-    fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id'),
+    fetchAll<DocumentRow>(db, 'documents', userId, 'id', '*', {
+      since: since.documents,
+      sinceColumn: 'server_updated_at',
+    }),
+    fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id', '*', {
+      since: since.tombstones,
+      sinceColumn: 'server_updated_at',
+    }),
+    fetchAll<FolderRow>(db, 'folders', userId, 'id', '*', {
+      since: since.folders,
+      sinceColumn: 'server_updated_at',
+    }),
+    fetchAll<WordStateRow>(db, 'word_states', userId, 'id', '*', {
+      since: since.wordStates,
+      sinceColumn: 'server_updated_at',
+    }),
+    Promise.all([
+      countRows(db, 'documents', userId),
+      countRows(db, 'word_states', userId),
+    ]).then(([documentCount, wordCount]) => ({
+      documents: documentCount,
+      wordStates: wordCount,
+    })),
   ])
+
+  let occurrences: OccurrenceRow[] = []
+  if (since.documents === undefined) {
+    // 첫 동기화 — 계정의 등장 기록을 모두 읽는다
+    occurrences = await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id')
+  } else {
+    const changedDocumentIds = documents.map((row) => row.id)
+    for (const part of chunk(changedDocumentIds, 50)) {
+      occurrences.push(
+        ...(await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id', '*', {
+          documentIds: part,
+        })),
+      )
+    }
+  }
 
   return {
     languages: languageRows.map((r) => r.language_code),
@@ -346,7 +455,14 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
     tombstones: tombstones.map(documentTombstoneFromRow),
     folders: folders.map(folderFromRow),
     wordStates: wordStates.map(wordStateFromRow),
-    occurrences: occurrences as OccurrenceRow[],
+    occurrences,
+    totals,
+    watermarks: {
+      documents: maxServerTimestamp(documents, since.documents),
+      folders: maxServerTimestamp(folders, since.folders),
+      wordStates: maxServerTimestamp(wordStates, since.wordStates),
+      tombstones: maxServerTimestamp(tombstones, since.tombstones),
+    },
   }
 }
 
@@ -362,13 +478,21 @@ export async function syncOnce({
   userId,
   languages: localLanguages,
   db = client(),
+  since,
+  pushedAt,
 }: {
   userId: string
   /** 이 기기에서 배운 언어 */
   languages: string[]
   db?: SupabaseClient<Database>
+  /** 서버 워터마크 — 없으면 전체를 읽는다 */
+  since?: PullWatermarks
+  /** 이 로컬 시각 이후에 바뀐 행만 보낸다. 없으면 전부 보낸다 */
+  pushedAt?: string
 }): Promise<SyncReport> {
-  const [remote, local] = await Promise.all([pull(userId, db), readLocal()])
+  // 이 시각 이후에 이 기기에서 다시 계산된 등장 기록은 이번 동기화가 덮어쓰지 않는다
+  const syncStartedAt = new Date().toISOString()
+  const [remote, local] = await Promise.all([pull(userId, db, since), readLocal()])
 
   const words = mergeWordStates(local.wordStates, remote.wordStates)
   const languages = mergeLanguages(localLanguages, remote.languages)
@@ -412,11 +536,26 @@ export async function syncOnce({
    * 새 규칙에서 나오지 않는 키는 같은 키로 덮어써지지 않으므로 살아남는다 — 목록과
    * 본문이 서로 다른 진도를 보인다 (mergeOccurrences.ts).
    */
-  const meta = await idbGetAll<{ documentId: string; lemmaVersion: number }>(STORES.documentMeta)
-    .catch(() => [] as { documentId: string; lemmaVersion: number }[])
-  const recomputed = new Set(
-    meta.filter((m) => m.lemmaVersion === LEMMA_VERSION).map((m) => m.documentId),
+  const metaRows = await idbGetAll<{
+    documentId: string
+    lemmaVersion: number
+    occurrencesUpdatedAt?: string
+  }>(STORES.documentMeta).catch(
+    () => [] as { documentId: string; lemmaVersion: number; occurrencesUpdatedAt?: string }[],
   )
+  const recomputed = new Set(
+    metaRows.filter((m) => m.lemmaVersion === LEMMA_VERSION).map((m) => m.documentId),
+  )
+
+  /**
+   * 증분 동기화에서 서버가 바뀐 문서는 등장 기록도 **통째로** 교체한다.
+   * 로컬에서 다시 계산한 문서는 로컬이 이긴다 — 서버의 옛 표기 기록을 받지 않는다.
+   */
+  const remoteDocumentIds = new Set(remote.documents.map((row) => row.id))
+  const incremental = since?.documents !== undefined
+  const replaceDocuments = incremental
+    ? new Set([...remoteDocumentIds].filter((id) => !recomputed.has(id)))
+    : new Set<string>()
 
   const occurrences = mergeOccurrences(
     local.occurrences,
@@ -424,6 +563,7 @@ export async function syncOnce({
     recomputed,
     [...local.documents.filter((d) => isLive(d.id)), ...remoteDocs],
     tombstoneIds,
+    replaceDocuments,
   )
 
   const mergedDocuments = mergeDocuments(
@@ -433,18 +573,62 @@ export async function syncOnce({
   // 없앤 표시도 status = null 인 행으로 남긴다 — 행 자체가 즐겨찾기·메모·횟수를 든다
   const mergedWords = words.merged
 
-  await writeLocal(mergedDocuments, mergedWords, occurrences, folders, tombstones)
+  /**
+   * 동기화가 도는 동안 이 기기에서 등장 기록을 다시 계산했을 수 있다.
+   * 그 문서는 이번에 덮어쓰지 않고 다음 동기화가 새 기록을 보낸다.
+   */
+  const latestMeta = await idbGetAll<{
+    documentId: string
+    occurrencesUpdatedAt?: string
+  }>(STORES.documentMeta).catch(
+    () => [] as { documentId: string; occurrencesUpdatedAt?: string }[],
+  )
+  const changedDuringSync = new Set(
+    latestMeta
+      .filter(
+        (m) =>
+          m.occurrencesUpdatedAt !== undefined &&
+          Date.parse(m.occurrencesUpdatedAt) > Date.parse(syncStartedAt),
+      )
+      .map((m) => m.documentId),
+  )
+
+  await writeLocal(
+    mergedDocuments,
+    mergedWords,
+    occurrences,
+    folders,
+    tombstones,
+    changedDuringSync,
+  )
 
   /**
-   * 바뀐 문서만 보낸다.
+   * 이번에 보낼 것 — **마지막 성공한 동기화 이후에 이 기기에서 바뀐 것만**.
    *
-   * 전부 다시 보내면 안 된다. upsert 는 기존 행에 UPDATE 를 걸고, 서버의
-   * set_updated_at 트리거가 updated_at 을 now() 로 다시 찍는다. 한 번 동기화할 때
-   * 보낸 모든 문서의 '최근 본 시각' 이 같은 시각이 되어, 목록의 날짜가 전부
-   * 같아지고 정렬도 무의미해진다. 실제로 그랬다.
+   * 증분 읽기에서는 서버에서 받지 않은 행이 로컬에만 있는 것처럼 보인다. 그 행을
+   * 전부 다시 올리면 증분의 의미가 없고, 문서 전문을 매번 올리게 된다.
    */
+  const pushedAtMs = pushedAt === undefined ? undefined : Date.parse(pushedAt)
+  const touchedAfter = (iso: string | undefined): boolean => {
+    if (pushedAtMs === undefined) return true
+    if (!iso) return false
+    const at = Date.parse(iso)
+    return !Number.isNaN(at) && at > pushedAtMs
+  }
+  const wordTouched = (word: WordStateRecord): boolean => {
+    if (pushedAtMs === undefined) return true
+    return [word.lastSeenAt, word.favoriteUpdatedAt, word.noteUpdatedAt].some(
+      (iso) => iso !== undefined && Date.parse(iso) > pushedAtMs,
+    )
+  }
+
+  const wordsToPush = words.pushOnly.filter(wordTouched)
+
   const remoteById = new Map(remoteDocs.map((d) => [d.id, d]))
   const documentsToPush = mergedDocuments.filter((doc) => {
+    // 이 기기에서 마지막 동기화 이후 바뀐 문서만 — 나머지는 다시 올리지 않는다.
+    // 폴더 이동은 updatedAt 을 건드리지 않고 folderUpdatedAt 만 찍는다.
+    if (!touchedAfter(doc.updatedAt) && !touchedAfter(doc.folderUpdatedAt)) return false
     const theirs = remoteById.get(doc.id)
     // 새 문서
     if (!theirs) return true
@@ -461,26 +645,39 @@ export async function syncOnce({
   })
 
   /**
-   * 등장 기록은 **달라진 문서만** 보낸다.
+   * 등장 기록 — 이번에 바뀐 문서의 것만.
    *
-   * 예전엔 이 기기의 기록을 문서 단위로 통째로 지우고 다시 넣었다. 한 번 동기화할 때마다
-   * 서버의 모든 등장 기록이 이 기기의 것으로 교체된다.
-   *
-   * 그 결과가Coc Jordan 보이는 것이었다 — 어느 기기의 기록이 덜 계산되어 있으면 그것이
-   * 서버 전체를 덮어쓴다. 그래서 **단어 색깔(`byKey`)은 맞는��**데 **목록 게이지와
-   * 단어장은 다른 기기의 것을 잃었다** — 게이지와 단어장은 기록에서 나오고 색깔은
-   * 상태에서 나오기 때문이다.
-   *
-   * 같으면 보내지 않는다. 기록은 문서를 열 때 다시 쓰이므로, 바뀐 것만 보내면 충분하다.
+   * - 서버에서 바뀐 문서: 병합 결과와 서버를 비교한다 (로컬 재계산이면 로컬이 이겨 보낸다)
+   * - 이 기기에서만 바뀐 문서: documentMeta.occurrencesUpdatedAt 이 마지막 동기화 이후다
    */
-  const occurrencePush = changedOccurrenceDocuments(occurrences, remote.occurrences)
+  const dirtyOccurrenceDocs = new Set(
+    pushedAtMs === undefined
+      ? local.occurrences.map((record) => record.documentId)
+      : metaRows
+          .filter(
+            (m) =>
+              m.occurrencesUpdatedAt !== undefined &&
+              Date.parse(m.occurrencesUpdatedAt) > pushedAtMs,
+          )
+          .map((m) => m.documentId),
+  )
+  const changedFetched = changedOccurrenceDocuments(
+    occurrences,
+    remote.occurrences,
+    incremental ? remoteDocumentIds : undefined,
+  )
+  const occurrencePush = [...new Set([...changedFetched, ...dirtyOccurrenceDocs])].filter(
+    (id) => isLive(id) && !changedDuringSync.has(id),
+  )
 
   /**
    * 폴더는 문서보다 **먼저** 간다 — 문서의 folder_id 가 폴더를 가리키므로(FK),
    * 폴더가 아직 없는 채로 문서가 가면 서버가 거절한다. 문서가 맞아 떨어지기
    * 전에 자리를 먼저 만들어 두는 것이다.
    */
-  const foldersToPush = changedFolders(folders, remote.folders)
+  const foldersToPush = changedFolders(folders, remote.folders).filter((folder) =>
+    touchedAfter(folder.updatedAt),
+  )
 
   // 상태·문서·폴더를 먼저 보낸다 — 진도가 문서에 지면 안 된다
   await push({
@@ -488,7 +685,7 @@ export async function syncOnce({
     db,
     languages,
     documents: documentsToPush,
-    words: words.pushOnly,
+    words: wordsToPush,
     folders: foldersToPush,
     tombstones,
   })
@@ -504,12 +701,13 @@ export async function syncOnce({
 
   return {
     // 지운 것은 '보낸 단어' 가 아니다 — 서버에서 지운 것이지 보낸 것이 아니다
-    pushed: words.pushOnly.filter((w) => w.status !== undefined).length,
+    pushed: wordsToPush.filter((w) => w.status !== undefined).length,
     pulled: words.pullOnly.length,
     documents: mergedDocuments.length,
     languages,
-    serverWords: remote.wordStates.length,
-    serverDocuments: remote.documents.length,
+    watermarks: remote.watermarks,
+    serverWords: remote.totals.wordStates,
+    serverDocuments: remote.totals.documents,
     /**
      * **이번 사이클을 마친 뒤** 이 기기에 있는 수.
      *
@@ -635,6 +833,7 @@ function occurrenceKey(
 export function changedOccurrenceDocuments(
   merged: WordOccurrence[],
   remoteRows: ReadonlyArray<OccurrenceContentRow>,
+  onlyDocumentIds?: ReadonlySet<string>,
 ): string[] {
   const remoteKey = new Map<string, Set<string>>()
   for (const row of remoteRows) {
@@ -673,6 +872,7 @@ export function changedOccurrenceDocuments(
   const documentIds = new Set([...localKey.keys(), ...remoteKey.keys()])
   const changed: string[] = []
   for (const id of documentIds) {
+    if (onlyDocumentIds !== undefined && !onlyDocumentIds.has(id)) continue
     const mine = localKey.get(id) ?? new Set()
     const theirs = remoteKey.get(id) ?? new Set()
     if (mine.size !== theirs.size) {

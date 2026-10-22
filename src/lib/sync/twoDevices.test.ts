@@ -6,7 +6,7 @@ import type { Document } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
-import { changedOccurrenceDocuments, mergeTombstones, pushOccurrences, syncOnce } from './sync'
+import { changedOccurrenceDocuments, mergeTombstones, pushOccurrences, syncOnce, type PullWatermarks } from './sync'
 
 /**
  * 서버를 흉내낸다 — 두 기기 사이에서만 나타나는 문제를 잡으려면 그것이 필요하다.
@@ -45,6 +45,7 @@ function memoryServer(rowCap = 1000) {
       let orderColumn = ''
       let limitCount = Infinity
       let greaterThan: { column: string; value: unknown } | null = null
+      let countMode = false
       // 실제 클라이언트처럼 delete().eq() 체이닝을 받는다 — 실행은 await 때다
       let deleting = false
 
@@ -59,19 +60,30 @@ function memoryServer(rowCap = 1000) {
             if (!(v as unknown[]).includes(row[k.slice('__in__'.length)])) return false
             continue
           }
+          if (k.startsWith('__gte__')) {
+            if (compareValues(row[k.slice('__gte__'.length)], v) < 0) return false
+            continue
+          }
           if (row[k] !== v) return false
         }
         return true
       }
 
       const query = {
-        select: () => query,
+        select: (_columns?: string, options?: { count?: string; head?: boolean }) => {
+          countMode = options?.count === 'exact' && options?.head === true
+          return query
+        },
         eq: (column: string, value: unknown) => {
           filters[column] = value
           return query
         },
         in: (column: string, values: unknown[]) => {
           filters[`__in__${column}`] = values
+          return query
+        },
+        gte: (column: string, value: unknown) => {
+          filters[`__gte__${column}`] = value
           return query
         },
         order: (column: string) => {
@@ -112,7 +124,7 @@ function memoryServer(rowCap = 1000) {
           deleting = true
           return query
         },
-        then: async (resolve: (value: { data: unknown[] | null; error: null }) => unknown) => {
+        then: async (resolve: (value: { data: unknown[] | null; count?: number; error: null }) => unknown) => {
           // 지우기는 await 때 실행된다 — 필터가 뒤에 붙기 때문이다
           if (deleting) {
             tables[table] = tables[table].filter((row) => !matches(row))
@@ -120,6 +132,7 @@ function memoryServer(rowCap = 1000) {
           }
 
           let rows = tables[table].filter(matches)
+          if (countMode) return resolve({ data: null, count: rows.length, error: null })
 
           const cursor = greaterThan
           if (cursor) {
@@ -226,6 +239,7 @@ function seedWords(server: Server, count: number, start = 0) {
       favorite_updated_at: '2026-10-01T00:00:00+00:00',
       star_angle: 0,
       star_color: '#eab308',
+      server_updated_at: '2026-10-05T00:00:00+00:00',
     })
   }
 }
@@ -236,8 +250,10 @@ async function clearLocalWords() {
   }
 }
 
-const sync = (server: Server) =>
-  syncOnce({ userId: 'user-1', languages: ['fr'], db: server.client })
+const sync = (
+  server: Server,
+  options: { since?: PullWatermarks; pushedAt?: string } = {},
+) => syncOnce({ userId: 'user-1', languages: ['fr'], db: server.client, ...options })
 
 beforeEach(async () => {
   useWordStatesStore.setState({ byKey: {}, loaded: {} })
@@ -246,6 +262,7 @@ beforeEach(async () => {
   await idbDelete(STORES.documentMeta, doc.id)
   await idbDelete(STORES.wordOccurrences, [doc.id, 'chat'])
   await idbDelete(STORES.documentTombstones, doc.id)
+  await idbDelete(STORES.folders, 'folder-1')
 })
 
 /**
@@ -690,5 +707,153 @@ describe('문서 묘비 합치기', () => {
       { documentId: 'd1', purgedAt: T1 },
       { documentId: 'd2', purgedAt: T1 },
     ])
+  })
+})
+
+describe('증분 동기화', () => {
+  const PUSHED_AT = '2026-10-20T00:00:00.000Z'
+
+  it('워터마크 이후에 바뀐 단어만 받는다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc)
+    seedWords(server, 3)
+
+    const first = await sync(server)
+    expect(first.pulled).toBe(3)
+    expect(first.watermarks.wordStates).toBe('2026-10-05T00:00:00+00:00')
+
+    // 다른 기기가 단어 하나를 더했다 — 서버 시각이 더 늦다
+    server.add('word_states', {
+      id: 'ws-new',
+      user_id: 'user-1',
+      language_code: 'fr',
+      lemma: 'nouveau',
+      status: 'unsure',
+      seen_count: 1,
+      first_seen_at: '2026-10-10T00:00:00+00:00',
+      last_seen_at: '2026-10-10T00:00:00+00:00',
+      is_favorite: false,
+      favorite_updated_at: '2026-10-10T00:00:00+00:00',
+      star_angle: 0,
+      star_color: '#eab308',
+      server_updated_at: '2026-10-10T00:00:00+00:00',
+    })
+
+    const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
+    expect(second.pulled).toBe(1)
+    expect(second.watermarks.wordStates).toBe('2026-10-10T00:00:00+00:00')
+    expect(await idbGetAll(STORES.wordStates)).toHaveLength(4)
+  })
+
+  it('마지막 동기화 이후 바뀐 로컬 행만 보낸다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.wordStates, {
+      ...wordState('ancien'),
+      lastSeenAt: '2026-10-01T00:00:00.000Z',
+    })
+
+    const first = await sync(server)
+    expect(first.pushed).toBe(1)
+
+    await idbPut(STORES.wordStates, {
+      ...wordState('nouveau'),
+      lastSeenAt: '2026-10-21T00:00:00.000Z',
+    })
+
+    const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
+    expect(second.pushed).toBe(1)
+    expect(server.count('word_states')).toBe(2)
+  })
+
+  it('폴더 이동은 updatedAt 이 그대로여도 보낸다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.folders, {
+      id: 'folder-1',
+      name: 'Folder',
+      parentId: null,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    })
+    await idbPut(STORES.documents, doc)
+
+    const first = await sync(server)
+    expect(server.count('documents')).toBe(1)
+
+    // moveToFolder 와 같은 모양 — updatedAt 은 그대로, folderUpdatedAt 만 새로 찍힌다
+    await idbPut(STORES.documents, {
+      ...doc,
+      folderId: 'folder-1',
+      folderUpdatedAt: '2026-10-21T00:00:00.000Z',
+    })
+
+    await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
+
+    const rows = server.rows('documents')
+    expect(rows[0]?.folder_id).toBe('folder-1')
+  })
+
+  it('바뀐 문서의 등장 기록만 다시 받는다', async () => {
+    const server = memoryServer()
+    server.add('documents', {
+      id: doc.id,
+      user_id: 'user-1',
+      title: doc.title,
+      language_code: 'fr',
+      raw_text: doc.rawText,
+      created_at: doc.createdAt,
+      updated_at: doc.updatedAt,
+      deleted_at: null,
+      folder_id: null,
+      folder_updated_at: null,
+      server_updated_at: '2026-10-05T00:00:00+00:00',
+    })
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: 'user-1',
+      document_id: doc.id,
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 0,
+      char_end: 4,
+      sentence: '옛 문장',
+      occurrences_count: 1,
+    })
+
+    await idbPut(STORES.documents, doc)
+    // 현재 규칙으로 다시 계산하지 않은 문서 — 서버 기록이 이긴다
+    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: -1 })
+    await idbPut(STORES.wordOccurrences, {
+      documentId: doc.id,
+      languageCode: 'fr',
+      lemma: 'chat',
+      surfaces: ['chat'],
+      count: 1,
+      recordedAt: 1,
+      charStart: 0,
+      charEnd: 4,
+      sentence: '옛 문장',
+      documentTitle: doc.title,
+    })
+
+    const first = await sync(server)
+    expect(first.watermarks.documents).toBe('2026-10-05T00:00:00+00:00')
+
+    // 다른 기기에서 문서의 등장 기록이 바뀌었다
+    const remoteDoc = server.rows('documents')[0]
+    if (!remoteDoc) throw new Error('문서가 없다')
+    remoteDoc.server_updated_at = '2026-10-10T00:00:00+00:00'
+    const remoteOccurrence = server.rows('word_occurrences')[0]
+    if (!remoteOccurrence) throw new Error('등장 기록이 없다')
+    remoteOccurrence.sentence = '새 문장'
+
+    const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
+    expect(second.pushed).toBe(0)
+
+    const local = await idbGetAll<{ documentId: string; lemma: string; sentence: string }>(
+      STORES.wordOccurrences,
+    )
+    expect(local.find((row) => row.documentId === doc.id)?.sentence).toBe('새 문장')
   })
 })

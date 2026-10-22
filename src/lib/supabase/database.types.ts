@@ -30,6 +30,8 @@ export type Database = {
           folder_id: string | null
           /** 폴더로 옮긴 시각 — 열람 시각과 별개의 인장이다 */
           folder_updated_at: string | null
+          /** 서버가 찍는 동기화 워터마크 */
+          server_updated_at: string
         }
         Insert: {
           id?: string
@@ -42,6 +44,7 @@ export type Database = {
           deleted_at?: string | null
           folder_id?: string | null
           folder_updated_at?: string | null
+          server_updated_at?: string
         }
         Update: {
           id?: string
@@ -54,6 +57,7 @@ export type Database = {
           deleted_at?: string | null
           folder_id?: string | null
           folder_updated_at?: string | null
+          server_updated_at?: string
         }
         Relationships: []
       }
@@ -62,16 +66,19 @@ export type Database = {
           user_id: string
           document_id: string
           purged_at: string
+          server_updated_at: string
         }
         Insert: {
           user_id: string
           document_id: string
           purged_at?: string
+          server_updated_at?: string
         }
         Update: {
           user_id?: string
           document_id?: string
           purged_at?: string
+          server_updated_at?: string
         }
         Relationships: []
       }
@@ -85,6 +92,7 @@ export type Database = {
           created_at: string
           updated_at: string
           deleted_at: string | null
+          server_updated_at: string
         }
         Insert: {
           id?: string
@@ -94,6 +102,7 @@ export type Database = {
           created_at?: string
           updated_at?: string
           deleted_at?: string | null
+          server_updated_at?: string
         }
         Update: {
           id?: string
@@ -103,6 +112,7 @@ export type Database = {
           created_at?: string
           updated_at?: string
           deleted_at?: string | null
+          server_updated_at?: string
         }
         Relationships: []
       }
@@ -125,6 +135,7 @@ export type Database = {
           unknown_presses: number
           note: string | null
           note_updated_at: string | null
+          server_updated_at: string
         }
         Insert: {
           id?: string
@@ -144,6 +155,7 @@ export type Database = {
           unknown_presses?: number
           note?: string | null
           note_updated_at?: string | null
+          server_updated_at?: string
         }
         Update: {
           id?: string
@@ -163,6 +175,7 @@ export type Database = {
           unknown_presses?: number
           note?: string | null
           note_updated_at?: string | null
+          server_updated_at?: string
         }
         Relationships: []
       }

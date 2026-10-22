@@ -16,6 +16,7 @@ import type { LanguageCode } from '../../types'
 import {
   SyncUnavailable,
   syncOnce,
+  type PullWatermarks,
   type SyncReport,
 } from '../../lib/sync/sync'
 import { createSingleFlight } from '../../lib/sync/singleFlight'
@@ -32,6 +33,45 @@ const SYNC_DEBOUNCE_MS = 1_200
 
 /** 아무리 자주 눌러도 이만큼 지나면 한 번은 보낸다 — 미루기만 하다가 끝내지 않게 */
 const SYNC_MAX_WAIT_MS = 10_000
+
+/**
+ * 증분 동기화의 위치.
+ *
+ * `pull` 은 서버가 찍은 워터마크, `pushedAt` 은 마지막 성공한 동기화를 시작한
+ * **로컬** 시각이다. 둘을 나누는 이유: 당겨오기는 서버 시계, 밀어내기는 이 기기의
+ * 시계로 비교해야 한다.
+ */
+const SYNC_STATE_KEY = 'lexi.syncState'
+const SYNC_STATE_VERSION = 1
+
+type StoredSyncState = {
+  version: number
+  pull: PullWatermarks
+  pushedAt: string
+}
+
+function readStoredSyncState(userId: string): StoredSyncState | null {
+  try {
+    const raw = localStorage.getItem(SYNC_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Record<string, StoredSyncState>
+    const state = parsed[userId]
+    return state && state.version === SYNC_STATE_VERSION ? state : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredSyncState(userId: string, state: StoredSyncState): void {
+  try {
+    const raw = localStorage.getItem(SYNC_STATE_KEY)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, StoredSyncState>) : {}
+    parsed[userId] = state
+    localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(parsed))
+  } catch (error) {
+    console.error('동기화 워터마크 저장 실패', error)
+  }
+}
 
 export type SyncState = {
   status: SyncStatus
@@ -132,12 +172,27 @@ async function doRun(set: Setter) {
   // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
   // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다
   const batch = { ...useSyncStore.getState().pendingByStore }
+  const stored = readStoredSyncState(user.id)
+  // 이 시각 이전에 바뀐 것은 지난 동기화가 이미 보냈다. 이번에 바뀐 것만 다음에 보낸다
+  const startedAt = new Date().toISOString()
 
   set({ status: 'syncing', error: null })
 
   try {
     const languages = useLanguagesStore.getState().enrolled
-    const report = await syncOnce({ userId: user.id, languages })
+    const report = await syncOnce({
+      userId: user.id,
+      languages,
+      since: stored?.pull,
+      pushedAt: stored?.pushedAt,
+    })
+
+    // 성공한 뒤에만 워터마크를 옮긴다 — 실패하면 같은 구간을 다시 읽고 다시 보낸다
+    writeStoredSyncState(user.id, {
+      version: SYNC_STATE_VERSION,
+      pull: report.watermarks,
+      pushedAt: startedAt,
+    })
 
     /**
      * 계정의 언어를 그대로 채택한다.

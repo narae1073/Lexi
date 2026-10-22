@@ -162,7 +162,7 @@ describe('word_state 매핑', () => {
 
 describe('documents 매핑', () => {
   it('양방향으로 값이 보존된다', () => {
-    expect(documentFromRow(documentToRow(USER, doc))).toEqual(doc)
+    expect(documentFromRow(documentToRow(USER, doc) as DocumentRow)).toEqual(doc)
   })
 
   it('사용자 id 를 함께 싣는다', () => {
@@ -177,7 +177,7 @@ describe('documents 매핑', () => {
   it('버려진 문서도 버린 시각을 보존한다', () => {
     const trashed = { ...doc, deletedAt: '2026-03-01T00:00:00.000Z' }
     expect(documentToRow(USER, trashed).deleted_at).toBe('2026-03-01T00:00:00.000Z')
-    expect(documentFromRow(documentToRow(USER, trashed))).toEqual(trashed)
+    expect(documentFromRow(documentToRow(USER, trashed) as DocumentRow)).toEqual(trashed)
   })
 
   it('살아 있는 문서는 deleted_at 이 NULL 이다', () => {
@@ -193,7 +193,7 @@ describe('documents 매핑', () => {
     const row = documentToRow(USER, moved)
     expect(row.folder_id).toBe('folder-1')
     expect(row.folder_updated_at).toBe(T1)
-    expect(documentFromRow(row)).toEqual(moved)
+    expect(documentFromRow(row as DocumentRow)).toEqual(moved)
   })
 
   /** 폴더 기능 이전의 행에는 두 열이 모두 없다 (NULL) — 읽을 때 기본값을 채운다 */

@@ -34,6 +34,11 @@ export function mergeOccurrences(
   recomputed: Set<string>,
   documents: Document[],
   purged: Set<string> = new Set(),
+  /**
+   * 서버에서 바뀐 문서 — 로컬 기록을 통째로 버리고 서버 것을 쓴다.
+   * 로컬이 현재 규칙으로 다시 계산한 문서(recomputed)는 여기 넣지 않는다.
+   */
+  replaceDocuments: Set<string> = new Set(),
 ): WordOccurrence[] {
   const docs = new Map(documents.map((d) => [d.id, d]))
 
@@ -48,7 +53,13 @@ export function mergeOccurrences(
   const pulledIds = new Set(pulled.map((o) => `${o.documentId}::${o.lemma}`))
   return [
     ...pulled,
-    // 재계산한 문서는 pulled 에 없으므로 로컬 것이 그대로 남는다
-    ...local.filter((o) => !purged.has(o.documentId) && !pulledIds.has(`${o.documentId}::${o.lemma}`)),
+    // 재계산한 문서는 pulled 에 없으므로 로컬 것이 그대로 남는다.
+    // 서버에서 바뀐 문서(replaceDocuments)는 로컬 것을 버린다 — 삭제된 기록도 사라진다.
+    ...local.filter(
+      (o) =>
+        !purged.has(o.documentId) &&
+        !replaceDocuments.has(o.documentId) &&
+        !pulledIds.has(`${o.documentId}::${o.lemma}`),
+    ),
   ]
 }

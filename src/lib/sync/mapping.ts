@@ -112,7 +112,10 @@ export function documentTombstoneFromRow(row: DocumentTombstoneRow): DocumentTom
   }
 }
 
-export function documentToRow(userId: string, doc: Document): DocumentRow {
+export function documentToRow(
+  userId: string,
+  doc: Document,
+): Omit<DocumentRow, 'server_updated_at'> {
   return {
     id: doc.id,
     user_id: userId,

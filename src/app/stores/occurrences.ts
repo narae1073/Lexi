@@ -246,6 +246,8 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
         documentId: doc.id,
         lemmaVersion: LEMMA_VERSION,
         segmenter,
+        // 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다
+        occurrencesUpdatedAt: new Date().toISOString(),
       }).catch(() => {})
       set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
       return
@@ -303,6 +305,8 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
       documentId: doc.id,
       lemmaVersion: LEMMA_VERSION,
       segmenter,
+      // 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다
+      occurrencesUpdatedAt: new Date().toISOString(),
     }).catch(() => {})
 
     set((s) => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { STORES, idbGet, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import type { Document } from '../../types'
+import type { WordOccurrence } from '../../app/stores/occurrences'
 import { onLocalWrite } from '../../lib/storage/localDb'
 import { writeLocal } from './sync'
 
@@ -110,6 +111,35 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     off()
 
     expect(seen).toEqual([])
+  })
+
+  it('동기화 중 다시 계산한 문서의 등장 기록은 건드리지 않는다', async () => {
+    const occurrence: WordOccurrence = {
+      documentId: 'doc-1',
+      languageCode: 'en',
+      lemma: 'run',
+      surfaces: ['run'],
+      count: 1,
+      recordedAt: 1,
+      charStart: 0,
+      charEnd: 3,
+      sentence: '새 문장',
+      documentTitle: 'Untitled',
+    }
+    await idbPut(STORES.wordOccurrences, occurrence)
+
+    // 동기화가 들고 있던 옛 기록으로 되돌리려 하지만, 이 문서는 건너뛴다
+    await writeLocal(
+      [],
+      [],
+      [{ ...occurrence, sentence: '옛 문장' }],
+      [],
+      [],
+      new Set(['doc-1']),
+    )
+
+    const stored = await idbGet<{ sentence: string }>(STORES.wordOccurrences, ['doc-1', 'run'])
+    expect(stored?.sentence).toBe('새 문장')
   })
 })
 
