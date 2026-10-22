@@ -10,6 +10,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  */
 const invoke = vi.fn()
 
+/** readOrCreateInstallId 는 UUID 모양의 값을 만든다 — 헤더가 비어 있지 않은지 확인한다 */
+const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 vi.mock('../supabase/client', () => ({
   supabase: {
     functions: {
@@ -64,6 +67,8 @@ describe('dictionaryKey', () => {
     await useDictionaryStore.getState().lookup('de', 'Häuser', 'Häuser')
     expect(invoke).toHaveBeenCalledWith('dictionary', {
       body: { languageCode: 'de', lemma: 'häuser', surface: 'Häuser', targetLanguage: 'en' },
+      // 설치 ID 헤더가 실제로 실려야 기기 단위 쿼터가 동작한다
+      headers: { 'x-lexi-install': expect.stringMatching(INSTALL_ID) },
     })
   })
 })
