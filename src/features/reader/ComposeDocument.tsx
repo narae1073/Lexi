@@ -165,6 +165,7 @@ export function ComposeDocument() {
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
+          maxLength={200}
           placeholder={t('compose.titlePlaceholder')}
           className="rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-accent"
         />
@@ -176,6 +177,7 @@ export function ComposeDocument() {
           value={rawText}
           onChange={(e) => setRawText(e.target.value)}
           onPaste={handlePaste}
+          maxLength={50000}
           rows={12}
           placeholder={t('compose.bodyPlaceholder')}
           className="resize-y rounded-lg border border-line px-3 py-2 font-mono text-sm leading-relaxed outline-none focus:border-accent"

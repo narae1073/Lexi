@@ -78,6 +78,14 @@ type WordStatesStore = {
   getStatus: (languageCode: LanguageCode, lemma: string) => WordStatus | undefined
 }
 
+/**
+ * 서버의 word_states.lemma_len 과 같은 상한.
+ *
+ * 넘는 lemma 는 서버가 거부하므로 화면에서 먼저 막는다 — 한 행이 거부되면
+ * 그 뒤의 정상 변경까지 동기화 큐에 걸린다.
+ */
+const MAX_LEMMA_LENGTH = 200
+
 /** 누른 단추(status) → WordState 의 횟수 필드 */
 const PRESS_FIELD: Record<WordStatus, 'knownPresses' | 'unsurePresses' | 'unknownPresses'> = {
   known: 'knownPresses',
@@ -96,6 +104,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   getStatus: (languageCode, lemma) => get().byKey[wordKey(languageCode, lemma)]?.status,
 
   setStatus: (languageCode, lemma, status, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -128,6 +137,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   pressStatus: (languageCode, lemma, result, pressed, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -160,6 +170,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   clearStatus: (languageCode, lemma) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     // 표시한 적이 없으면 없앨 것도 없다
@@ -188,6 +199,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   toggleFavorite: (languageCode, lemma, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -228,6 +240,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   setStarColor: (languageCode, lemma, color, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     // 별이 없으면 바꿀 색도 없다 — 팝오버에서 별이 있을 때만 보여준다
@@ -248,6 +261,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   setNote: (languageCode, lemma, note, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()

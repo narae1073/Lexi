@@ -497,6 +497,7 @@ export function DocumentList() {
               ref={inputRef}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
+              maxLength={200}
               onBlur={() => void commitCreate()}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') void commitCreate()

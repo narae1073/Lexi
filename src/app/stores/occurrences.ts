@@ -77,6 +77,10 @@ type OccurrencesState = {
   refreshStaleDocuments: (docs: Document[]) => Promise<number>
 }
 
+/** 서버의 word_occurrences 제약과 같은 상한 — 넘는 행은 동기화가 거부한다 */
+const MAX_WORD_LENGTH = 200
+const MAX_SENTENCE_LENGTH = 5_000
+
 /** 단어장 정렬용: 문서 내 등장 순서를 유지한다 */
 function sortByPosition(a: WordOccurrence, b: WordOccurrence) {
   return a.charStart - b.charStart
@@ -267,8 +271,17 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     type Draft = Omit<WordOccurrence, 'recordedAt'>
     const byLemma = new Map<string, Draft>()
     for (const word of words) {
+      /**
+       * 서버는 lemma·surface 를 200자까지만 받는다. 붙여넣은 URL·해시처럼
+       * 공백 없이 긴 글자는 토크나이저가 한 단어로 보므로 여기서 먼저 건너뛴다.
+       * 문서 전체를 버리지 않는다 — 나머지 단어는 그대로 기록한다.
+       */
+      if (word.text.length > MAX_WORD_LENGTH) continue
+
       // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
       const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
+      // 표기뿐 아니라 해석된 lemma 도 서버 상한을 지켜야 한다
+      if (lemma.length > MAX_WORD_LENGTH) continue
       const existing = byLemma.get(lemma)
       if (existing) {
         existing.count += 1
@@ -283,7 +296,10 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
         count: 1,
         charStart: word.start,
         charEnd: word.end,
-        sentence: (sentences[word.sentenceIndex]?.text ?? '').trim(),
+        // 서버는 문장을 5,000자까지만 받는다 — 긴 문장도 예문의 앞부분은 남긴다
+        sentence: (sentences[word.sentenceIndex]?.text ?? '')
+          .trim()
+          .slice(0, MAX_SENTENCE_LENGTH),
         documentTitle: doc.title,
       })
     }
