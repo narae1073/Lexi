@@ -68,7 +68,10 @@ export type SyncReport = {
    * 비어 있으면 아무것도 보내지 않는다.
    */
   occurrencePush: string[]
-  /** 이번 사이클이 로컬에 실제로 쓴 행 수 — 바뀐 것만 센다 */
+  /**
+   * What this cycle actually wrote locally — unchanged rows are not counted.
+   * `occurrences` counts documents whose occurrence rows were replaced.
+   */
   localWrites: WriteLocalResult
 }
 

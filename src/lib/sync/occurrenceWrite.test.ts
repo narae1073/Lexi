@@ -166,6 +166,34 @@ describe('changed-only occurrence writes', () => {
     expect(await idbGetAll(STORES.wordOccurrences)).toHaveLength(0)
   })
 
+  for (const [label, lemmaVersion] of [
+    ['without documentMeta', undefined],
+    ['with old documentMeta', -1],
+  ] as const) {
+    it(`clears local occurrence rows on a full pull when the server-owned document has none (${label})`, async () => {
+      const server = memoryServer(1000, T1)
+      // A full pull treats every fetched remote document as authoritative — even
+      // one the server owns with no occurrence rows at all.
+      server.add('documents', remoteDoc('doc-1'))
+
+      await idbPut(STORES.documents, doc('doc-1'))
+      if (lemmaVersion !== undefined) {
+        await idbPut(STORES.documentMeta, { documentId: 'doc-1', lemmaVersion })
+      }
+      await idbPut(STORES.wordOccurrences, {
+        ...occurrence('doc-1', 'chat'),
+        sentinel: 'stale',
+      })
+
+      const report = await sync(server)
+
+      // Exactly one replacement: the stale row is gone rather than rewritten.
+      expect(report.localWrites.occurrences).toBe(1)
+      expect(await idbGet(STORES.wordOccurrences, ['doc-1', 'chat'])).toBeUndefined()
+      expect(await idbGetAll(STORES.wordOccurrences)).toHaveLength(0)
+    })
+  }
+
   it('replaces occurrences for changed remote documents only — unrelated rows stay untouched', async () => {
     const server = memoryServer(1000, T1)
     server.add('documents', remoteDoc('doc-1'))
