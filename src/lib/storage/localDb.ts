@@ -3,8 +3,26 @@
  * 계정 동기화(Phase 6)에서 Supabase로 이전한다.
  */
 
+import type { DirtyKey, LocalSyncMeta } from '../sync/types'
+
 const DB_NAME = 'lexi'
-const DB_VERSION = 6
+/**
+ * Local DB schema version.
+ *
+ * **Never bump for sync bookkeeping** — Release 2 stores the reserved
+ * `LocalSyncMeta` record inside the existing `documentMeta` store precisely so
+ * this stays 6: the previous frontend must keep opening a database this build
+ * has touched (a version 7 open would fail with VersionError after a rollback).
+ */
+export const DB_VERSION = 6
+
+/**
+ * `documentId` of the reserved `LocalSyncMeta` record in `STORES.documentMeta`.
+ *
+ * A reserved id instead of a new store/new version: documentMeta is local-only
+ * (never sent to the server), so it is the right home for device bookkeeping.
+ */
+export const SYNC_META_KEY = '__lexi_sync_meta__'
 
 export const STORES = {
   documents: 'documents',
@@ -53,7 +71,14 @@ const SYNCED_STORES: readonly StoreName[] = [
   'documentTombstones',
 ]
 
-type LocalWriteListener = (store: StoreName) => void
+/**
+ * Listener for finished local writes to synced stores.
+ *
+ * The reserved sync-meta record travels with the signal: the bump has already
+ * happened in the same transaction as the write, so listeners can trust
+ * `meta.pendingByStore`/`meta.revision` without re-reading the database.
+ */
+type LocalWriteListener = (store: StoreName, meta: LocalSyncMeta) => void
 
 const writeListeners = new Set<LocalWriteListener>()
 
@@ -70,11 +95,11 @@ export function onLocalWrite(listener: LocalWriteListener): () => void {
   }
 }
 
-function notifyLocalWrite(store: StoreName) {
+function notifyLocalWrite(store: StoreName, meta: LocalSyncMeta) {
   if (!SYNCED_STORES.includes(store)) return
   for (const listener of writeListeners) {
     try {
-      listener(store)
+      listener(store, meta)
     } catch (error) {
       // 알림에 실패해도 저장은 끝난 일이다 — 저장을 막지 않는다
       console.error('저장 완료 알림 실패', error)
@@ -83,6 +108,238 @@ function notifyLocalWrite(store: StoreName) {
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null
+
+/**
+ * Normalizes whatever sits under the reserved key into a usable meta record.
+ *
+ * A missing or malformed row yields null — callers decide whether to mint a
+ * fresh epoch. Bookkeeping restarts rather than trusting a half-written record.
+ */
+function normalizeSyncMeta(stored: unknown): LocalSyncMeta | null {
+  if (typeof stored !== 'object' || stored === null) return null
+  const row = stored as Partial<LocalSyncMeta>
+  if (row.documentId !== SYNC_META_KEY) return null
+  if (typeof row.epoch !== 'string' || row.epoch === '') return null
+  if (typeof row.revision !== 'number' || !Number.isFinite(row.revision) || row.revision < 0) {
+    return null
+  }
+  return {
+    documentId: SYNC_META_KEY,
+    epoch: row.epoch,
+    revision: row.revision,
+    pendingByStore: row.pendingByStore ?? {},
+    dirty: row.dirty ?? {},
+  }
+}
+
+/** A brand-new meta record — a fresh epoch is minted with the database. */
+function freshSyncMeta(): LocalSyncMeta {
+  return {
+    documentId: SYNC_META_KEY,
+    epoch: crypto.randomUUID(),
+    revision: 0,
+    pendingByStore: {},
+    dirty: {},
+  }
+}
+
+/**
+ * The meta after one user write: `revision + 1`, one more pending count for the
+ * store, and the dirty key at the new revision. Pure — callers apply it inside
+ * their transaction so the bump cannot drift from the write it belongs to.
+ */
+function bumpedSyncMeta(
+  meta: LocalSyncMeta,
+  store: StoreName,
+  key: string | undefined,
+): LocalSyncMeta {
+  const revision = meta.revision + 1
+  const pendingByStore = {
+    ...meta.pendingByStore,
+    [store]: (meta.pendingByStore[store] ?? 0) + 1,
+  }
+  const dirty = { ...meta.dirty }
+  if (key !== undefined) {
+    dirty[store] = { ...(dirty[store] ?? {}), [key]: revision }
+  }
+  return { ...meta, revision, pendingByStore, dirty }
+}
+
+/**
+ * Dirty-key encoding per synced store (plan "Clock-safe dirty keys"):
+ * documents/folders/tombstones → row id; wordStates → `languageCode\0lemma`;
+ * wordOccurrences → document id (the push unit is a document).
+ * Returns undefined when the row does not carry its key — the write still
+ * bumps revision and pending, just without a dirty entry.
+ */
+function dirtyKeyForValue(store: StoreName, value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (store === STORES.documents || store === STORES.folders) {
+    return typeof row.id === 'string' ? row.id : undefined
+  }
+  if (store === STORES.wordOccurrences || store === STORES.documentTombstones) {
+    return typeof row.documentId === 'string' ? row.documentId : undefined
+  }
+  if (store === STORES.wordStates) {
+    return typeof row.languageCode === 'string' && typeof row.lemma === 'string'
+      ? `${row.languageCode}\u0000${row.lemma}`
+      : undefined
+  }
+  return undefined
+}
+
+/** Same encoding for a delete, where only the target key is known. */
+function dirtyKeyForKey(store: StoreName, key: IDBValidKey): string | undefined {
+  if (store === STORES.wordStates) {
+    if (Array.isArray(key) && typeof key[0] === 'string' && typeof key[1] === 'string') {
+      return `${key[0]}\u0000${key[1]}`
+    }
+    return typeof key === 'string' ? key : undefined
+  }
+  if (store === STORES.wordOccurrences) {
+    // The primary key is [documentId, lemma]; the push unit is the document
+    if (Array.isArray(key) && typeof key[0] === 'string') return key[0]
+    return typeof key === 'string' ? key : undefined
+  }
+  return typeof key === 'string' ? key : undefined
+}
+
+/**
+ * Runs one readwrite transaction over the reserved sync-meta record: reads the
+ * current meta, lets `update` compute the next value and persist it, and
+ * resolves with the update's result after commit.
+ *
+ * Reading and writing inside a single transaction is what makes the revision
+ * reliable — a concurrent user write in another transaction can never slip
+ * between the read and the write.
+ */
+function withSyncMeta<T>(update: (meta: LocalSyncMeta, metaStore: IDBObjectStore) => T): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const transaction = db.transaction(STORES.documentMeta, 'readwrite')
+        const metaStore = transaction.objectStore(STORES.documentMeta)
+        const getReq = metaStore.get(SYNC_META_KEY)
+        let result: T | undefined
+        getReq.onsuccess = () => {
+          const meta = normalizeSyncMeta(getReq.result) ?? freshSyncMeta()
+          result = update(meta, metaStore)
+        }
+        transaction.oncomplete = () => {
+          if (result === undefined) {
+            reject(new Error('로컬 동기화 기록 트랜잭션이 완료되지 않았습니다'))
+            return
+          }
+          resolve(result)
+        }
+        transaction.onerror = () => {
+          // onabort 가 오류와 함께 이어진다 — 여기서 중복 거절하지 않는다
+        }
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('로컬 동기화 기록 트랜잭션이 중단되었습니다'))
+      }),
+  )
+}
+
+/** Reads the reserved sync-meta record; null when it does not exist yet. */
+export async function readLocalSyncMeta(): Promise<LocalSyncMeta | null> {
+  const stored = await idbGet<unknown>(STORES.documentMeta, SYNC_META_KEY)
+  return stored === undefined ? null : normalizeSyncMeta(stored)
+}
+
+/**
+ * Returns the reserved sync-meta record, creating it on first use.
+ *
+ * Repeated calls reuse the stored record, so the epoch survives reloads and
+ * upgrades; it changes only when the whole database is deleted and recreated.
+ */
+export function ensureLocalSyncMeta(): Promise<LocalSyncMeta> {
+  return withSyncMeta((meta, metaStore) => {
+    metaStore.put(meta)
+    return meta
+  })
+}
+
+/**
+ * Bumps the local revision for one user write of `store` (optionally naming the
+ * dirty key). Prefer the write helpers (`idbPut`/`idbDelete`/…) which bump in
+ * the same transaction as the row itself; this exists for callers that must
+ * bump on their own.
+ */
+export function bumpLocalRevision(store: StoreName, key?: string): Promise<LocalSyncMeta> {
+  return withSyncMeta((meta, metaStore) => {
+    const next = bumpedSyncMeta(meta, store, key)
+    metaStore.put(next)
+    return next
+  })
+}
+
+/** Current local revision; 0 before the first user write. */
+export async function readLocalRevision(): Promise<number> {
+  return (await readLocalSyncMeta())?.revision ?? 0
+}
+
+/** All dirty keys with the revision of their last local write. */
+export async function readDirtyKeys(): Promise<DirtyKey[]> {
+  const meta = await readLocalSyncMeta()
+  if (meta === null) return []
+  const keys: DirtyKey[] = []
+  for (const store of Object.keys(meta.dirty) as StoreName[]) {
+    for (const [key, revision] of Object.entries(meta.dirty[store] ?? {})) {
+      keys.push({ store, key, revision })
+    }
+  }
+  return keys
+}
+
+/**
+ * Clears one dirty key only if it still sits at `revision`.
+ *
+ * A write that landed after the push was planned has a newer revision and must
+ * stay dirty — clearing at a stale revision returns false and removes nothing.
+ */
+export function clearDirtyIfRevision(
+  store: StoreName,
+  key: string,
+  revision: number,
+): Promise<boolean> {
+  return withSyncMeta((meta, metaStore) => {
+    if (meta.dirty[store]?.[key] !== revision) return false
+    const byKey = { ...(meta.dirty[store] ?? {}) }
+    delete byKey[key]
+    const dirty = { ...meta.dirty }
+    if (Object.keys(byKey).length > 0) dirty[store] = byKey
+    else delete dirty[store]
+    metaStore.put({ ...meta, dirty })
+    return true
+  })
+}
+
+/**
+ * Subtracts a pushed batch from the pending counts.
+ *
+ * Only the counted-at-sync-start batch is subtracted (clamped at zero), so
+ * writes that landed while the sync was running stay pending for the next one.
+ * The revision and the dirty journal are not touched.
+ */
+export function subtractPending(
+  batch: Partial<Record<StoreName, number>>,
+): Promise<LocalSyncMeta> {
+  return withSyncMeta((meta, metaStore) => {
+    const pendingByStore = { ...meta.pendingByStore }
+    for (const store of Object.keys(batch) as StoreName[]) {
+      const count = batch[store]
+      if (typeof count !== 'number' || count <= 0) continue
+      const left = (pendingByStore[store] ?? 0) - count
+      if (left > 0) pendingByStore[store] = left
+      else delete pendingByStore[store]
+    }
+    const next = { ...meta, pendingByStore }
+    metaStore.put(next)
+    return next
+  })
+}
 
 /**
  * 초기화가 진행 중인 동안 새 연결을 열지 않는다.
@@ -157,25 +414,72 @@ type WriteOptions = {
   silent?: boolean
 }
 
+/** Internal write plan: the dirty key a non-silent user write must record. */
+type TxOptions = WriteOptions & { dirtyKey?: string }
+
 function tx<T>(
   store: StoreName,
   mode: IDBTransactionMode,
   run: (s: IDBObjectStore) => IDBRequest<T>,
-  options?: WriteOptions,
+  options?: TxOptions,
 ) {
   return openDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
-        const transaction = db.transaction(store, mode)
-        const req = run(transaction.objectStore(store))
-        req.onsuccess = () => {
-          // 커밋된 뒤에 알린다 — 아직 저장되지 않은 것을 '저장됐다' 고 알리면 안 된다
-          if (mode === 'readwrite' && !options?.silent) {
-            queueMicrotask(() => notifyLocalWrite(store))
-          }
-          resolve(req.result)
+        /**
+         * A user write to a synced store bumps the reserved sync-meta record in
+         * the SAME transaction as the row itself. The revision is the
+         * interlock that protects local edits from a stale sync plan — a
+         * best-effort bump after the fact could not be trusted.
+         */
+        const bumpMeta = mode === 'readwrite' && !options?.silent && SYNCED_STORES.includes(store)
+        const transaction = bumpMeta
+          ? db.transaction([STORES.documentMeta, store], 'readwrite')
+          : db.transaction(store, mode)
+
+        if (!bumpMeta) {
+          // Silent sync writes and device-local stores never count as user
+          // writes: no bump, no signal.
+          const req = run(transaction.objectStore(store))
+          req.onsuccess = () => resolve(req.result)
+          req.onerror = () => reject(req.error)
+          return
         }
-        req.onerror = () => reject(req.error)
+
+        let result: T
+        let settled = false
+        let bumped: LocalSyncMeta | undefined
+        const metaStore = transaction.objectStore(STORES.documentMeta)
+        const getReq = metaStore.get(SYNC_META_KEY)
+        getReq.onsuccess = () => {
+          bumped = bumpedSyncMeta(
+            normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+            store,
+            options?.dirtyKey,
+          )
+          metaStore.put(bumped)
+          const req = run(transaction.objectStore(store))
+          req.onsuccess = () => {
+            settled = true
+            result = req.result
+          }
+          // 요청이 실패하면 트랜잭션이 저절로 중단된다 — onabort 에서 거절한다
+          req.onerror = () => {}
+        }
+        transaction.oncomplete = () => {
+          // 커밋된 뒤에 알린다 — 아직 저장되지 않은 것을 '저장됐다' 고 알리면 안 된다
+          if (bumped !== undefined) notifyLocalWrite(store, bumped)
+          if (!settled) {
+            reject(new Error('로컬 데이터베이스 트랜잭션이 완료되지 않았습니다'))
+            return
+          }
+          resolve(result)
+        }
+        transaction.onerror = () => {
+          // onabort 가 오류와 함께 이어진다 — 여기서 중복 거절하지 않는다
+        }
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('로컬 데이터베이스 트랜잭션이 중단되었습니다'))
       }),
   )
 }
@@ -198,7 +502,10 @@ export function idbDelete(
   key: IDBValidKey,
   options?: WriteOptions,
 ): Promise<undefined> {
-  return tx(store, 'readwrite', (s) => s.delete(key), options)
+  return tx(store, 'readwrite', (s) => s.delete(key), {
+    ...options,
+    dirtyKey: SYNCED_STORES.includes(store) ? dirtyKeyForKey(store, key) : undefined,
+  })
 }
 
 export function idbPut<T>(
@@ -206,7 +513,10 @@ export function idbPut<T>(
   value: T,
   options?: WriteOptions,
 ): Promise<IDBValidKey> {
-  return tx(store, 'readwrite', (s) => s.put(value), options)
+  return tx(store, 'readwrite', (s) => s.put(value), {
+    ...options,
+    dirtyKey: SYNCED_STORES.includes(store) ? dirtyKeyForValue(store, value) : undefined,
+  })
 }
 
 /**
@@ -240,16 +550,40 @@ export function idbDeleteByIndexRange(
   )
 }
 
-/** 문서 하나의 등장 기록을 통째로 교체한다 (재저장 시 낡은 행이 남지 않게). */
+/**
+ * 문서 하나의 등장 기록을 통째로 교체한다 (재저장 시 낡은 행이 남지 않게).
+ *
+ * 사용자가 다시 계산한 기록(조용하지 않은 쓰기)은 같은 트랜잭션에서 리비전·밀린
+ * 개수·dirty 키(wordOccurrences, 문서 id)를 올린다. 동기화가 부르는 길은
+ * `{ silent: true }` 로 조용해야 한다 — 받은 것을 '못 올린 변경' 으로 세면 안 된다.
+ */
 export async function replaceOccurrences<T>(
   documentId: string,
   records: T[],
+  options?: WriteOptions,
 ): Promise<void> {
+  const bumpMeta = !options?.silent
   const db = await openDb()
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORES.wordOccurrences, 'readwrite')
+    const transaction = bumpMeta
+      ? db.transaction([STORES.documentMeta, STORES.wordOccurrences], 'readwrite')
+      : db.transaction(STORES.wordOccurrences, 'readwrite')
     const store = transaction.objectStore(STORES.wordOccurrences)
     const index = store.index('documentId')
+
+    let bumped: LocalSyncMeta | undefined
+    if (bumpMeta) {
+      const metaStore = transaction.objectStore(STORES.documentMeta)
+      const getReq = metaStore.get(SYNC_META_KEY)
+      getReq.onsuccess = () => {
+        bumped = bumpedSyncMeta(
+          normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+          STORES.wordOccurrences,
+          documentId,
+        )
+        metaStore.put(bumped)
+      }
+    }
 
     const cursorReq = index.openCursor(IDBKeyRange.only(documentId))
     cursorReq.onsuccess = () => {
@@ -261,8 +595,14 @@ export async function replaceOccurrences<T>(
       }
       for (const record of records) store.put(record)
     }
+    // 커서 요청이 실패하면 트랜잭션이 저절로 중단된다 — onabort 에서 거절한다
+    cursorReq.onerror = () => {}
 
-    transaction.oncomplete = () => resolve()
+    transaction.oncomplete = () => {
+      // 커밋된 뒤에 알린다 — 사용자가 다시 계산한 기록은 밀린 일로 센다
+      if (bumped !== undefined) notifyLocalWrite(STORES.wordOccurrences, bumped)
+      resolve()
+    }
     transaction.onerror = () => reject(transaction.error)
     transaction.onabort = () => reject(transaction.error)
   })
@@ -282,11 +622,15 @@ export function idbDeleteByIndex(
   store: StoreName,
   index: string,
   key: IDBValidKey,
+  options?: WriteOptions,
 ): Promise<void> {
+  const bumpMeta = !options?.silent && SYNCED_STORES.includes(store)
   return openDb().then(
     (db) =>
       new Promise<void>((resolve, reject) => {
-        const transaction = db.transaction(store, 'readwrite')
+        const transaction = bumpMeta
+          ? db.transaction([STORES.documentMeta, store], 'readwrite')
+          : db.transaction(store, 'readwrite')
         const objectStore = transaction.objectStore(store)
         const req = objectStore.index(index).openKeyCursor(IDBKeyRange.only(key))
         req.onsuccess = () => {
@@ -296,8 +640,25 @@ export function idbDeleteByIndex(
           objectStore.delete(cursor.primaryKey)
           cursor.continue()
         }
+
+        let bumped: LocalSyncMeta | undefined
+        if (bumpMeta) {
+          const metaStore = transaction.objectStore(STORES.documentMeta)
+          const getReq = metaStore.get(SYNC_META_KEY)
+          getReq.onsuccess = () => {
+            bumped = bumpedSyncMeta(
+              normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+              store,
+              dirtyKeyForKey(store, key),
+            )
+            metaStore.put(bumped)
+          }
+        }
+
         transaction.oncomplete = () => {
-          queueMicrotask(() => notifyLocalWrite(store))
+          // 커밋된 뒤에 알린다 — 사용자가 지운 것은 밀린 일로 센다. 조용한 쓰기와
+          // 기기 전용 저장소는 알림이 없다 (notifyLocalWrite 가 건너뛴다).
+          if (bumped !== undefined) notifyLocalWrite(store, bumped)
           resolve()
         }
         transaction.onerror = () => reject(transaction.error)

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { STORES, idbDelete, idbGet, idbGetAll, idbPut, replaceOccurrences } from '../storage/localDb'
+import { STORES, idbDelete, idbGet, idbGetAll, idbPut, replaceOccurrences, SYNC_META_KEY } from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
@@ -225,14 +225,15 @@ export async function writeLocal(
   }
   for (const [documentId, rows] of byDocument) {
     if (skipOccurrenceDocuments.has(documentId)) continue
-    await replaceOccurrences(documentId, rows)
+    // 동기화가 쓰는 길은 조용하다 — 받은 것을 '못 올린 변경' 으로 세면 안 된다
+    await replaceOccurrences(documentId, rows, { silent: true })
   }
 
   // 다른 기기에서 완전 삭제된 문서는 이 기기에서도 지운다 — 묘비가 이긴다
   for (const tombstone of tombstones) {
     await idbDelete(STORES.documents, tombstone.documentId, { silent: true })
     await idbDelete(STORES.documentMeta, tombstone.documentId, { silent: true })
-    await replaceOccurrences(tombstone.documentId, [])
+    await replaceOccurrences(tombstone.documentId, [], { silent: true })
   }
 }
 
@@ -306,13 +307,15 @@ export async function syncOnce({
    * 새 규칙에서 나오지 않는 키는 같은 키로 덮어써지지 않으므로 살아남는다 — 목록과
    * 본문이 서로 다른 진도를 보인다 (mergeOccurrences.ts).
    */
-  const metaRows = await idbGetAll<{
+  const metaRowsAll = await idbGetAll<{
     documentId: string
     lemmaVersion: number
     occurrencesUpdatedAt?: string
   }>(STORES.documentMeta).catch(
     () => [] as { documentId: string; lemmaVersion: number; occurrencesUpdatedAt?: string }[],
   )
+  // The reserved sync-meta record is device bookkeeping, not a document row
+  const metaRows = metaRowsAll.filter((m) => m.documentId !== SYNC_META_KEY)
   const recomputed = new Set(
     metaRows.filter((m) => m.lemmaVersion === LEMMA_VERSION).map((m) => m.documentId),
   )
@@ -347,12 +350,14 @@ export async function syncOnce({
    * 동기화가 도는 동안 이 기기에서 등장 기록을 다시 계산했을 수 있다.
    * 그 문서는 이번에 덮어쓰지 않고 다음 동기화가 새 기록을 보낸다.
    */
-  const latestMeta = await idbGetAll<{
+  const latestMetaAll = await idbGetAll<{
     documentId: string
     occurrencesUpdatedAt?: string
   }>(STORES.documentMeta).catch(
     () => [] as { documentId: string; occurrencesUpdatedAt?: string }[],
   )
+  // The reserved sync-meta record never carries a document's stamp
+  const latestMeta = latestMetaAll.filter((m) => m.documentId !== SYNC_META_KEY)
   const changedDuringSync = new Set(
     latestMeta
       .filter(

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   STORES,
+  SYNC_META_KEY,
   idbDeleteByIndex,
   idbGetAll,
   idbGetAllByIndex,
@@ -67,7 +68,10 @@ describe('문서를 잊는다', () => {
   /** 예전엔 여기서 예외가 났고, 그 뒤 코드가 실행되지 않았다 */
   it('계산 기록도 지워진다 — 예외가 나면 안 된다', async () => {
     await expect(useOccurrencesStore.getState().forgetDocument(doc.id)).resolves.toBeUndefined()
-    expect(await idbGetAll(STORES.documentMeta)).toHaveLength(0)
+    // The reserved sync-meta record is device bookkeeping, not a document's
+    // computation record — forgetting a document must erase only its own row
+    const rows = await idbGetAll<{ documentId: string }>(STORES.documentMeta)
+    expect(rows.filter((m) => m.documentId !== SYNC_META_KEY)).toHaveLength(0)
   })
 
   it('기억 속 목록에서도 빠진다 — 그래야 단어장에서 사라진다', async () => {

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 import {
   STORES,
+  SYNC_META_KEY,
   idbDelete,
   idbDeleteByIndex,
   idbGetAll,
@@ -209,7 +210,13 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     const meta = await idbGetAll<{ documentId: string; lemmaVersion: number; segmenter?: string }>(
       STORES.documentMeta,
     ).catch(() => [])
-    const known = new Map(meta.map((m) => [m.documentId, m]))
+    // The reserved sync-meta record is device bookkeeping, not a document's
+    // computation record — it must never count as a known document
+    const known = new Map(
+      meta
+        .filter((m) => m.documentId !== SYNC_META_KEY)
+        .map((m) => [m.documentId, m] as const),
+    )
     /**
      * 일본어·중국어는 분절기까지 본다 — Intl 로 기록됐는데 lindera 가 준비됐으면
      * 다시 계산한다. 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게

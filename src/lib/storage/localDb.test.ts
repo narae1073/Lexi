@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   STORES,
+  SYNC_META_KEY,
   deleteLocalDatabase,
   hasLocalLearningData,
   idbCount,
@@ -10,6 +11,7 @@ import {
   idbGetAll,
   idbPut,
   onLocalWrite,
+  readLocalSyncMeta,
 } from './localDb'
 import type { StoreName } from './localDb'
 
@@ -24,11 +26,13 @@ import type { StoreName } from './localDb'
  */
 describe('저장 완료 알림', () => {
   beforeEach(async () => {
-    // 테스트 사이에 남은 데이터를 비운다
+    // 테스트 사이에 남은 데이터를 비운다. 정리용 쓰기는 사용자가 한 것이 아니므로
+    // 조용히 한다 — 리비전·밀린 개수에 남으면 안 된다
     await Promise.all([
-      idbDelete(STORES.documents, 'doc-1'),
-      idbDelete(STORES.wordStates, 'en::run'),
+      idbDelete(STORES.documents, 'doc-1', { silent: true }),
+      idbDelete(STORES.wordStates, 'en::run', { silent: true }),
       idbDelete(STORES.responseCache, 'k'),
+      idbDelete(STORES.documentMeta, SYNC_META_KEY),
     ]).catch(() => {})
   })
 
@@ -125,6 +129,19 @@ describe('저장 완료 알림', () => {
     await Promise.resolve()
 
     expect(seen).toEqual([])
+  })
+
+  /**
+   * A user write bumps the reserved sync-meta record in the same transaction:
+   * one revision, one pending count, one dirty key.
+   */
+  it('bumps the reserved sync meta once per user write', async () => {
+    await idbPut(STORES.documents, { id: 'doc-1', title: '제목' })
+
+    const meta = await readLocalSyncMeta()
+    expect(meta?.revision).toBe(1)
+    expect(meta?.pendingByStore.documents).toBe(1)
+    expect(meta?.dirty.documents?.['doc-1']).toBe(1)
   })
 })
 
