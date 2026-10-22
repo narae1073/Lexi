@@ -13,6 +13,12 @@ export const en = {
     quiz: 'Quiz',
   },
 
+  banner: {
+    claim:
+      'Local learning data is not linked to an account. Open settings to sync or keep it local.',
+    settings: 'Open settings',
+  },
+
   langs: {
     mine: 'Languages I study',
     others: 'Not studying',
@@ -184,6 +190,17 @@ export const en = {
     hint: 'Sign in to keep your progress when you switch devices. Without an account everything stays on this device.',
     notConfigured: 'Supabase is not configured — progress stays on this device.',
     checking: 'Checking your session…',
+    localOnlyTitle: 'Local only on this device',
+    localOnlyBody: "This device's learning data is not linked to an account.",
+    claimPrompt: "Sync this device's local learning data to this account?",
+    claimAction: 'Sync to this account',
+    keepLocalAction: 'Keep local only',
+    blockedTitle: 'This browser belongs to another account',
+    blockedBody: "Sign in as that account, or reset this browser's local data.",
+    resetLocal: 'Reset local data',
+    resetLocalConfirm:
+      "This deletes this browser's local documents, words, notes, folders, and histories. There is no export yet. Continue?",
+    syncToAccount: "Sync this device's data to this account",
     emailPlaceholder: 'you@example.com',
     sendCode: 'Get a code',
     sendLinkInstead: 'Use an email link instead',

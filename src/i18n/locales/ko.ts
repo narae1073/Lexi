@@ -12,6 +12,12 @@ export const ko: Dictionary = {
     quiz: '퀴즈',
   },
 
+  banner: {
+    claim:
+      '로컬 학습 데이터가 계정에 연결되어 있지 않습니다. 설정에서 동기화하거나 이 기기에만 저장하세요.',
+    settings: '설정 열기',
+  },
+
   langs: {
     mine: '내가 배우는 언어',
     others: '배우지 않는 언어',
@@ -183,6 +189,17 @@ export const ko: Dictionary = {
     hint: '로그인하면 기기를 바꿔도 학습 기록이 이어집니다. 하지 않아도 이 기기에서만 그대로 쓸 수 있습니다.',
     notConfigured: 'Supabase 미설정 — 기록은 이 기기에만 남습니다.',
     checking: '세션을 확인하는 중…',
+    localOnlyTitle: '이 기기에만 저장 중',
+    localOnlyBody: '이 기기의 학습 데이터는 계정에 연결되어 있지 않습니다.',
+    claimPrompt: '이 기기의 학습 데이터를 이 계정으로 동기화할까요?',
+    claimAction: '이 계정으로 동기화',
+    keepLocalAction: '이 기기에만 저장',
+    blockedTitle: '이 브라우저는 다른 계정의 것입니다',
+    blockedBody: '그 계정으로 로그인하거나, 이 브라우저의 로컬 데이터를 초기화하세요.',
+    resetLocal: '로컬 데이터 초기화',
+    resetLocalConfirm:
+      '이 브라우저의 문서·단어·메모·폴더·기록을 모두 삭제합니다. 아직 내보내기 기능은 없습니다. 계속할까요?',
+    syncToAccount: '이 기기 데이터를 이 계정으로 동기화',
     emailPlaceholder: 'you@example.com',
     sendCode: '번호 받기',
     sendLinkInstead: '링크로 받기',

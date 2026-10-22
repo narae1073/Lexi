@@ -11,14 +11,16 @@ import { TrashView } from '../features/reader/TrashView'
 import { LanguagePicker } from '../features/languages/LanguagePicker'
 import { AppLanguageSwitcher } from '../features/settings/AppLanguageSwitcher'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
+import { AccountLock } from '../features/sync/AccountLock'
 import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
 import { QuizView } from '../features/quiz/QuizView'
+import { useAuthStore } from './stores/auth'
 import { useDocumentsStore } from './stores/documents'
 import { useFoldersStore } from './stores/folders'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
-import { useCloudSync } from './stores/sync'
+import { useCloudSync, useSyncStore } from './stores/sync'
 import { useWordStatesStore } from './stores/wordStates'
 import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/settings'
 
@@ -76,6 +78,12 @@ export default function App() {
   useCloudSync()
   const t = useTranslation()
   const ready = useLanguagesStore((s) => s.ready)
+  // 기기 소유자 확인과 세션 복원이 끝나기 전에는 어떤 계정의 데이터인지 모른다.
+  // 그동안 문서·단어를 읽으면 잠깐 이전 계정의 화면이 보일 수 있다.
+  const restoring = useAuthStore((s) => s.restoring)
+  const accountReady = useSyncStore((s) => s.accountReady)
+  const accountBlocked = useSyncStore((s) => s.accountBlocked)
+  const claimNeeded = useSyncStore((s) => s.claimNeeded)
   const load = useDocumentsStore((s) => s.load)
   const loadFolders = useFoldersStore((s) => s.load)
   const allDocuments = useDocumentsStore((s) => s.documents)
@@ -96,9 +104,11 @@ export default function App() {
   const folders = useFoldersStore((s) => s.folders)
 
   useEffect(() => {
+    // 소유자를 확인하기 전이나 다른 계정 때문에 잠긴 동안에는 읽지 않는다
+    if (restoring || !accountReady || accountBlocked) return
     void load()
     void loadFolders()
-  }, [load, loadFolders])
+  }, [load, loadFolders, restoring, accountReady, accountBlocked])
 
   /**
    * 목록의 진도 게이지를 위해, 아직 기록이 없는 문서를 유휴 시점에 계산한다.
@@ -108,6 +118,8 @@ export default function App() {
    * 계산은 기기 안에서만 일어나고 한 번 끝나면 다시 하지 않는다.
    */
   useEffect(() => {
+    // 잠긴 계정의 문서를 토크나이징하면 그 기록이 기기에 남는다 — 읽지도 않는다
+    if (restoring || !accountReady || accountBlocked) return
     if (documents.length === 0) return
     const run = () => void refreshStaleDocuments(documents)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300))
@@ -117,7 +129,7 @@ export default function App() {
         window.cancelIdleCallback(handle)
       }
     }
-  }, [documents, refreshStaleDocuments])
+  }, [documents, refreshStaleDocuments, restoring, accountReady, accountBlocked])
 
   // 번역·사전 응답은 기기에 계속 쌓인다. 오래된 것부터 한 번씩 버린다.
   useEffect(() => {
@@ -127,11 +139,30 @@ export default function App() {
   // 배운 언어의 등장 기록과 상태를 앱 시작 시 한 번에 적재한다.
   // 단어장은 문서를 열지 않아도 상태를 보여줘야 한다 (plan.txt 9줄).
   useEffect(() => {
+    // 소유자 확인 전이나 잠금 중에는 사전·등장 기록을 받아 오지 않는다
+    if (restoring || !accountReady || accountBlocked) return
     for (const language of enrolled) {
       void loadOccurrences(language)
       void loadWordStates(language)
     }
-  }, [enrolled, loadOccurrences, loadWordStates])
+  }, [enrolled, loadOccurrences, loadWordStates, restoring, accountReady, accountBlocked])
+
+  /**
+   * 세션 복원·소유자 확인이 끝나기 전에는 중립 화면만 보여 준다.
+   *
+   * 이 사이에 언어 선택 화면이나 이전 로컬 프로필이 잠깐 보이면, 공유 기기에서
+   * 누가 로그인했는지와 무관하게 남의 화면이 스쳐 간다.
+   */
+  if (restoring || !accountReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-5">
+        <p className="text-ink-muted text-sm">{t('account.checking')}</p>
+      </div>
+    )
+  }
+
+  // 다른 계정의 로컬 데이터가 남아 있으면 문서·단어장·읽기 화면을 아예 그리지 않는다
+  if (accountBlocked) return <AccountLock />
 
   /**
    * 온보딩 완료 전에는 언어 선택 화면을 보여 준다 (plan.txt 5줄).
@@ -145,6 +176,25 @@ export default function App() {
   return (
     <div className="min-h-full">
       <Nav />
+
+      {/*
+        넘겨받을지 아직 정하지 않았을 때의 안내. 읽기를 막지는 않는다 —
+        결정은 설정 화면에서 하고, 그때까지 이 기기 기록으로 계속 쓸 수 있다.
+      */}
+      {claimNeeded && (
+        <div className="border-status-unsure bg-status-unsure-bg border-b">
+          <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2 text-xs">
+            <span className="text-status-unsure min-w-0 flex-1">{t('banner.claim')}</span>
+            <Link
+              to="/settings"
+              className="text-status-unsure shrink-0 underline hover:no-underline"
+            >
+              {t('banner.settings')}
+            </Link>
+          </div>
+        </div>
+      )}
+
       <Routes>
         {/* 첫 화면에서만 작성 화면을 내민다. 마지막 문서를 버린 뒤에는 목록을 보여야 한다 —
             빈 작성 화면만 남으면 버린 문서를 되돌릴 곳이 사라진다 */}
