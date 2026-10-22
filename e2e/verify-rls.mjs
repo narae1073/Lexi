@@ -82,6 +82,15 @@ for (const table of PRIVATE_TABLES) {
     `http ${status}, ${rows.length}행`)
 }
 
+// 1-1. 번역 캐시는 "빈 배열" 이 아니라 접근 자체가 거부되어야 한다.
+// 200 + [] 는 SELECT 권한이 열려 있다는 뜻이므로 통과시키지 않는다.
+const cacheProbe = await rest('translation_cache', '&limit=1')
+report(
+  cacheProbe.status === 401 || cacheProbe.status === 403,
+  'translation_cache: anon 직접 읽기가 거부된다 (401/403)',
+  `http ${cacheProbe.status}, ${cacheProbe.rows.length}행`,
+)
+
 // 2. 쓰기도 막혀 있다 — policies 에 with check 가 없으면 insert 가 통과한다
 for (const table of ['documents', 'word_states']) {
   const response = await fetch(`${URL_BASE}/rest/v1/${table}`, {

@@ -8,11 +8,14 @@
 -- 롤아웃 순서 (반드시 지킬 것):
 --   1) 이 마이그레이션 적용 — 공개 SELECT 정책 제거 + anon/authenticated 권한 회수
 --   2) translate 함수를 source_text 없이 배포
---   3) 20261025000001_translation_cache_drop_source.sql 적용
+--   3) anon 이 translation_cache 를 직접 읽지 못하는지 확인 (`npm run verify:rls`)
+--   4) supabase/rollout/20261025000001_translation_cache_drop_source.sql 을 수동 적용
+--      (migrations 가 아니라 rollout 에 있으므로 db push 로는 실행되지 않는다)
 --
 -- 순서를 바꾸면 안 된다. 열을 먼저 지우면 이전 함수의 INSERT 가 실패해 캐시
 -- 쓰기가 멈춘다. 기존 캐시 행은 이 시점부터 비공개가 되고, 그 안의 원문은
--- 3)에서 열과 함께 삭제된다.
+-- 4)에서 열과 함께 삭제된다. 열을 지운 뒤 database.types.ts 의 source_text 도
+-- 정리한다(이번 릴리스에서는 열이 남아 있으므로 의도적으로 손대지 않았다).
 
 drop policy if exists "translation_cache read" on public.translation_cache;
 
