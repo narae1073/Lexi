@@ -7,185 +7,7 @@ import type { WordOccurrence } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { changedOccurrenceDocuments, mergeTombstones, pushOccurrences, syncOnce, type PullWatermarks } from './sync'
-
-/**
- * 서버를 흉내낸다 — 두 기기 사이에서만 나타나는 문제를 잡으려면 그것이 필요하다.
- *
- * 실제로 하는 일 중 특히 중요한 것 하나: **한 번에 1000행까지만 준다.**
- * Supabase/PostgREST 의 `max_rows` 가 1000 이고, 이 프로젝트도 그렇다
- * (`supabase/config.toml`). 흉내도 그 제한을 그대로 둔다 — 제한이 없으면 문제가
- * 재현되지 않는다.
- */
-function memoryServer(rowCap = 1000) {
-  const tables: Record<string, Record<string, unknown>[]> = {
-    user_languages: [],
-    documents: [],
-    document_tombstones: [],
-    folders: [],
-    word_states: [],
-    word_occurrences: [],
-  }
-  const upsertCalls: Record<string, number> = {}
-  const orders: Record<string, string> = {}
-  let nextOccurrenceId = 1
-
-  const keyOf = (table: string, row: Record<string, unknown>): string => {
-    if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
-    if (table === 'documents') return String(row.id)
-    if (table === 'document_tombstones') return `${row.user_id}|${row.document_id}`
-    if (table === 'folders') return String(row.id)
-    if (table === 'user_languages') return `${row.user_id}|${row.language_code}`
-    return String(row.id ?? `${row.user_id}|${row.lemma}|${row.surface}`)
-  }
-
-  const client = {
-    from(table: string) {
-      const filters: Record<string, unknown> = {}
-      const range = { from: 0, to: Infinity }
-      let orderColumn = ''
-      let limitCount = Infinity
-      let greaterThan: { column: string; value: unknown } | null = null
-      let countMode = false
-      // 실제 클라이언트처럼 delete().eq() 체이닝을 받는다 — 실행은 await 때다
-      let deleting = false
-
-      const compareValues = (a: unknown, b: unknown): number => {
-        if (typeof a === 'number' && typeof b === 'number') return a - b
-        return String(a ?? '').localeCompare(String(b ?? ''))
-      }
-
-      const matches = (row: Record<string, unknown>): boolean => {
-        for (const [k, v] of Object.entries(filters)) {
-          if (k.startsWith('__in__')) {
-            if (!(v as unknown[]).includes(row[k.slice('__in__'.length)])) return false
-            continue
-          }
-          if (k.startsWith('__gte__')) {
-            if (compareValues(row[k.slice('__gte__'.length)], v) < 0) return false
-            continue
-          }
-          if (row[k] !== v) return false
-        }
-        return true
-      }
-
-      const query = {
-        select: (_columns?: string, options?: { count?: string; head?: boolean }) => {
-          countMode = options?.count === 'exact' && options?.head === true
-          return query
-        },
-        eq: (column: string, value: unknown) => {
-          filters[column] = value
-          return query
-        },
-        in: (column: string, values: unknown[]) => {
-          filters[`__in__${column}`] = values
-          return query
-        },
-        gte: (column: string, value: unknown) => {
-          filters[`__gte__${column}`] = value
-          return query
-        },
-        order: (column: string) => {
-          orderColumn = column
-          orders[table] = column
-          return query
-        },
-        range: (from: number, to: number) => {
-          range.from = from
-          range.to = to
-          return query
-        },
-        limit: (count: number) => {
-          limitCount = count
-          return query
-        },
-        gt: (column: string, value: unknown) => {
-          greaterThan = { column, value }
-          return query
-        },
-        upsert: async (rows: Record<string, unknown>[]) => {
-          upsertCalls[table] = (upsertCalls[table] ?? 0) + 1
-          for (const row of rows) {
-            const key = keyOf(table, row)
-            const at = tables[table].findIndex((r) => keyOf(table, r) === key)
-            if (at >= 0) tables[table][at] = { ...tables[table][at], ...row }
-            else tables[table].push(row)
-          }
-          return { data: null, error: null }
-        },
-        insert: async (rows: Record<string, unknown>[]) => {
-          for (const row of rows) {
-            tables[table].push({ id: nextOccurrenceId++, ...row })
-          }
-          return { data: null, error: null }
-        },
-        delete: () => {
-          deleting = true
-          return query
-        },
-        then: async (resolve: (value: { data: unknown[] | null; count?: number; error: null }) => unknown) => {
-          // 지우기는 await 때 실행된다 — 필터가 뒤에 붙기 때문이다
-          if (deleting) {
-            tables[table] = tables[table].filter((row) => !matches(row))
-            return resolve({ data: null, error: null })
-          }
-
-          let rows = tables[table].filter(matches)
-          if (countMode) return resolve({ data: null, count: rows.length, error: null })
-
-          const cursor = greaterThan
-          if (cursor) {
-            rows = rows.filter((row) => compareValues(row[cursor.column], cursor.value) > 0)
-          }
-
-          // 순서를 명시하지 않으면 페이지가 겹치고 빠진다 — 우리가 정해야 한다
-          if (orderColumn) {
-            rows = [...rows].sort((a, b) => compareValues(a[orderColumn], b[orderColumn]))
-          }
-
-          rows = rows.slice(range.from, range.to === Infinity ? undefined : range.to + 1)
-          if (Number.isFinite(limitCount)) rows = rows.slice(0, limitCount)
-          const capped = rowCap > 0 ? rows.slice(0, rowCap) : rows
-          return resolve({ data: capped.map((r) => ({ ...r })), error: null })
-        },
-      }
-      return query
-    },
-    rpc: async (name: string, args: Record<string, unknown>) => {
-      if (name !== 'replace_word_occurrences') {
-        return { data: null, error: { message: `unknown rpc ${name}` } }
-      }
-      const documentId = String(args.p_document_id)
-      const rows = (args.p_rows ?? []) as Record<string, unknown>[]
-      tables.word_occurrences = tables.word_occurrences.filter(
-        (row) => !(row.user_id === 'user-1' && row.document_id === documentId),
-      )
-      for (const row of rows) {
-        tables.word_occurrences.push({
-          id: nextOccurrenceId++,
-          user_id: 'user-1',
-          document_id: documentId,
-          ...row,
-        })
-      }
-      return { data: null, error: null }
-    },
-  }
-
-  return {
-    client: client as never,
-    count: (table: string) => tables[table].length,
-    rows: (table: string) => tables[table],
-    upsertCalls: (table: string) => upsertCalls[table] ?? 0,
-    orderOf: (table: string) => orders[table],
-    add: (table: string, row: Record<string, unknown>) => {
-      tables[table].push(row)
-    },
-  }
-}
-
-type Server = ReturnType<typeof memoryServer>
+import { memoryServer, type Server } from './testMemoryServer'
 
 const doc: Document = {
   id: 'doc-1',
@@ -715,12 +537,13 @@ describe('증분 동기화', () => {
 
   it('워터마크 이후에 바뀐 단어만 받는다', async () => {
     const server = memoryServer()
+    server.setSnapshot('2026-10-05T00:00:00.000Z')
     await idbPut(STORES.documents, doc)
     seedWords(server, 3)
 
     const first = await sync(server)
     expect(first.pulled).toBe(3)
-    expect(first.watermarks.wordStates).toBe('2026-10-05T00:00:00+00:00')
+    expect(first.watermarks.snapshot).toBe('2026-10-05T00:00:00.000Z')
 
     // 다른 기기가 단어 하나를 더했다 — 서버 시각이 더 늦다
     server.add('word_states', {
@@ -739,9 +562,10 @@ describe('증분 동기화', () => {
       server_updated_at: '2026-10-10T00:00:00+00:00',
     })
 
+    server.setSnapshot('2026-10-10T00:00:00.000Z')
     const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
     expect(second.pulled).toBe(1)
-    expect(second.watermarks.wordStates).toBe('2026-10-10T00:00:00+00:00')
+    expect(second.watermarks.snapshot).toBe('2026-10-10T00:00:00.000Z')
     expect(await idbGetAll(STORES.wordStates)).toHaveLength(4)
   })
 
@@ -795,6 +619,7 @@ describe('증분 동기화', () => {
 
   it('바뀐 문서의 등장 기록만 다시 받는다', async () => {
     const server = memoryServer()
+    server.setSnapshot('2026-10-05T00:00:00.000Z')
     server.add('documents', {
       id: doc.id,
       user_id: 'user-1',
@@ -838,7 +663,7 @@ describe('증분 동기화', () => {
     })
 
     const first = await sync(server)
-    expect(first.watermarks.documents).toBe('2026-10-05T00:00:00+00:00')
+    expect(first.watermarks.snapshot).toBe('2026-10-05T00:00:00.000Z')
 
     // 다른 기기에서 문서의 등장 기록이 바뀌었다
     const remoteDoc = server.rows('documents')[0]
@@ -848,6 +673,7 @@ describe('증분 동기화', () => {
     if (!remoteOccurrence) throw new Error('등장 기록이 없다')
     remoteOccurrence.sentence = '새 문장'
 
+    server.setSnapshot('2026-10-10T00:00:00.000Z')
     const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
     expect(second.pushed).toBe(0)
 

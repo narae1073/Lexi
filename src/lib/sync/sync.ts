@@ -11,30 +11,18 @@ import type { WordOccurrence } from '../../app/stores/occurrences'
 import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
 import { isNewer, mergeLanguages, mergeWordStates, type WordStateRecord } from './merge'
 import {
-  documentFromRow,
-  documentTombstoneFromRow,
   documentTombstoneToRow,
   documentToRow,
-  folderFromRow,
   folderToRow,
-  wordStateFromRow,
   wordStateToRow,
-  type DocumentRow,
-  type DocumentTombstoneRow,
-  type FolderRow,
-  type OccurrenceRow,
-  type WordStateRow,
 } from './mapping'
+import { pull } from './pull'
+import type { PullWatermarks } from './types'
+
+export type { PullResult, PullWatermarks } from './types'
+export { pull } from './pull'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
-
-export type PullWatermarks = {
-  /** 서버가 마지막으로 찍은 시각 — 이 이후에 바뀐 행만 다음에 읽는다 */
-  documents?: string
-  folders?: string
-  wordStates?: string
-  tombstones?: string
-}
 
 export type SyncReport = {
   pushed: number
@@ -249,224 +237,6 @@ export async function writeLocal(
 }
 
 /**
- * 한 번의 요청으로 오는 행 수.
- *
- * 서버(Supabase/PostgREST)는 한 요청당 이만큼까지만 돌려준다. 여기서 잘린 만큼은
- * **없는 것처럼 보인다** — 실제로는 서버에 있는데 이 기기가 받지 못한 것이다.
- */
-const PAGE_SIZE = 1000
-
-/** 안전망 — 넘으면 조용히 자르지 않고 동기화를 실패시킨다 */
-const MAX_ROWS = 200_000
-
-type FetchOptions = {
-  /** 이 시각 이후(>=)에 서버가 바꾼 행만 */
-  since?: string
-  sinceColumn?: string
-  /** 이 문서들의 등장 기록만 */
-  documentIds?: readonly string[]
-}
-
-/**
- * 한 사용자의 행을 **끝까지** 읽는다.
- *
- * 순서를 고정하지 않으면 페이지가 겹치거나 빠진다. offset 대신 마지막으로 읽은
- * 값보다 큰 행만 받는다(keyset) — 읽는 도중 다른 기기가 행을 넣어도 건너뛰지 않는다.
- * `order` 열은 반드시 고유해야 한다 (id 등).
- */
-async function fetchAll<T>(
-  db: SupabaseClient<Database>,
-  table:
-    | 'user_languages'
-    | 'documents'
-    | 'document_tombstones'
-    | 'folders'
-    | 'word_states'
-    | 'word_occurrences',
-  userId: string,
-  order: string,
-  columns = '*',
-  options: FetchOptions = {},
-): Promise<T[]> {
-  type PageResult = { data: unknown[] | null; error: { message: string } | null }
-  type Ordered = {
-    limit: (count: number) => PromiseLike<PageResult>
-    gt: (column: string, value: string | number) => {
-      limit: (count: number) => PromiseLike<PageResult>
-    }
-  }
-  type Filterable = {
-    in: (column: string, values: readonly string[]) => Filterable
-    gte: (column: string, value: string) => Filterable
-    order: (column: string, opts: { ascending: boolean }) => Ordered
-  }
-
-  const rows: T[] = []
-  let last: string | number | undefined
-
-  while (true) {
-    // 반환 타입은 호출부가 T 로 정한다 — 여긴 '한 사용자의 행을 끝까지 읽는다' 만 한다
-    let filterable = (db as never as {
-      from: (t: string) => {
-        select: (c: string) => {
-          eq: (column: string, value: string) => Filterable
-        }
-      }
-    })
-      .from(table)
-      .select(columns)
-      .eq('user_id', userId)
-
-    if (options.documentIds && options.documentIds.length > 0) {
-      filterable = filterable.in('document_id', options.documentIds)
-    }
-    if (options.since !== undefined && options.sinceColumn !== undefined) {
-      filterable = filterable.gte(options.sinceColumn, options.since)
-    }
-
-    const ordered = filterable.order(order, { ascending: true })
-
-    const result =
-      last === undefined
-        ? await ordered.limit(PAGE_SIZE)
-        : await ordered.gt(order, last).limit(PAGE_SIZE)
-
-    const { data, error } = result
-    if (error) throw error
-
-    const page = (data ?? []) as T[]
-    rows.push(...page)
-    // 한 페이지가 덜 찼으면 끝이다 — 다음 페이지가 없다
-    if (page.length < PAGE_SIZE) break
-
-    const lastRow = page[page.length - 1] as Record<string, unknown>
-    const next = lastRow[order]
-    if (typeof next !== 'string' && typeof next !== 'number') {
-      throw new Error(`${table} 의 ${order} 값이 없어 다음 페이지를 읽을 수 없습니다`)
-    }
-    last = next
-
-    if (rows.length > MAX_ROWS) {
-      throw new Error(
-        `${table} 이 ${MAX_ROWS}행을 넘어 동기화를 멈췄습니다 — 데이터를 나눠 주세요`,
-      )
-    }
-  }
-  return rows
-}
-
-/** 서버 워터마크 — 이번에 읽은 행 중 가장 늦은 server_updated_at, 없으면 이전 값 */
-function maxServerTimestamp(
-  rows: ReadonlyArray<{ server_updated_at?: string }>,
-  previous?: string,
-): string | undefined {
-  let max = previous
-  for (const row of rows) {
-    const value = row.server_updated_at
-    if (!value) continue
-    if (max === undefined || Date.parse(value) > Date.parse(max)) max = value
-  }
-  return max
-}
-
-/** 서버에 지금 있는 행 수 — 증분 읽기에서는 받은 행 수가 전체가 아니다 */
-async function countRows(
-  db: SupabaseClient<Database>,
-  table: 'documents' | 'word_states',
-  userId: string,
-): Promise<number> {
-  const result = await (db as never as {
-    from: (t: string) => {
-      select: (
-        columns: string,
-        options: { count: 'exact'; head: true },
-      ) => {
-        eq: (column: string, value: string) => PromiseLike<{
-          count: number | null
-          error: { message: string } | null
-        }>
-      }
-    }
-  })
-    .from(table)
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', userId)
-  if (result.error) throw result.error
-  return result.count ?? 0
-}
-
-/**
- * 서버에서 읽는다.
- *
- * `since` 가 있으면 그 이후에 **서버가** 바꾼 행만, 없으면 전부 읽는다.
- * 등장 기록은 문서 단위다 — 첫 동기화에는 전부, 이후에는 이번에 바뀐 문서 것만
- * 읽는다. 문서의 server_updated_at 은 replace_word_occurrences 에서도 올라간다.
- */
-export async function pull(
-  userId: string,
-  db: SupabaseClient<Database> = client(),
-  since: PullWatermarks = {},
-) {
-  const [languageRows, documents, tombstones, folders, wordStates, totals] = await Promise.all([
-    fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
-    fetchAll<DocumentRow>(db, 'documents', userId, 'id', '*', {
-      since: since.documents,
-      sinceColumn: 'server_updated_at',
-    }),
-    fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id', '*', {
-      since: since.tombstones,
-      sinceColumn: 'server_updated_at',
-    }),
-    fetchAll<FolderRow>(db, 'folders', userId, 'id', '*', {
-      since: since.folders,
-      sinceColumn: 'server_updated_at',
-    }),
-    fetchAll<WordStateRow>(db, 'word_states', userId, 'id', '*', {
-      since: since.wordStates,
-      sinceColumn: 'server_updated_at',
-    }),
-    Promise.all([
-      countRows(db, 'documents', userId),
-      countRows(db, 'word_states', userId),
-    ]).then(([documentCount, wordCount]) => ({
-      documents: documentCount,
-      wordStates: wordCount,
-    })),
-  ])
-
-  let occurrences: OccurrenceRow[] = []
-  if (since.documents === undefined) {
-    // 첫 동기화 — 계정의 등장 기록을 모두 읽는다
-    occurrences = await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id')
-  } else {
-    const changedDocumentIds = documents.map((row) => row.id)
-    for (const part of chunk(changedDocumentIds, 50)) {
-      occurrences.push(
-        ...(await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id', '*', {
-          documentIds: part,
-        })),
-      )
-    }
-  }
-
-  return {
-    languages: languageRows.map((r) => r.language_code),
-    documents: documents.map(documentFromRow),
-    tombstones: tombstones.map(documentTombstoneFromRow),
-    folders: folders.map(folderFromRow),
-    wordStates: wordStates.map(wordStateFromRow),
-    occurrences,
-    totals,
-    watermarks: {
-      documents: maxServerTimestamp(documents, since.documents),
-      folders: maxServerTimestamp(folders, since.folders),
-      wordStates: maxServerTimestamp(wordStates, since.wordStates),
-      tombstones: maxServerTimestamp(tombstones, since.tombstones),
-    },
-  }
-}
-
-/**
  * 동기화 한 사이클.
  *
  * 1. 서버를 읽는다
@@ -552,7 +322,7 @@ export async function syncOnce({
    * 로컬에서 다시 계산한 문서는 로컬이 이긴다 — 서버의 옛 표기 기록을 받지 않는다.
    */
   const remoteDocumentIds = new Set(remote.documents.map((row) => row.id))
-  const incremental = since?.documents !== undefined
+  const incremental = since?.snapshot !== undefined
   const replaceDocuments = incremental
     ? new Set([...remoteDocumentIds].filter((id) => !recomputed.has(id)))
     : new Set<string>()
