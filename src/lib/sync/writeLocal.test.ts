@@ -56,24 +56,38 @@ describe('병합 결과를 되돌려 쓸 때', () => {
     expect(writes).toEqual([])
   })
 
-  it('제목이 바뀌었으면 문서는 쓴다', async () => {
+  it('제목이 바뀌었으면 저장은 하되 알리지 않는다 — 동기화가 쓴 것이다', async () => {
     const writes: string[] = []
     const off = onLocalWrite((store) => writes.push(store))
-    await writeLocal([doc({ title: "새 제목" })], [word()], [], [])
+    await writeLocal([doc({ title: '새 제목' })], [word()], [], [])
+    await Promise.resolve()
+    off()
+
+    // 저장은 됐다
+    expect((await idbGet<Document>(STORES.documents, 'doc-1'))?.title).toBe('새 제목')
+    // 그러나 사용자가 저장한 것으로 세지 않는다 — 받은 것이 '밀린 변경' 이 되면 안 된다
+    expect(writes).toEqual([])
+  })
+
+  it('단어 상태가 바뀌었으면 저장은 하되 알리지 않는다', async () => {
+    const writes: string[] = []
+    const off = onLocalWrite((store) => writes.push(store))
+    await writeLocal([doc()], [word({ status: 'unsure' })], [], [])
+    await Promise.resolve()
+    off()
+
+    expect((await idbGet<{ status: string }>(STORES.wordStates, ['en', 'run']))?.status).toBe('unsure')
+    expect(writes).toEqual([])
+  })
+
+  it('사용자가 직접 저장하면 알린다 — 조용한 것은 동기화뿐이다', async () => {
+    const writes: string[] = []
+    const off = onLocalWrite((store) => writes.push(store))
+    await idbPut(STORES.documents, doc({ title: '직접 고침' }))
     await Promise.resolve()
     off()
 
     expect(writes).toContain(STORES.documents)
-  })
-
-  it('단어 상태가 바뀌었으면 단어 상태를 쓴다', async () => {
-    const writes: string[] = []
-    const off = onLocalWrite((store) => writes.push(store))
-    await writeLocal([doc()], [word({ status: "unsure" })], [], [])
-    await Promise.resolve()
-    off()
-
-    expect(writes).toContain(STORES.wordStates)
   })
 
   it('다른 기기에서 받은 상태도 비교해 쓸지 정한다 — 같으면 쓰지 않는다', async () => {

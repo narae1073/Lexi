@@ -5,7 +5,8 @@ import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import type { Document } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import { changedOccurrenceDocuments, syncOnce } from './sync'
+import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
+import { changedOccurrenceDocuments, pushOccurrences, syncOnce } from './sync'
 
 /**
  * 서버를 흉내낸다 — 두 기기 사이에서만 나타나는 문제를 잡으려면 그것이 필요하다.
@@ -23,6 +24,9 @@ function memoryServer(rowCap = 1000) {
     word_states: [],
     word_occurrences: [],
   }
+  const upsertCalls: Record<string, number> = {}
+  const orders: Record<string, string> = {}
+  let nextOccurrenceId = 1
 
   const keyOf = (table: string, row: Record<string, unknown>): string => {
     if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
@@ -63,6 +67,7 @@ function memoryServer(rowCap = 1000) {
         },
         order: (column: string) => {
           orderColumn = column
+          orders[table] = column
           return query
         },
         range: (from: number, to: number) => {
@@ -71,11 +76,18 @@ function memoryServer(rowCap = 1000) {
           return query
         },
         upsert: async (rows: Record<string, unknown>[]) => {
+          upsertCalls[table] = (upsertCalls[table] ?? 0) + 1
           for (const row of rows) {
             const key = keyOf(table, row)
             const at = tables[table].findIndex((r) => keyOf(table, r) === key)
             if (at >= 0) tables[table][at] = { ...tables[table][at], ...row }
             else tables[table].push(row)
+          }
+          return { data: null, error: null }
+        },
+        insert: async (rows: Record<string, unknown>[]) => {
+          for (const row of rows) {
+            tables[table].push({ id: nextOccurrenceId++, ...row })
           }
           return { data: null, error: null }
         },
@@ -111,6 +123,9 @@ function memoryServer(rowCap = 1000) {
   return {
     client: client as never,
     count: (table: string) => tables[table].length,
+    rows: (table: string) => tables[table],
+    upsertCalls: (table: string) => upsertCalls[table] ?? 0,
+    orderOf: (table: string) => orders[table],
     add: (table: string, row: Record<string, unknown>) => {
       tables[table].push(row)
     },
@@ -159,6 +174,7 @@ const wordState = (lemma: string) => ({
 function seedWords(server: Server, count: number, start = 0) {
   for (let i = start; i < start + count; i++) {
     server.add('word_states', {
+      id: `ws-${start + i}`,
       user_id: 'user-1',
       language_code: 'fr',
       lemma: `mot${String(i).padStart(4, '0')}`,
@@ -187,6 +203,8 @@ beforeEach(async () => {
   useWordStatesStore.setState({ byKey: {}, loaded: {} })
   await clearLocalWords()
   await idbDelete(STORES.documents, doc.id)
+  await idbDelete(STORES.documentMeta, doc.id)
+  await idbDelete(STORES.wordOccurrences, [doc.id, 'chat'])
 })
 
 /**
@@ -359,6 +377,16 @@ describe('1000개를 넘는 진도도 온다', () => {
     )
     expect(lemmas.size).toBe(1003)
   }, 20_000)
+
+  it('단어 상태는 고유한 열(id)로 페이지를 넘긴다 — lemma 는 언어 사이에서 겹친다', async () => {
+    const server = memoryServer(1000)
+    await idbPut(STORES.documents, doc)
+    seedWords(server, 1001)
+    await clearLocalWords()
+    await sync(server)
+
+    expect(server.orderOf('word_states')).toBe('id')
+  }, 20_000)
 })
 
 /**
@@ -373,6 +401,10 @@ describe('등장 기록은 달라진 문서만 보낸다', () => {
     document_id: documentId,
     lemma,
     surface,
+    char_start: 0,
+    char_end: lemma.length,
+    sentence: '',
+    occurrences_count: 1,
   })
 
   it('비어 있으면 아무것도 보내지 않는다 — 매번 덮어쓰지 않는다', () => {
@@ -388,6 +420,25 @@ describe('등장 기록은 달라진 문서만 보낸다', () => {
     expect(changedOccurrenceDocuments(merged, [row('doc-1', 'été')])).toEqual(['doc-1'])
   })
 
+  it('문장이 바뀌면 보낸다 — 표기만 같다고 같은 기록이 아니다', () => {
+    const merged = [state('été', { sentence: '새 문장' })]
+    expect(
+      changedOccurrenceDocuments(merged, [{ ...row('doc-1', 'été'), sentence: '옛 문장' }]),
+    ).toEqual(['doc-1'])
+  })
+
+  it('위치가 바뀌면 보낸다', () => {
+    const merged = [state('été', { charStart: 10, charEnd: 13 })]
+    expect(changedOccurrenceDocuments(merged, [row('doc-1', 'été')])).toEqual(['doc-1'])
+  })
+
+  it('등장 횟수가 바뀌면 보낸다', () => {
+    const merged = [state('été', { count: 3 })]
+    expect(
+      changedOccurrenceDocuments(merged, [{ ...row('doc-1', 'été'), occurrences_count: 1 }]),
+    ).toEqual(['doc-1'])
+  })
+
   /** 덮어쓰면 안 된다 — 상대 기기가 영영 잃는다 */
   it('다른 기기에만 있는 기록이 있으면 덮어쓰지 않는다', () => {
     const remote = [row('doc-1', 'été'), row('doc-1', 'chat'), row('doc-1', 'lune')]
@@ -398,4 +449,88 @@ describe('등장 기록은 달라진 문서만 보낸다', () => {
     const merged = [state('a'), state('b', { documentId: 'doc-2' })]
     expect(changedOccurrenceDocuments(merged, [row('doc-1', 'a')])).toEqual(['doc-2'])
   })
+})
+
+/** 실제 전송도 문서 단위로 제한되는가 — 필터를 받기만 하고 무시하면 소용없다 */
+describe('등장 기록 전송', () => {
+  it('onlyDocumentIds 를 주면 그 문서만 갈아끼운다', async () => {
+    const server = memoryServer()
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: 'user-1',
+      document_id: 'doc-2',
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 0,
+      char_end: 4,
+      sentence: '옛 문장',
+      occurrences_count: 1,
+    })
+
+    await pushOccurrences('user-1', [state('été')], server.client, ['doc-1'])
+
+    const rows = server.rows('word_occurrences')
+    expect(rows.filter((r) => r.document_id === 'doc-1')).toHaveLength(1)
+    expect(rows.filter((r) => r.document_id === 'doc-2')).toHaveLength(1)
+    expect(rows.find((r) => r.document_id === 'doc-2')?.sentence).toBe('옛 문장')
+  })
+
+  it('서버와 달라진 문서만 다시 보낸다 — 동기화 한 사이클', async () => {
+    const server = memoryServer()
+    server.add('documents', {
+      id: doc.id,
+      user_id: 'user-1',
+      title: doc.title,
+      language_code: 'fr',
+      raw_text: doc.rawText,
+      created_at: doc.createdAt,
+      updated_at: doc.updatedAt,
+      deleted_at: null,
+      folder_id: null,
+      folder_updated_at: null,
+    })
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: 'user-1',
+      document_id: doc.id,
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 0,
+      char_end: 4,
+      sentence: '옛 문장',
+      occurrences_count: 1,
+    })
+
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.documentMeta, {
+      documentId: doc.id,
+      lemmaVersion: LEMMA_VERSION,
+      segmenter: 'intl',
+    })
+    await idbPut(STORES.wordOccurrences, state('chat', { sentence: '새 문장', charEnd: 4 }))
+
+    await sync(server)
+
+    const rows = server.rows('word_occurrences').filter((r) => r.document_id === doc.id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.sentence).toBe('새 문장')
+  })
+})
+
+describe('큰 변경은 나눠 보낸다', () => {
+  it('단어 상태 501개를 한 요청에 몰아 보내지 않는다', async () => {
+    const server = memoryServer(0)
+    await idbPut(STORES.documents, doc)
+    for (let i = 0; i < 501; i++) {
+      await idbPut(STORES.wordStates, wordState(`mot${String(i).padStart(4, '0')}`))
+    }
+
+    await sync(server)
+
+    expect(server.count('word_states')).toBe(501)
+    // 500개씩 나뉘어 두 번 간다 — 한 요청의 본문이 서버 한도를 넘지 않게
+    expect(server.upsertCalls('word_states')).toBeGreaterThan(1)
+  }, 30_000)
 })

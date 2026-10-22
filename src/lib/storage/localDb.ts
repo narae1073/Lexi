@@ -116,7 +116,23 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise
 }
 
-function tx<T>(store: StoreName, mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>) {
+type WriteOptions = {
+  /**
+   * 저장 완료 알림을 보내지 않는다.
+   *
+   * 동기화가 서버에서 받은 것을 되돌려 쓸 때 쓴다. 그 쓰기까지 '아직 못 올린
+   * 변경' 으로 세면, 받은 것이 두 배로 보이고 동기화가 자기 자신을 다시 예약한다.
+   * 사용자가 직접 한 저장은 절대 조용하지 않다.
+   */
+  silent?: boolean
+}
+
+function tx<T>(
+  store: StoreName,
+  mode: IDBTransactionMode,
+  run: (s: IDBObjectStore) => IDBRequest<T>,
+  options?: WriteOptions,
+) {
   return openDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
@@ -124,7 +140,9 @@ function tx<T>(store: StoreName, mode: IDBTransactionMode, run: (s: IDBObjectSto
         const req = run(transaction.objectStore(store))
         req.onsuccess = () => {
           // 커밋된 뒤에 알린다 — 아직 저장되지 않은 것을 '저장됐다' 고 알리면 안 된다
-          if (mode === 'readwrite') queueMicrotask(() => notifyLocalWrite(store))
+          if (mode === 'readwrite' && !options?.silent) {
+            queueMicrotask(() => notifyLocalWrite(store))
+          }
           resolve(req.result)
         }
         req.onerror = () => reject(req.error)
@@ -140,12 +158,20 @@ export function idbGetAll<T>(store: StoreName): Promise<T[]> {
   return tx<T[]>(store, 'readonly', (s) => s.getAll())
 }
 
-export function idbDelete(store: StoreName, key: IDBValidKey): Promise<undefined> {
-  return tx(store, 'readwrite', (s) => s.delete(key))
+export function idbDelete(
+  store: StoreName,
+  key: IDBValidKey,
+  options?: WriteOptions,
+): Promise<undefined> {
+  return tx(store, 'readwrite', (s) => s.delete(key), options)
 }
 
-export function idbPut<T>(store: StoreName, value: T): Promise<IDBValidKey> {
-  return tx(store, 'readwrite', (s) => s.put(value))
+export function idbPut<T>(
+  store: StoreName,
+  value: T,
+  options?: WriteOptions,
+): Promise<IDBValidKey> {
+  return tx(store, 'readwrite', (s) => s.put(value), options)
 }
 
 /**

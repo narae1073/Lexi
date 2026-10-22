@@ -15,11 +15,10 @@ import { supabase } from '../../lib/supabase/client'
 import type { LanguageCode } from '../../types'
 import {
   SyncUnavailable,
-  pushOccurrences,
-  readLocal,
   syncOnce,
   type SyncReport,
 } from '../../lib/sync/sync'
+import { createSingleFlight } from '../../lib/sync/singleFlight'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
@@ -112,7 +111,21 @@ export const useSyncStore = create<SyncState>((set) => ({
 
 type Setter = (partial: Partial<SyncState> | ((s: SyncState) => Partial<SyncState>)) => void
 
-async function run(set: Setter) {
+/**
+ * 동기화는 한 번에 하나만.
+ *
+ * 로그인·앱 시작·온라인 복귀·수동 동기화·저장 직후가 겹칠 수 있다. 겹치면 같은
+ * 행을 두 번 읽고 쓰고, 밀린 개수를 두 번 뺀다. 실행 중에 들어온 요청은 버리지
+ * 않고 끝난 뒤 한 번 더 돈다.
+ */
+let exclusive: (() => Promise<void>) | null = null
+
+async function run(set: Setter): Promise<void> {
+  exclusive ??= createSingleFlight(() => doRun(set))
+  return exclusive()
+}
+
+async function doRun(set: Setter) {
   const user = useAuthStore.getState().user
   if (!user) return
 
@@ -159,10 +172,6 @@ async function run(set: Setter) {
 
     // 기록이 없는/옛 기록인 문서의 재계산은 App 이 문서 목록에 반응해 맡는다.
     // 여기서 다시 부르면 같은 계산을 두 번 한다.
-
-    // 등장 기록은 문서를 열 때 다시 쓰인다 — 지금 있는 것만 서버로 보낸다
-    const local = await readLocal()
-    await pushOccurrences(user.id, local.occurrences)
 
     set((s) => {
       const pendingByStore: Record<string, number> = { ...s.pendingByStore }

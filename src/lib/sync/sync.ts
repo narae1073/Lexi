@@ -162,12 +162,13 @@ async function idbPutIfChanged<T>(
 ): Promise<void> {
   const key = idbKeyOf(store, value)
   if (key === undefined) {
-    await idbPut(store, value)
+    // 동기화가 받은 것을 쓰는 중이다 — 사용자가 저장한 것으로 세지 않는다
+    await idbPut(store, value, { silent: true })
     return
   }
   const stored = await idbGet<T>(store, key)
   if (stored !== undefined && JSON.stringify(stored) === JSON.stringify(value)) return
-  await idbPut(store, value)
+  await idbPut(store, value, { silent: true })
 }
 
 /**
@@ -284,7 +285,7 @@ export async function pull(userId: string, db: SupabaseClient<Database> = client
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
     fetchAll<DocumentRow>(db, 'documents', userId, 'id'),
     fetchAll<FolderRow>(db, 'folders', userId, 'id'),
-    fetchAll<WordStateRow>(db, 'word_states', userId, 'lemma'),
+    fetchAll<WordStateRow>(db, 'word_states', userId, 'id'),
     fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id'),
   ])
 
@@ -415,8 +416,17 @@ export async function syncOnce({
    */
   const foldersToPush = changedFolders(folders, remote.folders)
 
-  // 등장 기록은 문서를 열 때 다시 쓰이므로, 이번 사이클에서는 상태와 문서만 보낸다
+  // 상태·문서·폴더를 먼저 보낸다 — 진도가 문서에 지면 안 된다
   await push({ userId, db, languages, documents: documentsToPush, words: words.pushOnly, folders: foldersToPush })
+
+  /**
+   * 등장 기록도 **달라진 문서만** 보낸다.
+   *
+   * 예전에는 호출부가 이 기기의 모든 기록을 필터 없이 보냈다. 그러면 동기화마다
+   * 서버의 등장 기록 전체가 이 기기의 것으로 갈아치워지고, 한 기기의 기록이
+   * 덜 계산되어 있으면 서버 전체가 그 기록으로 덮인다.
+   */
+  await pushOccurrences(userId, occurrences, db, occurrencePush)
 
   return {
     // 지운 것은 '보낸 단어' 가 아니다 — 서버에서 지운 것이지 보낸 것이 아니다
@@ -500,28 +510,67 @@ function folderWinnerOf(a: Document, b: Document): Document {
 /**
  * 서버와 달라진 등장 기록의 문서를 찾는다 — **서버가 없는 문서도 '달라진 것'** 이다.
  *
- * 서���에 없는 문서를 굳이 '같다' 고 보면, 그 기기는 아무것도 안 보내고 다른 기기는 계속
- * 옛 것을 갖게 된다.
+ * 표기 집합만 비교하면 안 된다. 같은 단어가 같은 자리에 있어도 문장이 바뀌거나
+ * 위치·횟수가 바뀌면 서버의 기록은 낡은 것이다. 그래서 한 줄의 **내용 전체**를
+ * 키로 만든다.
  */
+type OccurrenceContentRow = {
+  document_id: string
+  lemma: string
+  surface: string
+  char_start: number
+  char_end: number
+  sentence: string
+  occurrences_count?: number
+}
+
+/** 한 줄의 내용을 한 문자열로 — 표기만이 아니라 문장·위치·횟수까지 본다 */
+function occurrenceKey(
+  lemma: string,
+  surface: string,
+  charStart: number,
+  charEnd: number,
+  sentence: string,
+  count: number,
+): string {
+  return `${lemma}\u0000${surface}\u0000${charStart}\u0000${charEnd}\u0000${sentence}\u0000${count}`
+}
+
 export function changedOccurrenceDocuments(
   merged: WordOccurrence[],
-  remoteRows: ReadonlyArray<{ document_id: string; lemma: string; surface: string }>,
+  remoteRows: ReadonlyArray<OccurrenceContentRow>,
 ): string[] {
   const remoteKey = new Map<string, Set<string>>()
   for (const row of remoteRows) {
-    const key = `${row.document_id}::${row.lemma}::${row.surface}`
-    const set = remoteKey.get(row.document_id)
-    if (set) set.add(key)
-    else remoteKey.set(row.document_id, new Set([key]))
+    const set = remoteKey.get(row.document_id) ?? new Set<string>()
+    set.add(
+      occurrenceKey(
+        row.lemma,
+        row.surface,
+        row.char_start,
+        row.char_end,
+        row.sentence,
+        row.occurrences_count ?? 1,
+      ),
+    )
+    remoteKey.set(row.document_id, set)
   }
 
   const localKey = new Map<string, Set<string>>()
   for (const record of merged) {
     for (const surface of record.surfaces) {
-      const key = `${record.documentId}::${record.lemma}::${surface}`
-      const set = localKey.get(record.documentId)
-      if (set) set.add(key)
-      else localKey.set(record.documentId, new Set([key]))
+      const set = localKey.get(record.documentId) ?? new Set<string>()
+      set.add(
+        occurrenceKey(
+          record.lemma,
+          surface,
+          record.charStart,
+          record.charEnd,
+          record.sentence,
+          record.count,
+        ),
+      )
+      localKey.set(record.documentId, set)
     }
   }
 
@@ -600,6 +649,19 @@ export function changedFolders(
 }
 
 /**
+ * 한 요청에 담을 행 수. 큰 단어장에서도 요청 본문이 서버 한도를 넘지 않게 나눈다.
+ * 문서는 한 행이 클 수 있어 더 작게 나눈다.
+ */
+const WRITE_CHUNK = 500
+const DOCUMENT_CHUNK = 100
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
+  return chunks
+}
+
+/**
  * **폴더가 문서보다 먼저 가는 것이 서버의 규칙이다** — 문서의 folder_id 가
  * 폴더를 가리키므로(FK) 폴더가 아직 없으면 문서가 거절된다.
  */
@@ -636,11 +698,11 @@ export async function push({
   // NOT NULL 없는 상태가 'unsure' 로 굳어져, 없앴는데 모름으로 되살아난다.
   const upserts = words.filter((w) => w.status !== undefined)
   const cleared = words.filter((w) => w.status === undefined)
-  if (upserts.length > 0) {
+  for (const part of chunk(upserts, WRITE_CHUNK)) {
     await send('word_states', () =>
       db
         .from('word_states')
-        .upsert(upserts.map((w) => wordStateToRow(userId, withStatus(w))), {
+        .upsert(part.map((w) => wordStateToRow(userId, withStatus(w))), {
           onConflict: 'user_id,language_code,lemma',
         }),
     )
@@ -660,26 +722,26 @@ export async function push({
    * 폴더 먼저 — 문서의 folder_id 가 폴더를 가리키므로(FK) 문서보다 앞서야 한다.
    * 실패가 있으면 모아서 한 번에 알린다 — 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
    */
-  if (folders.length > 0) {
+  for (const part of chunk(folders, WRITE_CHUNK)) {
     await send('folders', () =>
-      db.from('folders').upsert(folders.map((folder: Folder) => folderToRow(userId, folder)), {
+      db.from('folders').upsert(part.map((folder: Folder) => folderToRow(userId, folder)), {
         onConflict: 'id',
       }),
     )
   }
 
-  if (documents.length > 0) {
+  for (const part of chunk(documents, DOCUMENT_CHUNK)) {
     await send('documents', () =>
-      db.from('documents').upsert(documents.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' }),
+      db.from('documents').upsert(part.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' }),
     )
   }
 
-  if (languages.length > 0) {
+  for (const part of chunk(languages, WRITE_CHUNK)) {
     await send('user_languages', () =>
       db
         .from('user_languages')
         .upsert(
-          languages.map((language_code) => ({ user_id: userId, language_code })),
+          part.map((language_code) => ({ user_id: userId, language_code })),
           { onConflict: 'user_id,language_code', ignoreDuplicates: true },
         ),
     )
@@ -712,12 +774,15 @@ export async function pushOccurrences(
     : allDocumentIds
   if (documentIds.length === 0) return
 
-  const { error: deleteError } = await db
-    .from('word_occurrences')
-    .delete()
-    .eq('user_id', userId)
-    .in('document_id', documentIds)
-  if (deleteError) throw deleteError
+  // 지우기도 나눈다 — 문서 id 가 많으면 요청이 길어진다
+  for (const part of chunk(documentIds, 100)) {
+    const { error } = await db
+      .from('word_occurrences')
+      .delete()
+      .eq('user_id', userId)
+      .in('document_id', part)
+    if (error) throw error
+  }
 
   const rows = records
     .filter((record) => documentIds.includes(record.documentId))
