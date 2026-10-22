@@ -222,10 +222,17 @@ export async function writeLocal(
 
     let revisionReady = false
     let revisionMatches = options.expectedRevision === undefined
-    const afterRevision: Array<() => void> = []
-    const whenRevisionReady = (run: () => void) => {
-      if (revisionReady) run()
-      else afterRevision.push(run)
+    let localTombstonesReady = false
+    /** Tombstones that exist right now, including ones absent from the plan. */
+    const localTombstoneIds = new Set<string>()
+    const afterReady: Array<() => void> = []
+    const flushReady = () => {
+      if (!revisionReady || !localTombstonesReady) return
+      for (const run of afterReady.splice(0)) run()
+    }
+    const whenReady = (run: () => void) => {
+      if (revisionReady && localTombstonesReady) run()
+      else afterReady.push(run)
     }
 
     /** Replaces every occurrence row of one document; an empty list clears them. */
@@ -248,8 +255,11 @@ export async function writeLocal(
     }
 
     /**
-     * Read the revision first: occurrence replacement must not clobber rows a
-     * user recomputed while this sync was planning.
+     * Read the revision and the current tombstones first.
+     *
+     * Occurrence replacement must not clobber rows a user recomputed while this
+     * sync was planning, and a hard purge that landed after the plan must not be
+     * undone by re-inserting the document or its occurrences.
      */
     const metaReq = metaStore.get(SYNC_META_KEY)
     metaReq.onsuccess = () => {
@@ -257,36 +267,51 @@ export async function writeLocal(
       revisionReady = true
       revisionMatches =
         options.expectedRevision === undefined || options.expectedRevision === revision
-
-      for (const run of afterRevision.splice(0)) run()
-      if (!revisionMatches) return
-
-      for (const documentId of options.occurrenceDocumentIds) {
-        // Tombstones clear their own document below; replacing twice is waste.
-        if (tombstoneIds.has(documentId)) continue
-        replaceOccurrences(documentId, occurrenceRows.get(documentId) ?? [])
-      }
+      flushReady()
     }
     metaReq.onerror = () => {}
 
-    for (const doc of documents) {
-      // A tombstone wins over any document row in the same plan.
-      if (tombstoneIds.has(doc.id)) continue
-      const getReq = documentsStore.get(doc.id)
-      getReq.onsuccess = () => {
-        const stored = getReq.result as Document | undefined
-        if (stored === undefined) {
-          documentsStore.put(doc)
-          result.documents += 1
-          return
-        }
-        const storedView = normalizedDocument(stored)
-        const merged = mergeDocuments([storedView], [doc])[0]
-        if (sameValue(merged, storedView)) return
-        documentsStore.put(merged)
-        result.documents += 1
+    const localTombstonesReq = tombstonesStore.getAll()
+    localTombstonesReq.onsuccess = () => {
+      for (const row of localTombstonesReq.result as DocumentTombstone[]) {
+        localTombstoneIds.add(row.documentId)
       }
-      getReq.onerror = () => {}
+      localTombstonesReady = true
+      flushReady()
+    }
+    localTombstonesReq.onerror = () => {}
+
+    whenReady(() => {
+      if (!revisionMatches) return
+      for (const documentId of options.occurrenceDocumentIds) {
+        // Tombstones clear their own document below; replacing twice is waste.
+        // A local tombstone that was absent from the plan must win just the same.
+        if (tombstoneIds.has(documentId) || localTombstoneIds.has(documentId)) continue
+        replaceOccurrences(documentId, occurrenceRows.get(documentId) ?? [])
+      }
+    })
+
+    for (const doc of documents) {
+      whenReady(() => {
+        // A tombstone wins over any document row in the same plan, and a purge
+        // that landed after planning must not be resurrected by this write.
+        if (tombstoneIds.has(doc.id) || localTombstoneIds.has(doc.id)) return
+        const getReq = documentsStore.get(doc.id)
+        getReq.onsuccess = () => {
+          const stored = getReq.result as Document | undefined
+          if (stored === undefined) {
+            documentsStore.put(doc)
+            result.documents += 1
+            return
+          }
+          const storedView = normalizedDocument(stored)
+          const merged = mergeDocuments([storedView], [doc])[0]
+          if (sameValue(merged, storedView)) return
+          documentsStore.put(merged)
+          result.documents += 1
+        }
+        getReq.onerror = () => {}
+      })
     }
 
     for (const folder of folders) {
@@ -337,7 +362,7 @@ export async function writeLocal(
         if (tombstone.documentId !== SYNC_META_KEY) {
           metaStore.delete(tombstone.documentId)
         }
-        whenRevisionReady(() => {
+        whenReady(() => {
           if (!revisionMatches) return
           replaceOccurrences(tombstone.documentId, [])
         })

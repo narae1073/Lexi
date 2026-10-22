@@ -20,6 +20,7 @@ import {
 import { supabase } from '../../lib/supabase/client'
 import type { LanguageCode } from '../../types'
 import {
+  SyncDeferredError,
   SyncUnavailable,
   syncOnce,
   type SyncReport,
@@ -39,6 +40,23 @@ const SYNC_DEBOUNCE_MS = 1_200
 
 /** 아무리 자주 눌러도 이만큼 지나면 한 번은 보낸다 — 미루기만 하다가 끝내지 않게 */
 const SYNC_MAX_WAIT_MS = 10_000
+
+/**
+ * A deferred cycle wrote nothing because local writes kept landing while it
+ * planned. Wait for the burst to settle before trying again — retrying in the
+ * same tick would just plan against another in-flight write.
+ */
+const DEFERRED_RETRY_MS = 2_000
+
+let deferredRetryTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleDeferredRetry(): void {
+  if (deferredRetryTimer !== undefined) return
+  deferredRetryTimer = setTimeout(() => {
+    deferredRetryTimer = undefined
+    void useSyncStore.getState().syncQuietly()
+  }, DEFERRED_RETRY_MS)
+}
 
 /**
  * Where incremental sync stands — persisted in `src/lib/sync/syncState.ts`
@@ -437,6 +455,17 @@ async function doRun(set: Setter) {
   } catch (error) {
     // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
     if (accountChanged()) return
+
+    /**
+     * 로컬 쓰기가 계속 들어와 계획이 낡은 경우다. 아무것도 쓰지 않았고
+     * 워터마크도 옮기지 않았으므로, 사용자에게 오류를 보여 줄 일이 아니다.
+     * 밀린 것은 그대로 두고 잠시 뒤 조용히 다시 시도한다.
+     */
+    if (error instanceof SyncDeferredError) {
+      set({ status: 'local', error: null })
+      scheduleDeferredRetry()
+      return
+    }
 
     // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
     if (error instanceof SyncUnavailable) {

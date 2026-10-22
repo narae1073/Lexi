@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { STORES, idbGetAll, SYNC_META_KEY } from '../storage/localDb'
+import {
+  STORES,
+  idbGetAll,
+  readLocalRevision,
+  SYNC_META_KEY,
+} from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
@@ -32,7 +37,7 @@ import {
   wordStateToRow,
 } from './mapping'
 import { pull } from './pull'
-import type { PullWatermarks } from './types'
+import type { PullResult, PullWatermarks } from './types'
 
 export type { PullResult, PullWatermarks } from './types'
 export { pull } from './pull'
@@ -92,6 +97,20 @@ export class SyncUnavailable extends Error {
   }
 }
 
+/**
+ * A sync cycle was abandoned because local writes kept landing while it planned.
+ *
+ * Nothing was written and no watermark moved: the caller must leave its stored
+ * progress untouched and retry quietly once the writes settle. This is not an
+ * error the user can act on, so it never becomes an error banner.
+ */
+export class SyncDeferredError extends Error {
+  constructor() {
+    super('로컬 변경이 계속되어 이번 동기화를 미뤘습니다')
+    this.name = 'SyncDeferredError'
+  }
+}
+
 function client(): SupabaseClient<Database> {
   if (!supabase) throw new SyncUnavailable()
   return supabase
@@ -133,34 +152,40 @@ export async function readLocal(): Promise<{
   }
 }
 
-/**
- * 동기화 한 사이클.
- *
- * 1. 서버를 읽는다
- * 2. 로컬과 병합한다
- * 3. 병합 결과를 로컬에 쓴다
- * 4. 서버에 없는 것만 서버에 쓴다
- */
-export async function syncOnce({
-  userId,
-  languages: localLanguages,
-  db = client(),
-  since,
-  pushedAt,
-}: {
-  userId: string
-  /** 이 기기에서 배운 언어 */
-  languages: string[]
-  db?: SupabaseClient<Database>
-  /** 서버 워터마크 — 없으면 전체를 읽는다 */
-  since?: PullWatermarks
-  /** 이 로컬 시각 이후에 바뀐 행만 보낸다. 없으면 전부 보낸다 */
-  pushedAt?: string
-}): Promise<SyncReport> {
-  // 이 시각 이후에 이 기기에서 다시 계산된 등장 기록은 이번 동기화가 덮어쓰지 않는다
-  const syncStartedAt = new Date().toISOString()
-  const [remote, local] = await Promise.all([pull(userId, db, since), readLocal()])
+type LocalSnapshot = Awaited<ReturnType<typeof readLocal>>
 
+type SyncPlan = {
+  words: ReturnType<typeof mergeWordStates>
+  languages: string[]
+  folders: Folder[]
+  tombstones: DocumentTombstone[]
+  tombstoneIds: Set<string>
+  remoteDocs: Document[]
+  remoteDocumentIds: Set<string>
+  metaRows: Array<{
+    documentId: string
+    lemmaVersion: number
+    occurrencesUpdatedAt?: string
+  }>
+  mergedDocuments: Document[]
+  mergedWords: WordStateRecord[]
+  occurrences: WordOccurrence[]
+  occurrenceDocumentIds: Set<string>
+  changedDuringSync: Set<string>
+}
+
+/**
+ * Builds one cycle's local write plan from a server snapshot and a local read.
+ *
+ * Split out so a local write that lands during the pull can be re-planned from
+ * a fresh read without duplicating the merge rules.
+ */
+async function planLocalWrite(
+  remote: PullResult,
+  local: LocalSnapshot,
+  localLanguages: string[],
+  syncStartedAt: string,
+): Promise<SyncPlan> {
   const words = mergeWordStates(local.wordStates, remote.wordStates)
   const languages = mergeLanguages(localLanguages, remote.languages)
   const folders = mergeFolders(local.folders, remote.folders)
@@ -223,7 +248,6 @@ export async function syncOnce({
    * 서버의 옛 표기 기록을 받지 않는다.
    */
   const remoteDocumentIds = new Set(remote.documents.map((row) => row.id))
-  const incremental = since?.snapshot !== undefined
   const replaceDocuments = new Set(
     [...remoteDocumentIds].filter((id) => !recomputed.has(id)),
   )
@@ -280,6 +304,86 @@ export async function syncOnce({
       (documentId) => !changedDuringSync.has(documentId),
     ),
   )
+  return {
+    words,
+    languages,
+    folders,
+    tombstones,
+    tombstoneIds,
+    remoteDocs,
+    remoteDocumentIds,
+    metaRows,
+    mergedDocuments,
+    mergedWords,
+    occurrences,
+    occurrenceDocumentIds,
+    changedDuringSync,
+  }
+}
+
+/**
+ * 동기화 한 사이클.
+ *
+ * 1. 서버를 읽는다
+ * 2. 로컬과 병합한다
+ * 3. 병합 결과를 로컬에 쓴다
+ * 4. 서버에 없는 것만 서버에 쓴다
+ */
+export async function syncOnce({
+  userId,
+  languages: localLanguages,
+  db = client(),
+  since,
+  pushedAt,
+}: {
+  userId: string
+  /** 이 기기에서 배운 언어 */
+  languages: string[]
+  db?: SupabaseClient<Database>
+  /** 서버 워터마크 — 없으면 전체를 읽는다 */
+  since?: PullWatermarks
+  /** 이 로컬 시각 이후에 바뀐 행만 보낸다. 없으면 전부 보낸다 */
+  pushedAt?: string
+}): Promise<SyncReport> {
+  // This snapshot of server and local data is the plan for one sync attempt.
+  const syncStartedAt = new Date().toISOString()
+  // Captured before readLocal: a write between these two reads must still be
+  // detected as a change, not silently folded into the snapshot.
+  const revisionBefore = await readLocalRevision()
+  const [remote, firstLocal] = await Promise.all([pull(userId, db, since), readLocal()])
+
+  let local = firstLocal
+  let plan = await planLocalWrite(remote, local, localLanguages, syncStartedAt)
+  let expectedRevision = await readLocalRevision()
+  if (expectedRevision !== revisionBefore) {
+    // A local write landed while the pull was in flight. Re-read once and
+    // rebuild the plan so the merge sees the newer row; replacing occurrences
+    // from the stale snapshot would otherwise undo that write.
+    local = await readLocal()
+    plan = await planLocalWrite(remote, local, localLanguages, syncStartedAt)
+    const rereadRevision = await readLocalRevision()
+    // Still moving — write nothing this cycle and let the caller retry quietly.
+    if (rereadRevision !== expectedRevision) throw new SyncDeferredError()
+    expectedRevision = rereadRevision
+  }
+
+  const {
+    words,
+    languages,
+    folders,
+    tombstones,
+    tombstoneIds,
+    remoteDocs,
+    remoteDocumentIds,
+    metaRows,
+    mergedDocuments,
+    mergedWords,
+    occurrences,
+    occurrenceDocumentIds,
+    changedDuringSync,
+  } = plan
+
+  const incremental = since?.snapshot !== undefined
 
   const localWrites = await writeLocal(
     mergedDocuments,
@@ -287,7 +391,7 @@ export async function syncOnce({
     occurrences,
     folders,
     tombstones,
-    { occurrenceDocumentIds },
+    { occurrenceDocumentIds, expectedRevision },
   )
 
   /**
@@ -355,7 +459,7 @@ export async function syncOnce({
     incremental ? remoteDocumentIds : undefined,
   )
   const occurrencePush = [...new Set([...changedFetched, ...dirtyOccurrenceDocs])].filter(
-    (id) => isLive(id) && !changedDuringSync.has(id),
+    (id) => !tombstoneIds.has(id) && !changedDuringSync.has(id),
   )
 
   /**
