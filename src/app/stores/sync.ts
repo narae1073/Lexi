@@ -9,7 +9,7 @@ import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
 import { createSyncScheduler } from './syncScheduler'
 import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } from './syncVisibility'
-import { hasLocalLearningData, ensureLocalSyncMeta, onLocalWrite, STORES } from '../../lib/storage/localDb'
+import { hasLocalLearningData, ensureLocalSyncMeta, onLocalWrite, STORES, type StoreName } from '../../lib/storage/localDb'
 import {
   ensureLocalOwner,
   readLocalOwner,
@@ -344,12 +344,7 @@ async function doRun(set: Setter) {
       userId: user.id,
       languages,
       since: stored?.pull,
-      /**
-       * Per-table push watermarks arrive with the push rework; until then the
-       * last successful sync's start time keeps R1's single-watermark rule
-       * ("rows touched after the last sync start are pushed next time").
-       */
-      pushedAt: stored?.lastSyncedAt,
+      push: stored?.push,
     })
 
     /**
@@ -361,14 +356,11 @@ async function doRun(set: Setter) {
      */
     if (accountChanged()) return
 
-    // 성공한 뒤에만 워터마크를 옮긴다 — 실패하면 같은 구간을 다시 읽고 다시 보낸다
+    // 성공한 표의 워터마크만 옮긴다. 실패한 표는 옛 워터마크를 지켜 다음에 재시도한다.
     writeStoredSyncState(user.id, {
       version: 2,
       pull: report.watermarks,
-      // Per-table push watermarks land with the push rework; the empty map
-      // means "no table watermark yet" and the lastSyncedAt bridge above keeps
-      // R1's behavior in the meantime.
-      push: {},
+      push: report.pushWatermarks,
       localEpoch: await readLocalEpochSafely(stored?.localEpoch ?? ''),
       lastSyncedAt: startedAt,
     })
@@ -418,19 +410,31 @@ async function doRun(set: Setter) {
 
     set((s) => {
       const pendingByStore: Record<string, number> = { ...s.pendingByStore }
+      // Subtract only stores whose whole batch went through. A failed table's
+      // count stays pending so the next cycle retries it.
+      const succeededStores = new Set<StoreName>(report.succeededStores)
       for (const [store, count] of Object.entries(batch)) {
+        if (!succeededStores.has(store as StoreName)) continue
         const left = (pendingByStore[store] ?? 0) - count
         if (left > 0) pendingByStore[store] = left
         else delete pendingByStore[store]
       }
+      const failed = report.failures.length > 0
       return {
-        status: 'synced' as SyncStatus,
+        status: failed ? ('error' as SyncStatus) : ('synced' as SyncStatus),
         lastSyncedAt: new Date().toISOString(),
-        error: null,
+        error: failed
+          ? report.failures
+              .map(
+                (failure) =>
+                  `${failure.table}${failure.key === undefined ? '' : `:${failure.key}`}: ${failure.message}`,
+              )
+              .join(' / ')
+          : null,
         // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
-        notice: markSynced(s.notice, Date.now()),
+        notice: failed ? s.notice : markSynced(s.notice, Date.now()),
         report,
-        // 다 밀었다 — 이제 서버와 같다
+        // 밀린 것이 남았는가 — 실패한 표는 아직 기기에만 있다
         dirty: pendingCount(pendingByStore) > 0,
         pendingByStore,
       }

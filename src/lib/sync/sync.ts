@@ -2,7 +2,9 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 import {
   STORES,
+  clearDirtyIfRevision,
   idbGetAll,
+  readDirtyKeys,
   readLocalRevision,
   SYNC_META_KEY,
 } from '../storage/localDb'
@@ -28,57 +30,36 @@ import {
   changedLocalOccurrenceDocuments,
   occurrenceContentKey,
   writeLocal,
-  type WriteLocalResult,
 } from './writeLocal'
-import {
-  documentTombstoneToRow,
-  documentToRow,
-  folderToRow,
-  wordStateToRow,
-} from './mapping'
 import { pull } from './pull'
-import type { PullResult, PullWatermarks } from './types'
+import {
+  loadDirtyCandidates,
+  push as pushRows,
+  pushOccurrences,
+  wordStatePushKey,
+} from './push'
+import type {
+  PullResult,
+  PullWatermarks,
+  PushWatermarks,
+  SyncReport,
+} from './types'
 
-export type { PullResult, PullWatermarks } from './types'
+export type { PullResult, PullWatermarks, PushWatermarks, SyncReport } from './types'
+export type {
+  DirtyKey,
+  PushResult,
+  PushTable,
+  SyncFailure,
+} from './types'
 export { pull } from './pull'
+export { push, pushOccurrences } from './push'
 export { changedLocalOccurrenceDocuments, writeLocal } from './writeLocal'
 export type { WriteLocalOptions, WriteLocalResult } from './writeLocal'
 // Kept here so existing imports (sync.ts as the public sync surface) still work.
 export { mergeDocuments, mergeFolders, mergeTombstones }
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
-
-export type SyncReport = {
-  pushed: number
-  pulled: number
-  documents: number
-  /** 병합된 배운 언어 — 호출한 쪽이 이 기기에 채택해야 한다 */
-  languages: string[]
-  /** 다음 동기화가 이어 읽을 서버 워터마크 */
-  watermarks: PullWatermarks
-  /**
-   * **서버에 지금 있는** 단어 상태와 문서 수.
-   *
-   * 기기마다 진도가 다를 때 이 숫자가 가감을 알려 준다. 0 이면 이 기기의 변경이
-   * 서버에 가지 않은 것이고, 0 이 아니면서 이 기기에 없는 것이면 **화면에만 안 보이는**
-   * 것이다 — 방향이 완전히 다르다.
-   */
-  serverWords: number
-  serverDocuments: number
-  /** 이 기기에 지금 있는 단어 상태 수 */
-  localWords: number
-  /**
-   * 서버와 달라져서 **등장 기록을 다시 보내야 하는** 문서.
-   *
-   * 비어 있으면 아무것도 보내지 않는다.
-   */
-  occurrencePush: string[]
-  /**
-   * What this cycle actually wrote locally — unchanged rows are not counted.
-   * `occurrences` counts documents whose occurrence rows were replaced.
-   */
-  localWrites: WriteLocalResult
-}
 
 /**
  * 로컬 ↔ 서버 동기화 (plan.txt 1줄: 기기가 바뀌어도 학습이 이어진다).
@@ -334,6 +315,7 @@ export async function syncOnce({
   languages: localLanguages,
   db = client(),
   since,
+  push: pushWatermarks = {},
   pushedAt,
 }: {
   userId: string
@@ -342,7 +324,9 @@ export async function syncOnce({
   db?: SupabaseClient<Database>
   /** 서버 워터마크 — 없으면 전체를 읽는다 */
   since?: PullWatermarks
-  /** 이 로컬 시각 이후에 바뀐 행만 보낸다. 없으면 전부 보낸다 */
+  /** Per-table client-time push watermarks. A missing table pushes everything. */
+  push?: PushWatermarks
+  /** @deprecated R1 single watermark; translated to every table for old callers. */
   pushedAt?: string
 }): Promise<SyncReport> {
   // This snapshot of server and local data is the plan for one sync attempt.
@@ -395,22 +379,39 @@ export async function syncOnce({
   )
 
   /**
-   * 이번에 보낼 것 — **마지막 성공한 동기화 이후에 이 기기에서 바뀐 것만**.
-   *
-   * 증분 읽기에서는 서버에서 받지 않은 행이 로컬에만 있는 것처럼 보인다. 그 행을
-   * 전부 다시 올리면 증분의 의미가 없고, 문서 전문을 매번 올리게 된다.
+   * Per-table watermarks: a row is a candidate when it changed after its own
+   * table's watermark. The old single `pushedAt` is translated for R1 callers.
    */
-  const pushedAtMs = pushedAt === undefined ? undefined : Date.parse(pushedAt)
-  const touchedAfter = (iso: string | undefined): boolean => {
-    if (pushedAtMs === undefined) return true
+  const initialPush: PushWatermarks =
+    pushedAt === undefined
+      ? pushWatermarks
+      : {
+          documents: pushWatermarks.documents ?? pushedAt,
+          folders: pushWatermarks.folders ?? pushedAt,
+          wordStates: pushWatermarks.wordStates ?? pushedAt,
+          tombstones: pushWatermarks.tombstones ?? pushedAt,
+          occurrences: pushWatermarks.occurrences ?? pushedAt,
+        }
+
+  const watermarkMs = (table: keyof PushWatermarks): number | undefined => {
+    const iso = initialPush[table]
+    if (iso === undefined) return undefined
+    const at = Date.parse(iso)
+    // An unreadable watermark is no evidence that a row was pushed.
+    return Number.isNaN(at) ? undefined : at
+  }
+  const touchedAfter = (iso: string | undefined, table: keyof PushWatermarks): boolean => {
+    const watermark = watermarkMs(table)
+    if (watermark === undefined) return true
     if (!iso) return false
     const at = Date.parse(iso)
-    return !Number.isNaN(at) && at > pushedAtMs
+    return !Number.isNaN(at) && at > watermark
   }
   const wordTouched = (word: WordStateRecord): boolean => {
-    if (pushedAtMs === undefined) return true
+    const watermark = watermarkMs('wordStates')
+    if (watermark === undefined) return true
     return [word.lastSeenAt, word.favoriteUpdatedAt, word.noteUpdatedAt].some(
-      (iso) => iso !== undefined && Date.parse(iso) > pushedAtMs,
+      (iso) => iso !== undefined && Date.parse(iso) > watermark,
     )
   }
 
@@ -420,7 +421,9 @@ export async function syncOnce({
   const documentsToPush = mergedDocuments.filter((doc) => {
     // 이 기기에서 마지막 동기화 이후 바뀐 문서만 — 나머지는 다시 올리지 않는다.
     // 폴더 이동은 updatedAt 을 건드리지 않고 folderUpdatedAt 만 찍는다.
-    if (!touchedAfter(doc.updatedAt) && !touchedAfter(doc.folderUpdatedAt)) return false
+    if (!touchedAfter(doc.updatedAt, 'documents') && !touchedAfter(doc.folderUpdatedAt, 'documents')) {
+      return false
+    }
     const theirs = remoteById.get(doc.id)
     // 새 문서
     if (!theirs) return true
@@ -442,14 +445,15 @@ export async function syncOnce({
    * - 서버에서 바뀐 문서: 병합 결과와 서버를 비교한다 (로컬 재계산이면 로컬이 이겨 보낸다)
    * - 이 기기에서만 바뀐 문서: documentMeta.occurrencesUpdatedAt 이 마지막 동기화 이후다
    */
+  const occurrenceWatermark = watermarkMs('occurrences')
   const dirtyOccurrenceDocs = new Set(
-    pushedAtMs === undefined
+    occurrenceWatermark === undefined
       ? local.occurrences.map((record) => record.documentId)
       : metaRows
           .filter(
             (m) =>
               m.occurrencesUpdatedAt !== undefined &&
-              Date.parse(m.occurrencesUpdatedAt) > pushedAtMs,
+              Date.parse(m.occurrencesUpdatedAt) > occurrenceWatermark,
           )
           .map((m) => m.documentId),
   )
@@ -468,36 +472,113 @@ export async function syncOnce({
    * 전에 자리를 먼저 만들어 두는 것이다.
    */
   const foldersToPush = changedFolders(folders, remote.folders).filter((folder) =>
-    touchedAfter(folder.updatedAt),
+    touchedAfter(folder.updatedAt, 'folders'),
+  )
+  const tombstonesToPush = tombstones.filter((tombstone) =>
+    touchedAfter(tombstone.purgedAt, 'tombstones'),
   )
 
-  // 상태·문서·폴더를 먼저 보낸다 — 진도가 문서에 지면 안 된다
-  await push({
+  /**
+   * Dirty keys are the clock-safe fallback: a write that landed after the plan
+   * was formed can carry a timestamp at/below the new watermark. Its current
+   * local row is loaded here and unioned with the timestamp-selected rows.
+   */
+  const dirtyKeys = await readDirtyKeys()
+  const dirtyCandidates = await loadDirtyCandidates(dirtyKeys)
+  // A journal entry whose row no longer exists has nothing to send.
+  for (const dirty of dirtyCandidates.resolved) {
+    await clearDirtyIfRevision(dirty.store, dirty.key, dirty.revision)
+  }
+
+  const documentCandidates = new Map<string, Document>()
+  for (const document of documentsToPush) documentCandidates.set(document.id, document)
+  for (const document of dirtyCandidates.documents) {
+    if (tombstoneIds.has(document.id)) continue
+    documentCandidates.set(document.id, document)
+  }
+
+  const wordCandidates = new Map<string, WordStateRecord>()
+  for (const word of wordsToPush) wordCandidates.set(wordStatePushKey(word), word)
+  for (const word of dirtyCandidates.words) wordCandidates.set(wordStatePushKey(word), word)
+
+  const folderCandidates = new Map<string, Folder>()
+  for (const folder of foldersToPush) folderCandidates.set(folder.id, folder)
+  for (const folder of dirtyCandidates.folders) folderCandidates.set(folder.id, folder)
+
+  const tombstoneCandidates = new Map<string, DocumentTombstone>()
+  for (const tombstone of tombstonesToPush) {
+    tombstoneCandidates.set(tombstone.documentId, tombstone)
+  }
+  for (const tombstone of dirtyCandidates.tombstones) {
+    tombstoneCandidates.set(tombstone.documentId, tombstone)
+  }
+
+  const occurrenceCandidates = new Map<string, WordOccurrence[]>()
+  for (const documentId of occurrencePush) {
+    occurrenceCandidates.set(
+      documentId,
+      occurrences.filter((record) => record.documentId === documentId),
+    )
+  }
+  for (const documentId of dirtyCandidates.occurrenceDocumentIds) {
+    if (tombstoneIds.has(documentId) || changedDuringSync.has(documentId)) continue
+    occurrenceCandidates.set(
+      documentId,
+      dirtyCandidates.occurrences.filter((record) => record.documentId === documentId),
+    )
+  }
+  const occurrenceRecords = [...occurrenceCandidates.values()].flat()
+  const occurrenceDocumentIdsToPush = [...occurrenceCandidates.keys()]
+
+  const tableResult = await pushRows({
     userId,
     db,
     languages,
-    documents: documentsToPush,
-    words: wordsToPush,
-    folders: foldersToPush,
-    tombstones,
+    documents: [...documentCandidates.values()],
+    words: [...wordCandidates.values()],
+    folders: [...folderCandidates.values()],
+    tombstones: [...tombstoneCandidates.values()],
+    dirtyKeys,
   })
+  const occurrenceResult = await pushOccurrences(
+    userId,
+    occurrenceRecords,
+    db,
+    occurrenceDocumentIdsToPush,
+    dirtyKeys,
+  )
 
-  /**
-   * 등장 기록도 **달라진 문서만** 보낸다.
-   *
-   * 예전에는 호출부가 이 기기의 모든 기록을 필터 없이 보냈다. 그러면 동기화마다
-   * 서버의 등장 기록 전체가 이 기기의 것으로 갈아치워지고, 한 기기의 기록이
-   * 덜 계산되어 있으면 서버 전체가 그 기록으로 덮인다.
-   */
-  await pushOccurrences(userId, occurrences, db, occurrencePush)
+  const failures = [...tableResult.failures, ...occurrenceResult.failures]
+  const succeededStores = new Set([
+    ...tableResult.succeededStores,
+    ...occurrenceResult.succeededStores,
+  ])
+  const succeededKeys = [...tableResult.succeededKeys, ...occurrenceResult.succeededKeys]
+
+  // Advance only the tables that fully went through. A failed table keeps its
+  // old watermark so the next cycle retries it.
+  const nextPush: PushWatermarks = { ...initialPush }
+  for (const table of ['documents', 'folders', 'wordStates', 'tombstones'] as const) {
+    if (tableResult.succeeded.has(table)) nextPush[table] = syncStartedAt
+  }
+  if (occurrenceResult.succeeded.has('occurrences')) nextPush.occurrences = syncStartedAt
+
+  const failedWordKeys = new Set(
+    failures
+      .filter((failure) => failure.table === 'wordStates' && failure.key !== undefined)
+      .map((failure) => failure.key),
+  )
 
   return {
     // 지운 것은 '보낸 단어' 가 아니다 — 서버에서 지운 것이지 보낸 것이 아니다
-    pushed: wordsToPush.filter((w) => w.status !== undefined).length,
+    pushed: [...wordCandidates.values()].filter(
+      (word) => word.status !== undefined && !failedWordKeys.has(wordStatePushKey(word)),
+    ).length,
     pulled: words.pullOnly.length,
     documents: mergedDocuments.length,
     languages,
     watermarks: remote.watermarks,
+    pushWatermarks: nextPush,
     serverWords: remote.totals.wordStates,
     serverDocuments: remote.totals.documents,
     /**
@@ -508,30 +589,14 @@ export async function syncOnce({
      * 상황을 설명하지 않으면 숫자를 믿는 사람이 아무것도 모른다.
      */
     localWords: mergedWords.length,
-    occurrencePush,
+    occurrencePush: occurrenceDocumentIdsToPush,
+    failures,
     localWrites,
+    succeededStores: [...succeededStores],
+    succeededKeys,
   }
 }
 
-/**
- * 서버에 없는 것만 보낸다.
- *
- * 전부 다시 보내면 RLS 통과는 하지만 다른 기기의 변경과 부딪힐 수 있고,
- * 불필요한 쓰기로更新时间가 어긋난다.
- */
-/**
- * 서버로 보낸다.
- *
- * **표마다 독립적으로 보내고, 진도를 가장 먼저 보낸다.**
- *
- * 예전엔 언어 → 문서 → 단어 상태 순서로 한 번에 보내고, 앞이 실패하면 뒤를 아예
- * 실행하지 않았다. 문서 한 줄이 서버 규칙에 걸리면 **사용자가 직접 고른 단어 상태가
- * 서버로 나가지 않았다.** 기기 안에만 남고, 다른 기기는 서버의 옛 상태를 받아 본다.
- * 사용자가 보는 증상은 '이 기기만 최신이고 나머지는 옛것' 이었다.
- *
- * 진도가 문서에 지는 일은 없어야 한다. 실패한 표가 있으면 모아서 한 번에 알린다 —
- * 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
- */
 /**
  * 서버와 달라진 등장 기록의 문서를 찾는다 — **서버가 없는 문서도 '달라진 것'** 이다.
  *
@@ -632,174 +697,6 @@ export function changedFolders(
     // 이 기기에서 더 늦게 고쳤다
     return isNewer(folder.updatedAt, theirs.updatedAt)
   })
-}
-
-/**
- * 한 요청에 담을 행 수. 큰 단어장에서도 요청 본문이 서버 한도를 넘지 않게 나눈다.
- * 문서는 한 행이 클 수 있어 더 작게 나눈다.
- */
-const WRITE_CHUNK = 500
-const DOCUMENT_CHUNK = 100
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = []
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
-  return chunks
-}
-
-/**
- * **폴더가 문서보다 먼저 가는 것이 서버의 규칙이다** — 문서의 folder_id 가
- * 폴더를 가리키므로(FK) 폴더가 아직 없으면 문서가 거절된다.
- */
-
-export async function push({
-  userId,
-  db,
-  languages,
-  documents,
-  words,
-  folders,
-  tombstones,
-}: {
-  userId: string
-  db: SupabaseClient<Database>
-  languages: string[]
-  documents: Document[]
-  words: WordStateRecord[]
-  folders: Folder[]
-  tombstones: DocumentTombstone[]
-}): Promise<void> {
-  const failures: string[] = []
-
-  type SendResult = { error: { message: string } | null }
-  const send = async (table: string, run: () => PromiseLike<SendResult>) => {
-    try {
-      const { error } = await run()
-      if (error) failures.push(`${table}: ${error.message}`)
-    } catch (error) {
-      failures.push(`${table}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  // 묘비 먼저 — 문서가 실패해도 '지웠다' 는 사실은 나가야 한다
-  for (const part of chunk(tombstones, WRITE_CHUNK)) {
-    await send('document_tombstones', () =>
-      db
-        .from('document_tombstones')
-        .upsert(part.map((tombstone) => documentTombstoneToRow(userId, tombstone)), {
-          onConflict: 'user_id,document_id',
-        }),
-    )
-  }
-  // 지운 문서는 서버에서도 지운다 — 오프라인에서 실패했어도 다음 동기화가 재시도한다
-  for (const part of chunk(tombstones.map((tombstone) => tombstone.documentId), 100)) {
-    await send('documents', () =>
-      db.from('documents').delete().eq('user_id', userId).in('id', part),
-    )
-  }
-
-  // 진도 먼저 — 문서가 실패해도 이것은 나가야 한다.
-  // 없앤 표시도 status = null 인 행으로 올린다. 행을 지우면 즐겨찾기·메모·횟수가
-  // 서버에서 사라지고, 다른 기기가 옛 상태를 다시 올려 없앰과 되살림이 번갈아 일어난다.
-  for (const part of chunk(words, WRITE_CHUNK)) {
-    await send('word_states', () =>
-      db
-        .from('word_states')
-        .upsert(part.map((w) => wordStateToRow(userId, w)), {
-          onConflict: 'user_id,language_code,lemma',
-        }),
-    )
-  }
-
-  /**
-   * 폴더 먼저 — 문서의 folder_id 가 폴더를 가리키므로(FK) 문서보다 앞서야 한다.
-   * 실패가 있으면 모아서 한 번에 알린다 — 조용히 삼키면 무엇이 안 갔는지 알 방법이 없다.
-   */
-  for (const part of chunk(folders, WRITE_CHUNK)) {
-    await send('folders', () =>
-      db.from('folders').upsert(part.map((folder: Folder) => folderToRow(userId, folder)), {
-        onConflict: 'id',
-      }),
-    )
-  }
-
-  for (const part of chunk(documents, DOCUMENT_CHUNK)) {
-    await send('documents', () =>
-      db.from('documents').upsert(part.map((doc) => documentToRow(userId, doc)), { onConflict: 'id' }),
-    )
-  }
-
-  for (const part of chunk(languages, WRITE_CHUNK)) {
-    await send('user_languages', () =>
-      db
-        .from('user_languages')
-        .upsert(
-          part.map((language_code) => ({ user_id: userId, language_code })),
-          { onConflict: 'user_id,language_code', ignoreDuplicates: true },
-        ),
-    )
-  }
-
-  if (failures.length > 0) {
-    throw new Error(`서버 저장 실패 — ${failures.join(' / ')}`)
-  }
-}
-
-/** 등장 기록은 문서를 통째로 다시 보낸다 — 일부만 갱신하면 옛 표기가 남는다 */
-/**
- * 등장 기록을 문서 단위로 통째로 보낸다 — 일부만 갱신하면 옛 표기가 남는다.
- *
- * `onlyDocumentIds` 를 주면 **그 문서만** 보낸다. 아무 것도 안 주면 보낸다.
- *
- * 이 제한이 없으면 문제가 크다 — 아래 주석.
- */
-export async function pushOccurrences(
-  _userId: string,
-  records: WordOccurrence[],
-  db: SupabaseClient<Database> = client(),
-  onlyDocumentIds?: readonly string[],
-): Promise<void> {
-  if (records.length === 0) return
-
-  const localDocumentIds = new Set(records.map((record) => record.documentId))
-  const documentIds = onlyDocumentIds
-    ? onlyDocumentIds.filter((id) => localDocumentIds.has(id))
-    : [...localDocumentIds]
-  if (documentIds.length === 0) return
-
-  const byDocument = new Map<string, WordOccurrence[]>()
-  for (const record of records) {
-    if (!documentIds.includes(record.documentId)) continue
-    const list = byDocument.get(record.documentId)
-    if (list) list.push(record)
-    else byDocument.set(record.documentId, [record])
-  }
-
-  /**
-   * 문서 하나를 **한 트랜잭션에서** 갈아끼운다.
-   *
-   * delete 와 insert 를 따로 보내면 중간 실패에 기록이 비거나, 동시에 쓴 다른
-   * 기기의 행과 겹친다. 서버 함수가 지우기와 넣기를 함께 한다.
-   */
-  for (const [documentId, local] of byDocument) {
-    const rows = local.flatMap((record) =>
-      record.surfaces.map((surface) => ({
-        language_code: record.languageCode,
-        lemma: record.lemma,
-        surface,
-        char_start: record.charStart,
-        char_end: record.charEnd,
-        sentence: record.sentence,
-        occurrences_count: record.count,
-      })),
-    )
-
-    const { error } = await db.rpc('replace_word_occurrences', {
-      p_document_id: documentId,
-      p_rows: rows,
-    })
-    if (error) throw error
-  }
 }
 
 /** 문서를 지웠을 때 서버에서도 지운다 — 안 지우면 다른 기기에 다시 나타난다 */

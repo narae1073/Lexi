@@ -18,6 +18,8 @@ export function memoryServer(
   let nextOccurrenceId = 1
   let pageHook: ((table: string, page: number) => void | Promise<void>) | undefined
   const pages: Record<string, number> = {}
+  const upsertRejects = new Map<string, (row: Record<string, unknown>) => boolean>()
+  const rpcRejects = new Map<string, (args: Record<string, unknown>) => boolean>()
 
   const keyOf = (table: string, row: Record<string, unknown>): string => {
     if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
@@ -113,6 +115,11 @@ export function memoryServer(
         },
         upsert: async (rows: Record<string, unknown>[]) => {
           upsertCalls[table] = (upsertCalls[table] ?? 0) + 1
+          // A real upsert statement is atomic: one rejected row rejects the chunk.
+          const reject = upsertRejects.get(table)
+          if (reject && rows.some((row) => reject(row))) {
+            return { data: null, error: { message: `${table} row rejected` } }
+          }
           for (const row of rows) {
             const key = keyOf(table, row)
             const at = tables[table].findIndex((existing) => keyOf(table, existing) === key)
@@ -164,6 +171,10 @@ export function memoryServer(
       if (name !== 'replace_word_occurrences') {
         return { data: null, error: { message: `unknown rpc ${name}` } }
       }
+      const rejectRpc = rpcRejects.get(name)
+      if (rejectRpc && rejectRpc(args)) {
+        return { data: null, error: { message: `${name} rejected` } }
+      }
       const documentId = String(args.p_document_id)
       const rows = (args.p_rows ?? []) as Record<string, unknown>[]
       tables.word_occurrences = tables.word_occurrences.filter(
@@ -196,6 +207,16 @@ export function memoryServer(
     },
     add: (table: string, row: Record<string, unknown>) => {
       tables[table].push(row)
+    },
+    /** Reject any upsert chunk in `table` containing a matching row. */
+    rejectUpsert: (table: string, predicate: ((row: Record<string, unknown>) => boolean) | null) => {
+      if (predicate === null) upsertRejects.delete(table)
+      else upsertRejects.set(table, predicate)
+    },
+    /** Reject an RPC call whose arguments match. */
+    rejectRpc: (name: string, predicate: ((args: Record<string, unknown>) => boolean) | null) => {
+      if (predicate === null) rpcRejects.delete(name)
+      else rpcRejects.set(name, predicate)
     },
   }
   return server

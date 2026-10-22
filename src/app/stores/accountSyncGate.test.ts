@@ -69,10 +69,12 @@ const report = (languages: string[] = []): SyncReport => ({
   documents: 0,
   languages,
   watermarks: {},
+  pushWatermarks: {},
   serverWords: 0,
   serverDocuments: 0,
   localWords: 0,
   occurrencePush: [],
+  failures: [],
   localWrites: {
     documents: 0,
     folders: 0,
@@ -80,6 +82,8 @@ const report = (languages: string[] = []): SyncReport => ({
     tombstones: 0,
     occurrences: 0,
   },
+  succeededStores: [],
+  succeededKeys: [],
 })
 
 let storage: MemoryStorage
@@ -482,6 +486,51 @@ describe('동기화 입구', () => {
     expect(useSyncStore.getState()).toMatchObject({ status: 'local', error: null })
     expect(useSyncStore.getState().lastSyncedAt).toBe(seeded.lastSyncedAt)
     expect(readStoredSyncState('user-a')).toEqual(seeded)
+  })
+
+  /**
+   * A partial push is still a completed cycle: the successful tables' watermarks
+   * must persist so they are not sent again, the failed table's count stays
+   * pending, and the user sees an error.
+   */
+  it('persists partial push watermarks and leaves failed counts pending', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useLanguagesStore.setState({ enrolled: ['fr'], ready: true })
+    useSyncStore.setState({
+      status: 'syncing',
+      pendingByStore: { documents: 1, wordStates: 2 },
+    })
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull: {},
+      push: {},
+      localEpoch: 'epoch-a',
+    })
+
+    const wordWatermark = '2026-01-02T00:00:00.000Z'
+    vi.mocked(syncOnce).mockResolvedValue({
+      ...report([]),
+      pushWatermarks: { wordStates: wordWatermark },
+      failures: [{ table: 'documents', message: 'row rejected' }],
+      succeededStores: ['wordStates'],
+    })
+
+    vi.spyOn(useDocumentsStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useFoldersStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useWordStatesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+    vi.spyOn(useOccurrencesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+
+    await useSyncStore.getState().syncQuietly()
+
+    const state = useSyncStore.getState()
+    expect(state.status).toBe('error')
+    expect(state.error).toContain('documents')
+    expect(state.report).not.toBeNull()
+    // The failed store stays pending; the succeeded one is subtracted.
+    expect(state.pendingByStore).toEqual({ documents: 1 })
+    expect(state.dirty).toBe(true)
+    expect(readStoredSyncState('user-a')?.push).toEqual({ wordStates: wordWatermark })
   })
 })
 
