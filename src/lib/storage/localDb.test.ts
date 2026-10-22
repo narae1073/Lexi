@@ -11,6 +11,7 @@ import {
   idbPut,
   onLocalWrite,
 } from './localDb'
+import type { StoreName } from './localDb'
 
 /**
  * 저장이 끝났음을 알리는 신호.
@@ -179,4 +180,61 @@ describe('로컬 학습 데이터 존재 확인과 초기화', () => {
     await deleteLocalDatabase()
     await expect(deleteLocalDatabase()).resolves.toBeUndefined()
   })
+
+  /**
+   * 초기화 중에 백그라운드 읽기가 끼어들면 안 된다.
+   *
+   * 그 읽기가 새 연결을 열면 deleteLocalDatabase 는 그 연결을 모른 채
+   * 삭제를 기다리다 blocked 로 끝난다. 초기화가 끝날 때까지는 열지 않고
+   * 바로 거절해야 호출자가 재시도할 수 있다.
+   */
+  it('초기화가 진행 중이면 새 연결을 열지 않고 거절한다', async () => {
+    await idbPut(STORES.documents, { id: 'doc-1', title: '제목' })
+
+    const reset = deleteLocalDatabase()
+
+    await expect(idbCount(STORES.documents)).rejects.toThrow('초기화하는 중')
+    await reset
+  })
+
+  /**
+   * 다른 탭이 연결을 잡고 있으면 삭제는 blocked 로 끝난다.
+   *
+   * 이때 성공으로 보고하면 안 된다 — 데이터는 아직 그대로다. 삭제 요청은
+   * 남아 있어 그 탭이 닫히면 나중에 완료될 수 있으므로, 호출자는 다른 탭을
+   * 닫고 다시 시도해야 한다.
+   */
+  it('다른 탭이 연결을 잡고 있으면 성공으로 보고하지 않고 거절한다', async () => {
+    const held = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('lexi', 6)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+
+    await expect(deleteLocalDatabase()).rejects.toThrow('다른 탭')
+
+    // 잡고 있던 탭이 닫히면 남아 있던 삭제 요청이 마저 진행된다 — 정리한다
+    held.close()
+    await waitForDatabaseDeletion()
+  })
+
+  /**
+   * 없는 저장소를 세면 트랜잭션을 만들 때 바로 거절한다.
+   *
+   * 요청(request) 수준의 오류를 인위로 만들려면 IndexedDB 를 흉내 내야 해서
+   * 취약하다. 여기서는 "오류가 나면 reject 하고 멈추지 않는다" 만 확인한다.
+   */
+  it('없는 저장소를 세면 거절한다', async () => {
+    await expect(idbCount('missing' as StoreName)).rejects.toThrow()
+  })
 })
+
+/** 남아 있던 삭제 요청이 끝나 데이터베이스가 사라질 때까지 기다린다. */
+async function waitForDatabaseDeletion(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const databases = await indexedDB.databases()
+    if (!databases.some((database) => database.name === 'lexi')) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error('로컬 데이터베이스 삭제가 끝나지 않았습니다')
+}
