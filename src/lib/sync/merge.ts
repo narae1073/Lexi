@@ -95,6 +95,22 @@ export function newerThan(a: string, b: string): boolean {
   return isNewer(a, b)
 }
 
+/**
+ * 상태를 비운 행이라도 즐겨찾기·메모·퀴즈 횟수가 있으면 서버에 남겨야 한다.
+ *
+ * 그 기록이 같은 행에 있으므로, 비었다고 보내지 않으면 다른 기기에서 사라진다.
+ * 아무 기록도 없는 빈 행만 조용히 둔다.
+ */
+function hasHistory(record: WordStateRecord): boolean {
+  return (
+    record.favorite ||
+    record.note !== undefined ||
+    record.knownPresses > 0 ||
+    record.unsurePresses > 0 ||
+    record.unknownPresses > 0
+  )
+}
+
 export function mergeWordStates(
   local: WordStateRecord[],
   remote: WordStateRecord[],
@@ -110,9 +126,10 @@ export function mergeWordStates(
     const theirs = remoteByKey.get(key)
 
     if (!theirs) {
-      // 여기만 남았다. 상태까지 없으면 보낼 것이 없다 — 서버에 없는 것을
-      // 지울 수는 없으므로, 매번 지우기 요청을 보내지 않는다.
-      if (mine.status === undefined) {
+      // 여기만 남았다. 상태도 없고 즐겨찾기·메모·횟수도 없으면 보낼 것이 없다.
+      // 기록이 하나라도 있으면 status = null 인 행으로 보낸다 — 행을 지우면
+      // 그 기록이 서버에서 사라진다.
+      if (mine.status === undefined && !hasHistory(mine)) {
         merged.push(mine)
         continue
       }

@@ -112,6 +112,29 @@ describe('word_state 매핑', () => {
     expect(wordStateFromRow(row).noteUpdatedAt).toBeUndefined()
   })
 
+  it('상태를 비운 행은 null 로 보내고 undefined 로 읽는다', () => {
+    const sent = wordStateToRow(USER, {
+      languageCode: 'en',
+      lemma: 'apple',
+      seenCount: 1,
+      firstSeenAt: T0,
+      lastSeenAt: T1,
+      favorite: true,
+      favoriteUpdatedAt: T2,
+      starAngle: 0,
+      starColor: '#eab308',
+      knownPresses: 2,
+      unsurePresses: 0,
+      unknownPresses: 0,
+    })
+    const row = { ...sent, id: 'generated' } as WordStateRow
+    expect(row.status).toBeNull()
+    expect(wordStateFromRow(row).status).toBeUndefined()
+    // 행 자체는 남아 기록을 보존한다
+    expect(wordStateFromRow(row).favorite).toBe(true)
+    expect(wordStateFromRow(row).knownPresses).toBe(2)
+  })
+
   it('세 가지 상태를 모두 그대로 옮긴다', () => {
     for (const status of ['known', 'unsure', 'unknown'] as const) {
       const row = wordStateToRow(USER, {

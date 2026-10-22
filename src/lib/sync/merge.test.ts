@@ -137,6 +137,21 @@ describe('mergeWordStates — 표시 없애기', () => {
     expect(pushOnly).toEqual([])
   })
 
+  it('상태를 비웠어도 기록이 있으면 서버에 남긴다 — 행이 곧 기록의 자리다', () => {
+    const local = [
+      rec({
+        lemma: 'apple',
+        favorite: true,
+        favoriteUpdatedAt: T2,
+        note: '기억',
+        noteUpdatedAt: T2,
+      }),
+    ]
+    const { pushOnly } = mergeWordStates(local, [])
+    expect(pushOnly.map((r) => r.lemma)).toEqual(['apple'])
+    expect(pushOnly[0]?.status).toBeUndefined()
+  })
+
   it('별은 없애도 남는다 — 상태만 빠지고 행은 산다', () => {
     const local = [
       rec({ lemma: 'apple', lastSeenAt: T2, favorite: true, favoriteUpdatedAt: T2 }),

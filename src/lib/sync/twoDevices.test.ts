@@ -250,13 +250,12 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
   })
 
   /**
-   * 표시를 없애면 서버 행도 지워지고 다른 기기에도 전해진다.
+   * 표시를 없애면 서버 행은 status = null 로 남는다.
    *
-   * 없앤 것을 upsert 하면 'unsure' 로 굳어 되살아난다. 그래서 상태 없는 행은
-   * 지우기로 간다. 지운 뒤에는 조용해야 한다 — 매번 지우기를 보내면
-   * '보낸 단어' 숫자가 거짓말을 한다.
+   * 행을 지우면 즐겨찾기·메모·횟수가 서버에서 사라지고, 다른 기기가 옛 상태를
+   * 다시 올리면 없앰과 되살림이 영원히 번갈아 일어난다. null 행이 '없앰' 의 기록이다.
    */
-  it('A 기기가 없앤 표시는 B 기기에서도 없어진다', async () => {
+  it('A 기기가 없앤 표시는 서버에 status null 로 남고 B 기기에서도 없어진다', async () => {
     const server = memoryServer()
     await idbPut(STORES.documents, doc)
     await idbPut(STORES.wordStates, { ...wordState('été'), status: 'known' })
@@ -274,20 +273,62 @@ describe('두 기기가 계정을 나눠 쓴다', () => {
     })
 
     const report = await sync(server)
-    expect(server.count('word_states')).toBe(0)
-    // 지운 것은 '보낸 단어' 가 아니다
+    // 행은 남고 상태만 비었다 — 즐겨찾기·메모·횟수를 지우지 않는다
+    expect(server.count('word_states')).toBe(1)
+    expect(server.rows('word_states')[0]?.status).toBeNull()
+    // 없앤 것은 '보낸 단어' 가 아니다
     expect(report.pushed).toBe(0)
 
-    // A 기기가 한 번 더 돌려도 조용하다 — 지우기 무한 반복이 없다
+    // A 기기가 한 번 더 돌려도 조용하다 — 같은 null 행을 다시 올리지 않는다
     const reportA2 = await sync(server)
     expect(reportA2.pushed).toBe(0)
-    expect(server.count('word_states')).toBe(0)
+    expect(server.rows('word_states')[0]?.status).toBeNull()
 
-    // B 기기: 로컬에 아무것도 없다
+    // B 기기: 로컬에 아무것도 없다 — null 행을 받아 '미표시' 로 읽는다
     await clearLocalWords()
     const reportB = await sync(server)
-    expect(reportB.pulled).toBe(0)
-    expect(await idbGetAll(STORES.wordStates)).toHaveLength(0)
+    expect(reportB.pulled).toBe(1)
+    const local = await idbGetAll<Record<string, unknown>>(STORES.wordStates)
+    expect(local).toHaveLength(1)
+    expect(local[0]?.status).toBeUndefined()
+  })
+
+  /** 없앰은 다른 기기의 옛 상태를 이겨야 한다 — 아니면 두 기기가 영원히 되살린다 */
+  it('B 기기의 옛 상태가 A 기기의 없앰을 되살리지 않는다', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc)
+    const known = {
+      ...wordState('été'),
+      status: 'known' as const,
+      lastSeenAt: '2026-10-05T00:00:00.000Z',
+    }
+    await idbPut(STORES.wordStates, known)
+    await sync(server)
+    expect(server.count('word_states')).toBe(1)
+
+    // A: 더 늦은 시각에 표시를 없앤다
+    const stored = await idbGetAll<Record<string, unknown>>(STORES.wordStates)
+    const row = stored.find((r) => r['lemma'] === 'été')
+    if (!row) throw new Error('기록이 없다')
+    const { status: _removed, ...kept } = row
+    await idbPut(STORES.wordStates, {
+      ...kept,
+      lastSeenAt: '2026-10-07T00:00:00.000Z',
+    })
+    await sync(server)
+    expect(server.rows('word_states')[0]?.status).toBeNull()
+
+    // B: 옛 known 행을 그대로 들고 있다가 동기화한다
+    await idbPut(STORES.wordStates, known)
+    const reportB = await sync(server)
+    expect(reportB.pushed).toBe(0) // 옛 상태를 다시 올리지 않는다
+    const local = await idbGetAll<Record<string, unknown>>(STORES.wordStates)
+    expect(local.find((r) => r['lemma'] === 'été')?.status).toBeUndefined()
+    expect(server.rows('word_states')[0]?.status).toBeNull()
+
+    // A 가 한 번 더 돌려도 서버는 null 그대로다
+    await sync(server)
+    expect(server.rows('word_states')[0]?.status).toBeNull()
   })
 
   /** 별도 서버를 타야 한다 — 이 기기에서만 빛나면 반쪽이다 */

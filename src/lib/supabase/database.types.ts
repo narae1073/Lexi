@@ -94,7 +94,7 @@ export type Database = {
           user_id: string
           language_code: string
           lemma: string
-          status: Database['public']['Enums']['word_status']
+          status: Database['public']['Enums']['word_status'] | null
           seen_count: number
           first_seen_at: string
           last_seen_at: string
@@ -113,7 +113,7 @@ export type Database = {
           user_id: string
           language_code: string
           lemma: string
-          status?: Database['public']['Enums']['word_status']
+          status?: Database['public']['Enums']['word_status'] | null
           seen_count?: number
           first_seen_at?: string
           last_seen_at?: string
@@ -132,7 +132,7 @@ export type Database = {
           user_id?: string
           language_code?: string
           lemma?: string
-          status?: Database['public']['Enums']['word_status']
+          status?: Database['public']['Enums']['word_status'] | null
           seen_count?: number
           first_seen_at?: string
           last_seen_at?: string

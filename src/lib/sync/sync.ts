@@ -9,7 +9,7 @@ import type { Database } from '../supabase/database.types'
 import type { Document, Folder, WordStatus } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
-import { isNewer, mergeLanguages, mergeWordStates, withStatus, type WordStateRecord } from './merge'
+import { isNewer, mergeLanguages, mergeWordStates, type WordStateRecord } from './merge'
 import {
   documentFromRow,
   documentToRow,
@@ -82,7 +82,7 @@ function client(): SupabaseClient<Database> {
 export async function readLocal(): Promise<{
   documents: Document[]
   folders: Folder[]
-  wordStates: (WordStateRecord & { status: WordStatus })[]
+  wordStates: WordStateRecord[]
   occurrences: WordOccurrence[]
 }> {
   const [documents, folders, wordStates, occurrences] = await Promise.all([
@@ -94,7 +94,7 @@ export async function readLocal(): Promise<{
         'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor' | 'note' | 'noteUpdatedAt'
       > & {
         surface?: string
-        status: WordStatus
+        status?: WordStatus
         /** 별 기능 이전에 쓰인 행에는 없다 */
         favorite?: boolean
         favoriteUpdatedAt?: string
@@ -357,15 +357,8 @@ export async function syncOnce({
   const mergedDocuments = mergeDocuments(local.documents, remoteDocs)
     // 로컬에 남은 지운 문서가 있어도 서버로 다시 올리지 않는다
     .filter((d) => !purged.includes(d.id))
-  /**
-   * 표시를 없앤 행은 없는 채로 쓴다.
-   *
-   * withStatus 로 'unsure' 를 채워 쓰면, 없앤 표시가 모름으로 굳어 되살아난다.
-   * 상태가 있는 행만 기본값을 채운다.
-   */
-  const mergedWords = words.merged.map((record) =>
-    record.status === undefined ? record : withStatus(record),
-  )
+  // 없앤 표시도 status = null 인 행으로 남긴다 — 행 자체가 즐겨찾기·메모·횟수를 든다
+  const mergedWords = words.merged
 
   await writeLocal(mergedDocuments, mergedWords, occurrences, folders)
 
@@ -694,27 +687,15 @@ export async function push({
   }
 
   // 진도 먼저 — 문서가 실패해도 이것은 나가야 한다.
-  // 상태가 있는 것은 올리고, 없앤 것은 지운다. 없앤 것을 upsert 하면
-  // NOT NULL 없는 상태가 'unsure' 로 굳어져, 없앴는데 모름으로 되살아난다.
-  const upserts = words.filter((w) => w.status !== undefined)
-  const cleared = words.filter((w) => w.status === undefined)
-  for (const part of chunk(upserts, WRITE_CHUNK)) {
+  // 없앤 표시도 status = null 인 행으로 올린다. 행을 지우면 즐겨찾기·메모·횟수가
+  // 서버에서 사라지고, 다른 기기가 옛 상태를 다시 올려 없앰과 되살림이 번갈아 일어난다.
+  for (const part of chunk(words, WRITE_CHUNK)) {
     await send('word_states', () =>
       db
         .from('word_states')
-        .upsert(part.map((w) => wordStateToRow(userId, withStatus(w))), {
+        .upsert(part.map((w) => wordStateToRow(userId, w)), {
           onConflict: 'user_id,language_code,lemma',
         }),
-    )
-  }
-  for (const record of cleared) {
-    await send('word_states', () =>
-      db
-        .from('word_states')
-        .delete()
-        .eq('user_id', userId)
-        .eq('language_code', record.languageCode)
-        .eq('lemma', record.lemma),
     )
   }
 

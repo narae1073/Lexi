@@ -1,5 +1,5 @@
 import type { Database } from '../supabase/database.types'
-import type { Document, Folder, LanguageCode, WordStatus } from '../../types'
+import type { Document, Folder, LanguageCode } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordStateRecord } from './merge'
 
@@ -38,18 +38,13 @@ type OccurrenceKey = Pick<
   'document_id' | 'language_code' | 'lemma' | 'surface' | 'char_start' | 'char_end' | 'sentence'
 > & { occurrences_count?: number }
 
-const statusToServer = (status: WordStatus): Database['public']['Enums']['word_status'] => status
-const statusFromServer = (status: WordStateRow['status']): WordStatus => status
-
-export function wordStateToRow(
-  userId: string,
-  record: WordStateRecord & { status: WordStatus },
-): WordStateInsert {
+export function wordStateToRow(userId: string, record: WordStateRecord): WordStateInsert {
   return {
     user_id: userId,
     language_code: record.languageCode,
     lemma: record.lemma,
-    status: statusToServer(record.status),
+    // 상태를 비운 행은 null 로 보낸다 — 행을 지우면 즐겨찾기·메모·횟수가 사라진다
+    status: record.status ?? null,
     seen_count: record.seenCount,
     first_seen_at: record.firstSeenAt,
     last_seen_at: record.lastSeenAt,
@@ -65,11 +60,12 @@ export function wordStateToRow(
   }
 }
 
-export function wordStateFromRow(row: WordStateRow): WordStateRecord & { status: WordStatus } {
+export function wordStateFromRow(row: WordStateRow): WordStateRecord {
   return {
     languageCode: row.language_code,
     lemma: row.lemma,
-    status: statusFromServer(row.status),
+    // null 은 '표시를 없앴다' 는 뜻이다 — 상태 없음(undefined)으로 읽는다
+    status: row.status ?? undefined,
     seenCount: row.seen_count,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
