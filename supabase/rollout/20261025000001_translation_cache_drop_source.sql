@@ -1,0 +1,27 @@
+-- 번역 캐시에서 원문(source_text)을 제거한다 (Release 1).
+--
+-- **이 파일은 supabase/migrations 가 아니라 supabase/rollout 에 있다.**
+-- `supabase db push` 로 자동 적용되지 않는다. 함수 배포가 끝나기 전에 열이
+-- 사라지면 이전 translate 함수의 INSERT 가 실패해 캐시 쓰기가 멈추기 때문에,
+-- 아래 순서를 확인한 뒤 운영자가 수동으로 한 번만 실행한다.
+--
+-- 수동 롤아웃 순서 (반드시 지킬 것):
+--   1) supabase/migrations/20261025000000_translation_cache_private.sql 적용
+--      (db push 로 자동 적용됨 — 공개 정책 제거 + anon/authenticated 권한 회수)
+--   2) translate 함수를 source_text 없이 배포
+--   3) anon 키로 translation_cache 직접 조회가 401/403 으로 거부되는지 확인
+--      (`npm run verify:rls`)
+--   4) 이 파일을 수동 적용 — 열과 기존 원문 삭제
+--
+-- 3)을 건너뛰고 4)를 먼저 실행하면 안 된다. 열이 없는 상태에서 이전 함수가
+-- 실행되면 INSERT 가 실패해 캐시가 채워지지 않는다(응답은 그대로 나가지만
+-- 캐시 적중률만 떨어진다).
+--
+-- 적용 후 체크리스트:
+--   - src/lib/supabase/database.types.ts 에서 source_text 를 제거한다
+--     (이번 릴리스에서는 열이 남아 있으므로 의도적으로 손대지 않았다).
+--
+-- 캐시 조회는 source_language/target_language/source_hash 로만 이루어지므로
+-- 원문을 보관할 이유가 없다. source_hash 는 계속 조회 키로 쓰이므로 남긴다.
+
+alter table public.translation_cache drop column if exists source_text;

@@ -13,6 +13,15 @@ describe('randomStarAngle', () => {
     }
   })
 
+  /** 서버의 word_states_star_angle_range (-360..360) 를 절대 넘지 않는다 */
+  it('서버 제약 범위 안에 든다', () => {
+    for (let i = 0; i < 1_000; i++) {
+      const tilt = randomStarAngle()
+      expect(tilt).toBeGreaterThanOrEqual(-360)
+      expect(tilt).toBeLessThanOrEqual(360)
+    }
+  })
+
   it('여러 번 뽑으면 다르게 나온다 — 같은 단어도 매번 다른 별이다', () => {
     const tilts = new Set(Array.from({ length: 30 }, () => randomStarAngle()))
     expect(tilts.size).toBeGreaterThan(1)

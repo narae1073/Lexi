@@ -26,10 +26,10 @@ const env = Object.fromEntries(
 const URL_BASE = env.VITE_SUPABASE_URL
 const ANON = env.VITE_SUPABASE_ANON_KEY
 
-/** 사용자 데이터 — 절대 보이면 안 된다 */
-const PRIVATE_TABLES = ['user_languages', 'documents', 'document_tombstones', 'word_states', 'word_occurrences']
-/** 공유 캐시 — anon 읽기가 허용된다 */
-const PUBLIC_TABLES = ['translation_cache', 'dictionary_entries']
+/** 사용자 데이터와 번역 캐시 — 절대 보이면 안 된다 */
+const PRIVATE_TABLES = ['user_languages', 'documents', 'document_tombstones', 'word_states', 'word_occurrences', 'translation_cache']
+/** 공유 사전 캐시 — anon 읽기가 허용된다 */
+const PUBLIC_TABLES = ['dictionary_entries']
 
 let failures = 0
 
@@ -82,6 +82,15 @@ for (const table of PRIVATE_TABLES) {
     `http ${status}, ${rows.length}행`)
 }
 
+// 1-1. 번역 캐시는 "빈 배열" 이 아니라 접근 자체가 거부되어야 한다.
+// 200 + [] 는 SELECT 권한이 열려 있다는 뜻이므로 통과시키지 않는다.
+const cacheProbe = await rest('translation_cache', '&limit=1')
+report(
+  cacheProbe.status === 401 || cacheProbe.status === 403,
+  'translation_cache: anon 직접 읽기가 거부된다 (401/403)',
+  `http ${cacheProbe.status}, ${cacheProbe.rows.length}행`,
+)
+
 // 2. 쓰기도 막혀 있다 — policies 에 with check 가 없으면 insert 가 통과한다
 for (const table of ['documents', 'word_states']) {
   const response = await fetch(`${URL_BASE}/rest/v1/${table}`, {
@@ -111,7 +120,7 @@ for (const table of ['documents', 'word_states']) {
   }
 }
 
-// 3. 공유 캐시는 anon 읽기가 되어야 한다 — 막으면 사전·번역이 전부 죽는다
+// 3. 공유 사전 캐시는 anon 읽기가 되어야 한다 — 막으면 사전이 죽는다
 for (const table of PUBLIC_TABLES) {
   const { status } = await rest(table, '&limit=1')
   report(status === 200, `${table}: anon 읽기가 열린다`, `http ${status}`)

@@ -84,7 +84,21 @@ function notifyLocalWrite(store: StoreName) {
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
+/**
+ * 초기화가 진행 중인 동안 새 연결을 열지 않는다.
+ *
+ * deleteLocalDatabase 가 캐시를 비운 뒤 연결을 닫는 사이에 백그라운드 읽기가
+ * openDb() 를 부르면, 아무도 닫지 않을 새 연결이 생겨 삭제가 blocked 로 끝난다.
+ * 그 연결은 deleteLocalDatabase 도 모르므로 영영 닫히지 않는다.
+ */
+let resetInProgress = false
+
 function openDb(): Promise<IDBDatabase> {
+  if (resetInProgress) {
+    return Promise.reject(
+      new Error('로컬 데이터베이스를 초기화하는 중입니다. 잠시 후 다시 시도해 주세요.'),
+    )
+  }
   if (dbPromise) return dbPromise
 
   dbPromise = new Promise((resolve, reject) => {
@@ -172,6 +186,11 @@ export function idbGet<T>(store: StoreName, key: IDBValidKey): Promise<T | undef
 
 export function idbGetAll<T>(store: StoreName): Promise<T[]> {
   return tx<T[]>(store, 'readonly', (s) => s.getAll())
+}
+
+/** 저장소에 든 행 수. 읽기 전용 트랜잭션이라 저장 완료 알림을 보내지 않는다. */
+export function idbCount(store: StoreName): Promise<number> {
+  return tx<number>(store, 'readonly', (s) => s.count())
 }
 
 export function idbDelete(
@@ -293,4 +312,79 @@ export function idbGetAllByIndex<T>(
   key: IDBValidKey,
 ): Promise<T[]> {
   return tx<T[]>(store, 'readonly', (s) => s.index(index).getAll(key))
+}
+
+/**
+ * 이 기기에 남은 "학습 데이터" 를 세는 대상.
+ *
+ * 응답 캐시와 documentMeta 는 뺀다 — 사전을 한 번 보거나 규칙 버전을 적어 둔 것은
+ * 학습한 내용이 아니다. 이 둘만 있는 기기를 계정에 붙이면 빈 기기를 옮기는 셈이다.
+ * SYNCED_STORES 와 지금은 같은 목록이지만 뜻이 다르므로 따로 둔다.
+ */
+const LEARNING_STORES: readonly StoreName[] = [
+  'documents',
+  'folders',
+  'wordStates',
+  'wordOccurrences',
+  'documentTombstones',
+]
+
+/**
+ * 이 기기에 학습 데이터가 하나라도 있는지.
+ *
+ * 계정 주인 표시가 없는 기기(익명으로 쓰던 기기)를 새 계정에 붙일지 정할 때 쓴다.
+ * 하나라도 있으면 사용자가 만든 것으로 보고 함부로 지우지 않는다.
+ */
+export async function hasLocalLearningData(): Promise<boolean> {
+  const counts = await Promise.all(LEARNING_STORES.map((store) => idbCount(store)))
+  return counts.some((count) => count > 0)
+}
+
+/**
+ * 로컬 데이터베이스를 통째로 지운다.
+ *
+ * 계정 초기화·로그아웃 뒤 새 계정으로 옛 데이터가 새지 않게 한다. 열어 둔 연결이
+ * 있으면 삭제가 blocked 로 끝나므로, 캐시된 연결을 먼저 닫고 기억도 버린다.
+ * 한 번도 연 적이 없어도 안전하다 — 그때는 지울 것도, 닫을 것도 없다.
+ *
+ * **호출자 계약:** 이 함수가 reject 하면 초기화는 **확인되지 않은** 것이다.
+ * 성공으로 보고하면 안 된다. 특히 blocked 는 다른 탭이 연결을 잡고 있다는 뜻으로,
+ * 브라우저는 그 탭이 닫힌 뒤 삭제를 마저 진행할 수 있다. 즉 reject 후에도 데이터가
+ * 나중에 지워질 수 있으므로, 호출자는 다른 탭을 닫고 다시 시도해야 한다.
+ */
+export async function deleteLocalDatabase(): Promise<void> {
+  // 이 플래그를 세운 뒤에는 openDb() 를 부르지 않는다 — 자기 자신이 연 연결에
+  // 막히면 영원히 기다리게 된다
+  resetInProgress = true
+  try {
+    const pending = dbPromise
+    // 닫는 동안 openDb() 가 닫힌 연결을 돌려주지 않도록 먼저 버린다
+    dbPromise = null
+    if (pending) {
+      // 열다가 실패한 연결은 닫을 것이 없다
+      const db = await pending.catch(() => null)
+      db?.close()
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(DB_NAME)
+      request.onsuccess = () => resolve()
+      request.onerror = () =>
+        reject(request.error ?? new Error('로컬 데이터베이스를 지우지 못했습니다'))
+      /**
+       * 다른 탭이 연결을 잡고 있으면 삭제가 시작되지 않는다.
+       * 그대로 두면 영원히 기다리게 되므로 분명한 오류로 끝낸다.
+       * 삭제 요청 자체는 남아 있으므로, 그 탭이 닫히면 나중에 완료될 수 있다.
+       */
+      request.onblocked = () =>
+        reject(
+          new Error(
+            '다른 탭이 로컬 데이터를 쓰고 있어 지우지 못했습니다. 다른 탭을 닫고 다시 시도해 주세요.',
+          ),
+        )
+    })
+  } finally {
+    // 실패해도 다음 요청이 연결을 열 수 있어야 한다
+    resetInProgress = false
+  }
 }

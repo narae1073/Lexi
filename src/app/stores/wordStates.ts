@@ -78,6 +78,14 @@ type WordStatesStore = {
   getStatus: (languageCode: LanguageCode, lemma: string) => WordStatus | undefined
 }
 
+/**
+ * 서버의 word_states.lemma_len 과 같은 상한.
+ *
+ * 넘는 lemma 는 서버가 거부하므로 화면에서 먼저 막는다 — 한 행이 거부되면
+ * 그 뒤의 정상 변경까지 동기화 큐에 걸린다.
+ */
+const MAX_LEMMA_LENGTH = 200
+
 /** 누른 단추(status) → WordState 의 횟수 필드 */
 const PRESS_FIELD: Record<WordStatus, 'knownPresses' | 'unsurePresses' | 'unknownPresses'> = {
   known: 'knownPresses',
@@ -96,6 +104,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   getStatus: (languageCode, lemma) => get().byKey[wordKey(languageCode, lemma)]?.status,
 
   setStatus: (languageCode, lemma, status, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -128,6 +137,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   pressStatus: (languageCode, lemma, result, pressed, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -160,6 +170,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   clearStatus: (languageCode, lemma) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     // 표시한 적이 없으면 없앨 것도 없다
@@ -188,6 +199,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   toggleFavorite: (languageCode, lemma, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -196,7 +208,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next: WordState = {
       lemma,
       languageCode,
-      status: previous?.status ?? 'unsure',
+      // 상태와 독립이다 — 별만 붙인 단어는 표시하지 않은 채로 둔다
+      status: previous?.status,
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       lastSeenAt: previous?.lastSeenAt ?? timestamp,
@@ -228,6 +241,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   setStarColor: (languageCode, lemma, color, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     // 별이 없으면 바꿀 색도 없다 — 팝오버에서 별이 있을 때만 보여준다
@@ -248,6 +262,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
   },
 
   setNote: (languageCode, lemma, note, surface) => {
+    if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
     const timestamp = new Date().toISOString()
@@ -256,8 +271,9 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next: WordState = {
       lemma,
       languageCode,
-      // 메모만 적은 단어도 행이 생긴다 — 서버의 status 는 NOT NULL 이라 기본값이 필요하다
-      status: previous?.status ?? 'unsure',
+      // 메모만 적은 단어도 행이 생기지만, 상태는 표시하지 않은 채로 둔다
+      // (서버의 status 는 nullable 이고 wordStateToRow 가 null 로 보낸다)
+      status: previous?.status,
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       // 메모를 적은 것은 복습이 아니다 — 있던 시각은 그대로 둔다

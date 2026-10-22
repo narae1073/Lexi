@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { FunctionsHttpError } from '@supabase/supabase-js'
 
+import { sha256Hex } from '../hash'
 import { supabase } from '../supabase/client'
 import { cacheKey, fetchOrCached } from './offlineCache'
+import { readOrCreateInstallId } from './installId'
 import type { AppLanguage } from '../../i18n'
 
 export type TranslateResult = {
@@ -15,7 +17,7 @@ export type TranslateResult = {
 }
 
 type TranslateState = {
-  /** `${source}:${target}:${hash-ish}` — 같은 문장은 한 번만 요청한다 */
+  /** `t2:${source}:${target}:${sha256}` — 같은 문장은 한 번만 요청한다 */
   inFlight: Map<string, Promise<TranslateResult>>
   translate: (text: string, source: AppLanguage | string, target: string) => Promise<TranslateResult>
 }
@@ -30,9 +32,20 @@ export class TranslateError extends Error {
   }
 }
 
-function translationKey(text: string, source: string, target: string): string {
-  // 매우 긴 문장은 어차피 캐시 적중률이 낮으니 길이만으로 구분해 키 크기를 제한한다
-  return `t:${source}:${target}:${text.length}:${text.slice(0, 120)}`
+/**
+ * 번역 캐시 키.
+ *
+ * 예전에는 `길이 + 앞 120자` 였는데, 같은 길이에 앞부분이 같은 두 문장이
+ * 같은 번역을 공유하는 충돌이 있었다. 전체 내용의 SHA-256 을 쓴다.
+ * `t2:` 접두사는 예전 키와 섞이지 않게 하려는 것이다 — 옛 충돌 키는
+ * 자동으로 무효가 된다.
+ */
+export async function translationCacheKey(
+  text: string,
+  source: string,
+  target: string,
+): Promise<string> {
+  return `t2:${source}:${target}:${await sha256Hex(text.trim())}`
 }
 
 /** 버가 답하지 못했다는 신호 */
@@ -49,7 +62,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     if (trimmed.length === 0) throw new TranslateError('empty text')
     if (trimmed.length > MAX_CHARS) throw new TranslateError('text too long')
 
-    const key = translationKey(trimmed, source, target)
+    const key = await translationCacheKey(trimmed, source, target)
     const existing = get().inFlight.get(key)
     if (existing) return existing
 
@@ -63,6 +76,8 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         async () => {
           const { data, error } = await client.functions.invoke<TranslateResult>('translate', {
             body: { sourceLanguage: source, targetLanguage: target, text: trimmed },
+            // 계정 없이도 기기 단위 쿼터를 셀 수 있게 설치 ID 를 함께 보낸다
+            headers: { 'x-lexi-install': readOrCreateInstallId() },
           })
 
           if (error) {

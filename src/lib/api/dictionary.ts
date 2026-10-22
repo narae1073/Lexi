@@ -3,6 +3,7 @@ import { create } from 'zustand'
 
 import { supabase } from '../supabase/client'
 import { cacheKey, fetchOrCached } from './offlineCache'
+import { readOrCreateInstallId } from './installId'
 import type { LanguageCode } from '../../types'
 
 export type DictionarySense = {
@@ -116,6 +117,8 @@ export const useDictionaryStore = create<DictionaryState>((set, get) => ({
           const { data, error } = await client.functions.invoke<DictionaryEntry>('dictionary', {
             // surface 를 함께 보내야 독일어처럼 명사를 대문자로 쓰는 언어를 조회할 수 있다
             body: { languageCode, lemma: word, surface: surface?.trim(), targetLanguage: target },
+            // 계정 없이도 기기 단위 쿼터를 셀 수 있게 설치 ID 를 함께 보낸다
+            headers: { 'x-lexi-install': readOrCreateInstallId() },
           })
 
           if (error) {

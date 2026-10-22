@@ -3,10 +3,11 @@ import { useState } from 'react'
 import { authErrorKeyOrMessage } from '../../lib/authError'
 import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
+import { resetLocalAccount } from '../../lib/storage/resetLocalAccount'
 import { CODE_MAX_DIGITS, CODE_MIN_DIGITS, useAuthStore } from '../../app/stores/auth'
-import { useSyncStore } from '../../app/stores/sync'
-import { usePendingSummary, useSyncStatus } from '../../app/stores/sync'
+import { usePendingSummary, useSyncStore, useSyncStatus, waitForSyncIdle } from '../../app/stores/sync'
 import { useTranslation } from '../../app/stores/settings'
+import { ConfirmDialog } from '../reader/ConfirmDialog'
 
 /**
  * 계정과 동기화 (plan.txt 1줄: 집에서든 밖에서든 이어서 학습).
@@ -38,9 +39,17 @@ export function AccountPanel() {
   const shown = useSyncStatus(status, notice, pending.count)
   const report = useSyncStore((s) => s.report)
   const syncNow = useSyncStore((s) => s.syncNow)
+  const accountBlocked = useSyncStore((s) => s.accountBlocked)
+  const claimNeeded = useSyncStore((s) => s.claimNeeded)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const claimLocalData = useSyncStore((s) => s.claimLocalData)
+  const keepLocalOnly = useSyncStore((s) => s.keepLocalOnly)
 
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
 
   if (!isSupabaseConfigured) {
     return (
@@ -61,8 +70,22 @@ export function AccountPanel() {
   }
 
   if (user) {
-    return (
-      <div>
+    const reset = async () => {
+      setConfirmReset(false)
+      setResetting(true)
+      setResetError(null)
+      try {
+        // 성공하면 새로고침된다 — 여기서 busy 를 풀면 잠깐 다시 눌린다
+        await resetLocalAccount(user.id, { waitForIdle: waitForSyncIdle })
+      } catch (cause) {
+        // 지우지 못했으면 성공한 척하지 않는다 — 새로고침하지 않고 이유를 보여 준다
+        setResetError(cause instanceof Error ? cause.message : String(cause))
+        setResetting(false)
+      }
+    }
+
+    const identity = (
+      <>
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-sm font-medium">{t('account.title')}</p>
           <button
@@ -74,6 +97,98 @@ export function AccountPanel() {
           </button>
         </div>
         <p className="text-ink-muted mt-1 truncate text-xs">{user.email}</p>
+      </>
+    )
+
+    const resetDialog = confirmReset ? (
+      <ConfirmDialog
+        title={t('account.resetLocal')}
+        body={t('account.resetLocalConfirm')}
+        confirmLabel={t('account.resetLocal')}
+        onConfirm={() => void reset()}
+        onClose={() => setConfirmReset(false)}
+      />
+    ) : null
+
+    /**
+     * App 전체 잠금이 먼저 막지만, 설정 화면이 직접 열리는 경로가 생겨도
+     * 다른 계정의 데이터를 보여 주지 않도록 여기서도 막는다.
+     */
+    if (accountBlocked) {
+      return (
+        <div>
+          {identity}
+          <div className="mt-3">
+            <p className="text-sm font-medium">{t('account.blockedTitle')}</p>
+            <p className="text-ink-muted mt-1 text-xs">{t('account.blockedBody')}</p>
+            <button
+              type="button"
+              disabled={resetting}
+              onClick={() => {
+                setResetError(null)
+                setConfirmReset(true)
+              }}
+              className="border-status-unknown text-status-unknown hover:bg-status-unknown-bg mt-3 rounded-lg border px-3 py-1.5 text-sm disabled:opacity-40"
+            >
+              {t('account.resetLocal')}
+            </button>
+            {resetError && (
+              <p className="text-status-unknown mt-2 text-xs break-words">{resetError}</p>
+            )}
+          </div>
+          {resetDialog}
+        </div>
+      )
+    }
+
+    // 넘겨받을지 묻는 동안에는 동기화 상태를 말하지 않는다 — 아직 정해진 것이 없다
+    if (claimNeeded) {
+      return (
+        <div>
+          {identity}
+          <p className="mt-3 text-sm font-medium">{t('account.claimPrompt')}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => claimLocalData(user.id)}
+              className="text-accent-ink rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm"
+            >
+              {t('account.claimAction')}
+            </button>
+            <button
+              type="button"
+              onClick={() => keepLocalOnly()}
+              className="border-line hover:border-accent rounded-lg border px-3 py-1.5 text-sm"
+            >
+              {t('account.keepLocalAction')}
+            </button>
+          </div>
+          {resetDialog}
+        </div>
+      )
+    }
+
+    if (localOnly) {
+      return (
+        <div>
+          {identity}
+          <p className="mt-3 text-sm font-medium">{t('account.localOnlyTitle')}</p>
+          <p className="text-ink-muted mt-1 text-xs">{t('account.localOnlyBody')}</p>
+          <button
+            type="button"
+            onClick={() => claimLocalData(user.id)}
+            className="border-line hover:border-accent mt-3 rounded-lg border px-3 py-1.5 text-sm"
+          >
+            {t('account.syncToAccount')}
+          </button>
+          {resetDialog}
+        </div>
+      )
+    }
+
+    return (
+      <div>
+        {identity}
 
         <dl className="mt-3 space-y-1 text-xs">
           <div className="flex items-center justify-between gap-3">
@@ -185,6 +300,8 @@ export function AccountPanel() {
         </div>
 
         {syncError && <p className="text-status-unknown mt-2 text-xs break-words">{syncError}</p>}
+
+        {resetDialog}
       </div>
     )
   }

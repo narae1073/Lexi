@@ -504,6 +504,7 @@ export function ReaderView({ doc }: { doc: Document }) {
             autoFocus
             value={titleDraft}
             onChange={(event) => setTitleDraft(event.target.value)}
+            maxLength={200}
             onBlur={() => void commitTitle()}
             onKeyDown={(event) => {
               if (event.key === 'Enter') void commitTitle()

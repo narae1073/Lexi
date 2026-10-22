@@ -37,6 +37,7 @@ export function WordNote({
         data-word-note
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
+        maxLength={5000}
         placeholder={t('note.placeholder')}
         rows={2}
         className="border-line bg-surface text-ink placeholder:text-ink-muted/60 pointer-events-auto mt-0.5 w-full resize-none rounded-lg border px-2 py-1 text-xs leading-snug"
