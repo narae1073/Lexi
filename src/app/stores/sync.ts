@@ -90,6 +90,14 @@ export type SyncState = {
    * 남의 기록을 보여 줄 수 있다. 소유자 확인이 끝나야 참이 된다.
    */
   accountReady: boolean
+  /**
+   * 소유자 확인이 끝난 계정. `null` 은 로그아웃 상태를 확인했다는 뜻이다.
+   *
+   * `accountReady` 만으로는 부족하다. A 로 확인이 끝난 뒤 B 가 로그인하면, 효과가
+   * `accountReady` 를 거짓으로 되돌리기 전까지 한 번은 A 의 화면이 B 에게 보인다.
+   * 어느 사용자에 대한 준비인지 함께 기억해야 그 한 번을 막을 수 있다.
+   */
+  readyForUserId: string | null
   /** 다른 계정의 기록이 이 기기에 남아 있어 동기화가 막혔다 */
   accountBlocked: boolean
   /** 아직 주인 없는 기기 기록을 계정으로 넘겨받을지 물어야 한다 */
@@ -172,6 +180,21 @@ export function ownerSyncState(
 }
 
 /**
+ * 지금 화면이 이 사용자의 준비된 상태를 보여도 되는가.
+ *
+ * 소유자 확인이 끝났더라도 그 확인이 **지금 로그인한 사용자**의 것이어야 한다.
+ * A 의 확인이 끝난 직후 B 로 바뀌면, 효과가 상태를 되돌리기 전 한 번의 렌더가
+ * 남는다 — 그 한 번에 A 의 문서·단어장이 보이면 공유 기기의 경계가 무너진다.
+ */
+export function isAccountGateReady(
+  accountReady: boolean,
+  readyForUserId: string | null,
+  currentUserId: string | null,
+): boolean {
+  return accountReady && readyForUserId === currentUserId
+}
+
+/**
  * 이 계정이 지금 동기화해도 되는가.
  *
  * 저장된 소유자를 읽지 못하거나 망가졌으면 거짓이다 — 모르는 것을 추측해서 남의
@@ -227,6 +250,7 @@ export const useSyncStore = create<SyncState>((set) => ({
   lastSyncedAt: null,
   error: null,
   accountReady: false,
+  readyForUserId: null,
   accountBlocked: false,
   claimNeeded: false,
   localOnly: true,
@@ -464,6 +488,7 @@ export function useCloudSync() {
 
     useSyncStore.setState({
       accountReady: false,
+      readyForUserId: null,
       pendingByStore: {},
       report: null,
       dirty: false,
@@ -479,6 +504,8 @@ export function useCloudSync() {
       const scope = ownerSyncState(owner, userId)
       const next: Partial<SyncState> = {
         accountReady: true,
+        // 이 확인이 어느 사용자의 것인지 함께 남긴다 — 다음 렌더에서 비교한다
+        readyForUserId: userId,
         accountBlocked: scope.accountBlocked,
         claimNeeded: scope.claimNeeded,
         localOnly: scope.localOnly,

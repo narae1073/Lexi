@@ -1,4 +1,4 @@
-import { writeLocalOwner, type OwnerStorage } from './accountOwner'
+import { readLocalOwner, writeLocalOwner, type OwnerStorage } from './accountOwner'
 import { deleteLocalDatabase } from './localDb'
 
 /**
@@ -28,8 +28,15 @@ export async function resetLocalAccount(
 
   const storage = options.storage ?? globalThis.localStorage
   for (const key of ACCOUNT_KEYS) storage.removeItem(key)
-  // 소유자 표시를 새 계정으로 바꿔야 새로고침 뒤 잠금이 다시 걸리지 않는다
+  // 소유자 표시를 새 계정으로 바꿔야 새로고침 뒤 잠금이 다시 걸리지 않는다.
+  // `writeLocalOwner` 는 저장 실패를 삼키므로, 실제로 읽어 확인한다 — 확인 없이
+  // 새로고침하면 지운 데이터가 남은 채 다시 잠긴 화면으로 돌아오고, 사용자는
+  // 초기화가 된 줄 안다.
   writeLocalOwner({ kind: 'user', userId }, storage)
+  const saved = readLocalOwner(storage)
+  if (saved === null || saved.kind !== 'user' || saved.userId !== userId) {
+    throw new Error('계정 소유자 표시를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.')
+  }
 
   const reload = options.reload ?? (() => window.location.reload())
   reload()

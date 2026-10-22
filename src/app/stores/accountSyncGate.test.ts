@@ -19,7 +19,13 @@ vi.mock('../../lib/sync/sync', () => ({
 import { LOCAL_OWNER_KEY, readLocalOwner, writeLocalOwner, type OwnerStorage } from '../../lib/storage/accountOwner'
 import { useLanguagesStore } from './languages'
 import { useAuthStore } from './auth'
-import { canSyncForUser, initializeLocalOwner, ownerSyncState, useSyncStore } from './sync'
+import {
+  canSyncForUser,
+  initializeLocalOwner,
+  isAccountGateReady,
+  ownerSyncState,
+  useSyncStore,
+} from './sync'
 import { syncOnce, type SyncReport } from '../../lib/sync/sync'
 import { useDocumentsStore } from './documents'
 import { useFoldersStore } from './folders'
@@ -92,6 +98,7 @@ beforeEach(() => {
     notice: null,
     report: null,
     accountReady: false,
+    readyForUserId: null,
     accountBlocked: false,
     claimNeeded: false,
     localOnly: true,
@@ -176,6 +183,30 @@ describe('소유자와 계정으로 정한 동기화 범위', () => {
       claimNeeded: true,
       localOnly: true,
     })
+  })
+})
+
+/**
+ * 준비됐다는 사실만으로는 부족하다 — **누구의** 준비인지까지 맞아야 한다.
+ *
+ * `accountReady` 는 효과 안에서 거짓으로 돌아간다. A 의 확인이 끝난 상태에서
+ * B 가 로그인하면, 효과가 돌기 전 한 번의 렌더가 남는다. 그 한 번에 A 의 문서·
+ * 단어장이 보이면 공유 기기의 경계가 무너진다.
+ */
+describe('계정 게이트는 확인한 사용자와 지금 사용자가 같을 때만 열린다', () => {
+  it('확인한 사용자와 지금 사용자가 같으면 연다', () => {
+    expect(isAccountGateReady(true, 'user-a', 'user-a')).toBe(true)
+    // 로그아웃 상태도 하나의 확인 결과다
+    expect(isAccountGateReady(true, null, null)).toBe(true)
+  })
+
+  it('A 를 확인한 뒤 B 로 바뀌면 아직 열지 않는다', () => {
+    expect(isAccountGateReady(true, 'user-a', 'user-b')).toBe(false)
+  })
+
+  it('아직 확인하지 않았거나 로그아웃 확인만 했으면 열지 않는다', () => {
+    expect(isAccountGateReady(false, 'user-a', 'user-a')).toBe(false)
+    expect(isAccountGateReady(true, null, 'user-a')).toBe(false)
   })
 })
 

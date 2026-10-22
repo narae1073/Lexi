@@ -20,7 +20,7 @@ import { useDocumentsStore } from './stores/documents'
 import { useFoldersStore } from './stores/folders'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
-import { useCloudSync, useSyncStore } from './stores/sync'
+import { isAccountGateReady, useCloudSync, useSyncStore } from './stores/sync'
 import { useWordStatesStore } from './stores/wordStates'
 import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/settings'
 
@@ -81,9 +81,14 @@ export default function App() {
   // 기기 소유자 확인과 세션 복원이 끝나기 전에는 어떤 계정의 데이터인지 모른다.
   // 그동안 문서·단어를 읽으면 잠깐 이전 계정의 화면이 보일 수 있다.
   const restoring = useAuthStore((s) => s.restoring)
+  const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const accountReady = useSyncStore((s) => s.accountReady)
+  const readyForUserId = useSyncStore((s) => s.readyForUserId)
   const accountBlocked = useSyncStore((s) => s.accountBlocked)
   const claimNeeded = useSyncStore((s) => s.claimNeeded)
+  // A 의 확인이 끝난 뒤 B 가 로그인하면 효과가 상태를 되돌리기 전 한 번의 렌더가
+  // 남는다. 지금 사용자에 대한 확인인지 비교해야 그 한 번에도 이전 화면이 안 보인다.
+  const gateReady = isAccountGateReady(accountReady, readyForUserId, currentUserId)
   const load = useDocumentsStore((s) => s.load)
   const loadFolders = useFoldersStore((s) => s.load)
   const allDocuments = useDocumentsStore((s) => s.documents)
@@ -105,10 +110,10 @@ export default function App() {
 
   useEffect(() => {
     // 소유자를 확인하기 전이나 다른 계정 때문에 잠긴 동안에는 읽지 않는다
-    if (restoring || !accountReady || accountBlocked) return
+    if (restoring || !gateReady || accountBlocked) return
     void load()
     void loadFolders()
-  }, [load, loadFolders, restoring, accountReady, accountBlocked])
+  }, [load, loadFolders, restoring, gateReady, accountBlocked])
 
   /**
    * 목록의 진도 게이지를 위해, 아직 기록이 없는 문서를 유휴 시점에 계산한다.
@@ -119,7 +124,7 @@ export default function App() {
    */
   useEffect(() => {
     // 잠긴 계정의 문서를 토크나이징하면 그 기록이 기기에 남는다 — 읽지도 않는다
-    if (restoring || !accountReady || accountBlocked) return
+    if (restoring || !gateReady || accountBlocked) return
     if (documents.length === 0) return
     const run = () => void refreshStaleDocuments(documents)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300))
@@ -129,7 +134,7 @@ export default function App() {
         window.cancelIdleCallback(handle)
       }
     }
-  }, [documents, refreshStaleDocuments, restoring, accountReady, accountBlocked])
+  }, [documents, refreshStaleDocuments, restoring, gateReady, accountBlocked])
 
   // 번역·사전 응답은 기기에 계속 쌓인다. 오래된 것부터 한 번씩 버린다.
   useEffect(() => {
@@ -140,12 +145,12 @@ export default function App() {
   // 단어장은 문서를 열지 않아도 상태를 보여줘야 한다 (plan.txt 9줄).
   useEffect(() => {
     // 소유자 확인 전이나 잠금 중에는 사전·등장 기록을 받아 오지 않는다
-    if (restoring || !accountReady || accountBlocked) return
+    if (restoring || !gateReady || accountBlocked) return
     for (const language of enrolled) {
       void loadOccurrences(language)
       void loadWordStates(language)
     }
-  }, [enrolled, loadOccurrences, loadWordStates, restoring, accountReady, accountBlocked])
+  }, [enrolled, loadOccurrences, loadWordStates, restoring, gateReady, accountBlocked])
 
   /**
    * 세션 복원·소유자 확인이 끝나기 전에는 중립 화면만 보여 준다.
@@ -153,7 +158,7 @@ export default function App() {
    * 이 사이에 언어 선택 화면이나 이전 로컬 프로필이 잠깐 보이면, 공유 기기에서
    * 누가 로그인했는지와 무관하게 남의 화면이 스쳐 간다.
    */
-  if (restoring || !accountReady) {
+  if (restoring || !gateReady) {
     return (
       <div className="flex min-h-screen items-center justify-center px-5">
         <p className="text-ink-muted text-sm">{t('account.checking')}</p>

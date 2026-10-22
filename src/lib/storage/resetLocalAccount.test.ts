@@ -67,4 +67,29 @@ describe('resetLocalAccount', () => {
     expect(storage.getItem('lexi.settings')).toBe(settings)
     expect(reload).toHaveBeenCalledTimes(1)
   })
+
+  /**
+   * `writeLocalOwner` 는 저장 실패를 삼킨다. 그대로 새로고침하면 소유자가 바뀌지
+   * 않은 채 잠금 화면으로 돌아오고, 사용자는 초기화가 끝난 줄 안다. 소유자를
+   * 다시 읽어 확인하지 못하면 성공으로 보고하지 않는다.
+   */
+  it('소유자를 저장하지 못하면 거절하고 새로고침하지 않는다', async () => {
+    await idbPut(STORES.documents, { id: 'doc-1', title: '지울 문서' })
+    writeLocalOwner({ kind: 'local' }, storage)
+    const brokenStorage: OwnerStorage = {
+      getItem: (key) => storage.getItem(key),
+      setItem() {
+        throw new Error('저장소를 쓸 수 없음')
+      },
+      removeItem: (key) => storage.removeItem(key),
+    }
+    const reload = vi.fn()
+
+    await expect(resetLocalAccount('user-b', { storage: brokenStorage, reload })).rejects.toThrow(
+      '계정 소유자 표시를 저장하지 못했습니다',
+    )
+
+    expect(readLocalOwner(brokenStorage)).toEqual({ kind: 'local', kept: false })
+    expect(reload).not.toHaveBeenCalled()
+  })
 })
