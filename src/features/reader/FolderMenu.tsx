@@ -37,6 +37,7 @@ export function FolderMenu({
         <input
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          maxLength={200}
           onKeyDown={(event) => {
             if (event.key === 'Enter') void commit()
             if (event.key === 'Escape') onClose()

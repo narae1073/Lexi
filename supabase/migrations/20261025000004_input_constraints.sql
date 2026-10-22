@@ -16,44 +16,57 @@
 -- Preflight — staging 에서 마이그레이션 적용 **전에** 실행한다.
 -- 이 저장소에는 실행할 live 프로젝트가 없어 여기서는 실행하지 않았다.
 --
---   select 'documents.title' as check, count(*) from public.documents where char_length(title) > 200
---   union all
---   select 'documents.raw_text', count(*) from public.documents where char_length(raw_text) > 100000
---   union all
---   select 'folders.name', count(*) from public.folders where char_length(name) > 200
---   union all
---   select 'word_states.lemma', count(*) from public.word_states where char_length(lemma) > 200
---   union all
---   select 'word_states.note', count(*) from public.word_states where char_length(note) > 5000
---   union all
---   select 'word_occurrences.lemma', count(*) from public.word_occurrences where char_length(lemma) > 200
---   union all
---   select 'word_occurrences.surface', count(*) from public.word_occurrences where char_length(surface) > 200
---   union all
---   select 'word_occurrences.sentence', count(*) from public.word_occurrences where char_length(sentence) > 5000;
+-- 아래 검사는 **모든 새 제약**을 그대로 거울처럼 옮긴 것이다 — 상한뿐 아니라
+-- 하한(빈 제목·폴더 이름·본문·lemma·surface)과 나머지 형식·범위 검사도 포함한다.
+-- 하나라도 count 가 0 이 아니면 그 행들은 update/sync 에서 거부되어 wedge 가 된다.
 --
--- 하나라도 0 이 아닌 행이 나오면 **멈춘다.** 지우거나 자르지 말고 사용자에게
--- 보고한다. 데이터를 정리한 뒤에만 이 마이그레이션과 이후 validate 를 진행한다.
---
--- 아래 제약 중 preflight 가 다루지 않는 것들도 staging 에서 함께 확인한다:
---
---   select 'word_states.star_angle', count(*) from public.word_states
---    where star_angle < -360 or star_angle > 360
+--   select 'documents.title (btrim 1..200)' as check, count(*) from public.documents
+--    where char_length(btrim(title)) not between 1 and 200
 --   union all
---   select 'word_states.star_color', count(*) from public.word_states
---    where star_color !~ '^#[0-9a-fA-F]{6}$'
+--   select 'documents.raw_text (1..100000)', count(*) from public.documents
+--    where char_length(raw_text) not between 1 and 100000
 --   union all
---   select 'word_states.presses', count(*) from public.word_states
+--   select 'folders.name (btrim 1..200)', count(*) from public.folders
+--    where char_length(btrim(name)) not between 1 and 200
+--   union all
+--   select 'word_states.lemma (1..200)', count(*) from public.word_states
+--    where char_length(lemma) not between 1 and 200
+--   union all
+--   select 'word_states.note (null or <=5000)', count(*) from public.word_states
+--    where note is not null and char_length(note) > 5000
+--   union all
+--   select 'word_states.presses (>=0)', count(*) from public.word_states
 --    where known_presses < 0 or unsure_presses < 0 or unknown_presses < 0
 --   union all
---   select 'word_occurrences.language_code', count(*) from public.word_occurrences
+--   select 'word_states.star_angle (-360..360)', count(*) from public.word_states
+--    where star_angle < -360 or star_angle > 360
+--   union all
+--   select 'word_states.star_color (#rrggbb)', count(*) from public.word_states
+--    where star_color !~ '^#[0-9a-fA-F]{6}$'
+--   union all
+--   select 'word_occurrences.language_code (xx or xx-YY)', count(*) from public.word_occurrences
 --    where language_code !~ '^[a-z]{2}(-[A-Za-z]{2})?$'
 --   union all
---   select 'word_occurrences.occurrences_count', count(*) from public.word_occurrences
+--   select 'word_occurrences.lemma (1..200)', count(*) from public.word_occurrences
+--    where char_length(lemma) not between 1 and 200
+--   union all
+--   select 'word_occurrences.surface (1..200)', count(*) from public.word_occurrences
+--    where char_length(surface) not between 1 and 200
+--   union all
+--   select 'word_occurrences.sentence (<=5000)', count(*) from public.word_occurrences
+--    where char_length(sentence) > 5000
+--   union all
+--   select 'word_occurrences.occurrences_count (>=1)', count(*) from public.word_occurrences
 --    where occurrences_count < 1
 --   union all
---   select 'word_occurrences.span', count(*) from public.word_occurrences
+--   select 'word_occurrences.span (>=0 and <=1000)', count(*) from public.word_occurrences
 --    where char_end < char_start or char_end - char_start > 1000;
+--
+-- btrim 은 기본적으로 ASCII 공백만 제거한다. 탭·개행만 있는 이름은 제약을
+-- 통과하므로 필요하면 별도로 확인한다.
+--
+-- count 가 하나라도 0 이 아니면 **멈춘다.** 지우거나 자르지 말고 사용자에게
+-- 보고한다. 데이터를 정리한 뒤에만 이 마이그레이션과 이후 validate 를 진행한다.
 --
 -- 각도는 **부호 있는 기울기** 다 — 별을 왼쪽으로도 기울이므로 음수가 정상이다.
 -- 클라이언트의 randomStarAngle() 은 -25..25 를 만들고, 범위는 그보다 넓게
@@ -88,7 +101,7 @@ alter table public.word_occurrences
 -- ---------------------------------------------------------------------------
 -- Deferred staging checks — 위 검사를 통과한 뒤, validate 하기 전에 확인한다.
 --
---   1. 위 preflight 와 추가 검사가 모두 0 행을 반환한다.
+--   1. 위 preflight 의 모든 count 가 0 이다.
 --   2. 새 잘못된 행이 실제로 거부되는지 확인한다 (예: 201자 title insert 가
 --      check violation 으로 실패). 이때 트랜잭션은 rollback 한다.
 --   3. 기존 행이 그대로 읽히는지 확인한다 — NOT VALID 는 기존 행을 검사하지 않는다.
