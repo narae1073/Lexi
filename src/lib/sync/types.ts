@@ -144,3 +144,17 @@ export type SyncReport = {
   /** Exact dirty keys pushed; clear only if the revision still matches. */
   succeededKeys: DirtyKey[]
 }
+
+/**
+ * Messages between tabs of the same origin.
+ *
+ * `local-write` carries the reserved sync-meta record as read after the write
+ * transaction committed, so a receiving tab can adopt the shared pending
+ * counts without a second IndexedDB read. `synced` carries the completed
+ * report; the receiving tab updates its status and then re-reads pending from
+ * the shared record (the message is not the source of truth for counts).
+ */
+export type SyncMessage =
+  | { type: 'local-write'; meta: LocalSyncMeta }
+  | { type: 'synced'; userId: string; report: SyncReport }
+

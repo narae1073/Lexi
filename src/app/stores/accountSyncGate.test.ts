@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { User } from '@supabase/supabase-js'
@@ -17,10 +18,34 @@ vi.mock('../../lib/sync/sync', () => ({
   syncOnce: vi.fn(),
 }))
 
+const syncChannelState = vi.hoisted(() => ({
+  posted: [] as SyncMessage[],
+}))
+
+vi.mock('../../lib/sync/syncChannel', () => ({
+  createSyncChannel: () => ({
+    post: (message: SyncMessage) => {
+      syncChannelState.posted.push(message)
+    },
+    subscribe: () => () => {},
+    close: () => {},
+  }),
+}))
+
 import { LOCAL_OWNER_KEY, readLocalOwner, writeLocalOwner, type OwnerStorage } from '../../lib/storage/accountOwner'
+import {
+  STORES,
+  bumpLocalRevision,
+  deleteLocalDatabase,
+  readLocalSyncMeta,
+} from '../../lib/storage/localDb'
+import type { LocalSyncMeta, SyncMessage } from '../../lib/sync/types'
+import { withSyncLock } from '../../lib/sync/syncLock'
 import { useLanguagesStore } from './languages'
 import { useAuthStore } from './auth'
 import {
+  applyLocalWrite,
+  applySyncMessage,
   canSyncForUser,
   initializeLocalOwner,
   isAccountGateReady,
@@ -96,7 +121,9 @@ const realSyncQuietly = useSyncStore.getState().syncQuietly
 const realClaimLocalData = useSyncStore.getState().claimLocalData
 const realKeepLocalOnly = useSyncStore.getState().keepLocalOnly
 
-beforeEach(() => {
+beforeEach(async () => {
+  await deleteLocalDatabase()
+  syncChannelState.posted.length = 0
   storage = new MemoryStorage()
   const globals = globalThis as { localStorage?: Storage }
   originalLocalStorage = globals.localStorage
@@ -135,6 +162,130 @@ afterEach(() => {
 describe('동기화 idle 대기', () => {
   it('동기화가 한 번도 시작되지 않았으면 바로 resolve 된다', async () => {
     await expect(waitForSyncIdle()).resolves.toBeUndefined()
+  })
+})
+
+function createFakeLocks() {
+  let tail: Promise<unknown> = Promise.resolve()
+  const locks = {
+    request<T>(
+      _name: string,
+      _options: { mode?: LockMode },
+      callback: () => Promise<T>,
+    ): Promise<T> {
+      const result = tail.then(callback)
+      tail = result.then(
+        () => undefined,
+        () => undefined,
+      )
+      return result
+    },
+  }
+  return locks as unknown as LockManager
+}
+
+const localMeta = (pendingByStore: LocalSyncMeta['pendingByStore']): LocalSyncMeta => ({
+  documentId: '__lexi_sync_meta__',
+  epoch: 'epoch-a',
+  revision: 2,
+  pendingByStore,
+  dirty: {},
+})
+
+describe('cross-tab idle wait', () => {
+  it('waits for the shared lock after the tab-local single-flight is idle', async () => {
+    const locks = createFakeLocks()
+    let release!: () => void
+    const held = withSyncLock(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+      locks,
+    )
+    await Promise.resolve()
+
+    let idle = false
+    const waiting = waitForSyncIdle(locks).then(() => {
+      idle = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(idle).toBe(false)
+
+    release()
+    await held
+    await waiting
+    expect(idle).toBe(true)
+  })
+})
+
+describe('cross-tab convergence', () => {
+  it('applies the shared meta on a local write and broadcasts it', () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useSyncStore.setState({ pendingByStore: {}, dirty: false })
+    const meta = localMeta({ documents: 2 })
+
+    const counted = applyLocalWrite(STORES.documents, meta)
+
+    expect(counted).toBe(true)
+    expect(useSyncStore.getState().pendingByStore).toEqual({ documents: 2 })
+    expect(useSyncStore.getState().dirty).toBe(true)
+    expect(syncChannelState.posted).toContainEqual({ type: 'local-write', meta })
+  })
+
+  it('does not count a local write for a different account', () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-b') })
+    useSyncStore.setState({ status: 'synced', pendingByStore: {}, dirty: false })
+
+    const counted = applyLocalWrite(STORES.documents, localMeta({ documents: 1 }))
+
+    expect(counted).toBe(false)
+    expect(useSyncStore.getState()).toMatchObject({ status: 'local', dirty: false })
+    expect(syncChannelState.posted).toEqual([])
+  })
+
+  it('refreshes pending from a local-write message sent by another tab', async () => {
+    useSyncStore.setState({ pendingByStore: {}, dirty: false })
+
+    await applySyncMessage({ type: 'local-write', meta: localMeta({ wordStates: 3 }) })
+
+    expect(useSyncStore.getState().pendingByStore).toEqual({ wordStates: 3 })
+    expect(useSyncStore.getState().dirty).toBe(true)
+  })
+
+  it('applies a synced report and re-reads pending from the shared record', async () => {
+    useAuthStore.setState({ user: account('user-a') })
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    useSyncStore.setState({
+      status: 'syncing',
+      pendingByStore: {},
+      dirty: false,
+      lastSyncedAt: null,
+      report: null,
+    })
+    const incoming = report([])
+
+    await applySyncMessage({ type: 'synced', userId: 'user-a', report: incoming })
+
+    expect(useSyncStore.getState().report).toBe(incoming)
+    expect(useSyncStore.getState().status).toBe('synced')
+    expect(useSyncStore.getState().lastSyncedAt).not.toBeNull()
+    // The shared record still holds the write; the message did not clear it.
+    expect(useSyncStore.getState().pendingByStore).toEqual({ documents: 1 })
+    expect(useSyncStore.getState().dirty).toBe(true)
+  })
+
+  it('ignores a synced report for a different account', async () => {
+    useAuthStore.setState({ user: account('user-a') })
+    const before = useSyncStore.getState()
+
+    await applySyncMessage({ type: 'synced', userId: 'user-b', report: report([]) })
+
+    expect(useSyncStore.getState().report).toBe(before.report)
+    expect(useSyncStore.getState().lastSyncedAt).toBe(before.lastSyncedAt)
   })
 })
 
@@ -544,6 +695,9 @@ describe('동기화 입구', () => {
       status: 'syncing',
       pendingByStore: { documents: 1, wordStates: 2 },
     })
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    await bumpLocalRevision(STORES.wordStates, 'fr\u0000run')
+    await bumpLocalRevision(STORES.wordStates, 'fr\u0000walk')
     writeStoredSyncState('user-a', {
       version: 2,
       pull: {},
@@ -574,6 +728,12 @@ describe('동기화 입구', () => {
     expect(state.pendingByStore).toEqual({ documents: 1 })
     expect(state.dirty).toBe(true)
     expect(readStoredSyncState('user-a')?.push).toEqual({ wordStates: wordWatermark })
+    // The subtraction happened in the shared record, not only in this tab.
+    expect((await readLocalSyncMeta())?.pendingByStore).toEqual({ documents: 1 })
+    // Other tabs are told only after this tab persisted the cycle.
+    expect(syncChannelState.posted).toContainEqual(
+      expect.objectContaining({ type: 'synced', userId: 'user-a' }),
+    )
   })
 })
 

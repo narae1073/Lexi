@@ -1,7 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import 'fake-indexeddb/auto'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { pendingCount, type SyncState } from './sync'
 import { createSyncScheduler } from './syncScheduler'
+import {
+  STORES,
+  bumpLocalRevision,
+  deleteLocalDatabase,
+  readLocalSyncMeta,
+  subtractPending,
+} from '../../lib/storage/localDb'
 
 /**
  * 밀린 것을 세는 법.
@@ -56,6 +64,55 @@ describe('밀린 것 세기', () => {
   it('보낼 것이 없으면 dirty 아니다', () => {
     const state = { pendingByStore: {} } as SyncState
     expect(pendingCount(state.pendingByStore) > 0).toBe(false)
+  })
+})
+
+/**
+ * The shared record, not a tab's memory, owns pending counts.
+ *
+ * Every tab writes the reserved sync-meta record in the same IndexedDB, so the
+ * counts a tab displays must come back from that record. Subtracting only the
+ * stores the server confirmed is what keeps a failed table from disappearing
+ * from the UI.
+ */
+describe('shared pending counts in the reserved sync record', () => {
+  beforeEach(async () => {
+    await deleteLocalDatabase()
+  })
+
+  it('shares pending counts through the reserved sync record across tab-like calls', async () => {
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000run')
+    await subtractPending({ documents: 1 })
+
+    const meta = await readLocalSyncMeta()
+    expect(meta?.pendingByStore).toEqual({ wordStates: 1 })
+  })
+
+  it('subtracts only the stores whose whole batch succeeded', async () => {
+    await bumpLocalRevision(STORES.documents, 'doc-1')
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000run')
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000walk')
+
+    const meta = await subtractPending({ wordStates: 2 })
+
+    expect(meta.pendingByStore).toEqual({ documents: 1 })
+    expect(pendingCount(meta.pendingByStore)).toBe(1)
+  })
+
+  /**
+   * A write that lands while a sync is in flight must survive the subtraction:
+   * the batch is the count read before the cycle, not the current count.
+   */
+  it('keeps a write that landed after the batch was counted', async () => {
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000run')
+    const batch = { wordStates: 1 }
+
+    // Another tab writes while the sync is running.
+    await bumpLocalRevision(STORES.wordStates, 'en\u0000walk')
+    await subtractPending(batch)
+
+    expect((await readLocalSyncMeta())?.pendingByStore).toEqual({ wordStates: 1 })
   })
 })
 

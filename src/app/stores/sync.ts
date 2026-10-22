@@ -9,7 +9,7 @@ import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
 import { createSyncScheduler } from './syncScheduler'
 import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } from './syncVisibility'
-import { hasLocalLearningData, ensureLocalSyncMeta, onLocalWrite, STORES, type StoreName } from '../../lib/storage/localDb'
+import { hasLocalLearningData, ensureLocalSyncMeta, onLocalWrite, readLocalSyncMeta, subtractPending, STORES, type StoreName } from '../../lib/storage/localDb'
 import {
   ensureLocalOwner,
   readLocalOwner,
@@ -31,6 +31,9 @@ import {
   writeStoredSyncState,
 } from '../../lib/sync/syncState'
 import { createSingleFlight, type SingleFlight } from '../../lib/sync/singleFlight'
+import { createSyncChannel, type SyncChannel } from '../../lib/sync/syncChannel'
+import { withSyncLock } from '../../lib/sync/syncLock'
+import type { LocalSyncMeta, SyncMessage } from '../../lib/sync/types'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
@@ -306,21 +309,124 @@ export const useSyncStore = create<SyncState>((set) => ({
 type Setter = (partial: Partial<SyncState> | ((s: SyncState) => Partial<SyncState>)) => void
 
 /**
+ * One channel per tab. Created lazily by the app bridge; store tests without a
+ * browser get the module's no-op channel.
+ */
+let syncChannel: SyncChannel | null = null
+
+function getSyncChannel(): SyncChannel {
+  syncChannel ??= createSyncChannel()
+  return syncChannel
+}
+
+function pendingFromMeta(meta: LocalSyncMeta): Pick<SyncState, 'pendingByStore' | 'dirty'> {
+  const pendingByStore = { ...meta.pendingByStore }
+  return { pendingByStore, dirty: pendingCount(pendingByStore) > 0 }
+}
+
+async function readPendingOr(fallback: Record<string, number>): Promise<Record<string, number>> {
+  try {
+    const meta = await readLocalSyncMeta()
+    return { ...(meta?.pendingByStore ?? fallback) }
+  } catch {
+    return { ...fallback }
+  }
+}
+
+async function refreshPendingFromRecord(): Promise<void> {
+  const pendingByStore = await readPendingOr(useSyncStore.getState().pendingByStore)
+  useSyncStore.setState({ pendingByStore, dirty: pendingCount(pendingByStore) > 0 })
+}
+
+function failureMessage(failures: SyncReport['failures']): string | null {
+  if (failures.length === 0) return null
+  return failures
+    .map(
+      (failure) =>
+        `${failure.table}${failure.key === undefined ? '' : `:${failure.key}`}: ${failure.message}`,
+    )
+    .join(' / ')
+}
+
+/**
+ * Applies one local write from this tab.
+ *
+ * `meta.pendingByStore` is the count the write transaction already committed
+ * to the shared record, so the UI adopts it instead of adding one of its own.
+ * Returns false when this device may not sync this account — the write still
+ * happened locally, but it is not this account's pending work.
+ */
+export function applyLocalWrite(store: StoreName, meta: LocalSyncMeta): boolean {
+  const current = useAuthStore.getState().user
+  if (!current || !canSyncForUser(current.id)) {
+    useSyncStore.setState({ status: 'local' })
+    return false
+  }
+
+  useSyncStore.setState((s) => ({
+    ...pendingFromMeta(meta),
+    // 단어 상태를 바꿨을 때만 말한다 — 문서를 열거나 제목을 바꾸는 것으로는
+    // 알리지 않는다. 잃어버렸다고 느낀 것은 진도였고, 나머지는 조용히 보내도 된다
+    notice:
+      store === STORES.wordStates
+        ? { until: Date.now() + NOTICE_MS, synced: false }
+        : s.notice,
+  }))
+  getSyncChannel().post({ type: 'local-write', meta })
+  return true
+}
+
+/**
+ * Applies a message from another tab.
+ *
+ * `local-write` carries the shared meta, so pending counts are replaced (not
+ * incremented). `synced` says a cycle finished; this tab adopts the report and
+ * re-reads the counts from IndexedDB so a write that landed during the cycle
+ * is still counted.
+ */
+export async function applySyncMessage(message: SyncMessage): Promise<void> {
+  if (message.type === 'local-write') {
+    useSyncStore.setState(pendingFromMeta(message.meta))
+    return
+  }
+
+  const user = useAuthStore.getState().user
+  if (!user || user.id !== message.userId) return
+
+  const error = failureMessage(message.report.failures)
+  useSyncStore.setState({
+    status: error ? 'error' : 'synced',
+    lastSyncedAt: new Date().toISOString(),
+    error,
+    report: message.report,
+  })
+  await refreshPendingFromRecord()
+}
+
+/**
  * 동기화는 한 번에 하나만.
  *
  * 로그인·앱 시작·온라인 복귀·수동 동기화·저장 직후가 겹칠 수 있다. 겹치면 같은
  * 행을 두 번 읽고 쓰고, 밀린 개수를 두 번 뺀다. 실행 중에 들어온 요청은 버리지
  * 않고 끝난 뒤 한 번 더 돈다.
+ *
+ * The single-flight is per tab; `withSyncLock` serializes tabs on the same
+ * origin through the shared Web Lock.
  */
 let exclusive: SingleFlight | null = null
 
-/** Wait until the active sync and any queued rerun have both finished. */
-export function waitForSyncIdle(): Promise<void> {
-  return exclusive?.whenIdle() ?? Promise.resolve()
+/**
+ * Wait until the active sync and any queued rerun have both finished, then
+ * wait for the shared cross-tab lock. Acquiring and immediately releasing the
+ * lock is how this tab learns another tab is not mid-cycle.
+ */
+export async function waitForSyncIdle(locks?: LockManager): Promise<void> {
+  await (exclusive?.whenIdle() ?? Promise.resolve())
+  await withSyncLock(async () => {}, locks)
 }
 
 async function run(set: Setter): Promise<void> {
-  exclusive ??= createSingleFlight(() => doRun(set))
+  exclusive ??= createSingleFlight(() => withSyncLock(() => doRun(set)))
   return exclusive()
 }
 
@@ -332,8 +438,11 @@ async function doRun(set: Setter) {
   const accountChanged = () => useAuthStore.getState().user?.id !== startedUserId
 
   // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
-  // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다
-  const batch = { ...useSyncStore.getState().pendingByStore }
+  // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다. The reserved record is
+  // shared by every tab, so read it there rather than trusting this tab's copy.
+  const batch = await readPendingOr(useSyncStore.getState().pendingByStore)
+  // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다
+  if (accountChanged()) return
   // Version 1 reads as absent: the first cycle after the upgrade is a full
   // pull and full push (one-time cost, no local data is touched).
   const stored = readStoredSyncState(user.id)
@@ -418,37 +527,40 @@ async function doRun(set: Setter) {
     // 마지막 확인 — 여기까지 왔어도 set 직전에 바뀔 수 있다
     if (accountChanged()) return
 
-    set((s) => {
-      const pendingByStore: Record<string, number> = { ...s.pendingByStore }
-      // Subtract only stores whose whole batch went through. A failed table's
-      // count stays pending so the next cycle retries it.
-      const succeededStores = new Set<StoreName>(report.succeededStores)
-      for (const [store, count] of Object.entries(batch)) {
-        if (!succeededStores.has(store as StoreName)) continue
-        const left = (pendingByStore[store] ?? 0) - count
-        if (left > 0) pendingByStore[store] = left
-        else delete pendingByStore[store]
-      }
-      const failed = report.failures.length > 0
-      return {
-        status: failed ? ('error' as SyncStatus) : ('synced' as SyncStatus),
-        lastSyncedAt: new Date().toISOString(),
-        error: failed
-          ? report.failures
-              .map(
-                (failure) =>
-                  `${failure.table}${failure.key === undefined ? '' : `:${failure.key}`}: ${failure.message}`,
-              )
-              .join(' / ')
-          : null,
-        // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
-        notice: failed ? s.notice : markSynced(s.notice, Date.now()),
-        report,
-        // 밀린 것이 남았는가 — 실패한 표는 아직 기기에만 있다
-        dirty: pendingCount(pendingByStore) > 0,
-        pendingByStore,
-      }
-    })
+    // Only stores whose whole batch went through are subtracted. A failed
+    // table's count stays pending so the next cycle retries it. The shared
+    // record is authoritative: subtract there, then adopt what remains.
+    const succeededStores = new Set<StoreName>(report.succeededStores)
+    const sent: Partial<Record<StoreName, number>> = {}
+    for (const [store, count] of Object.entries(batch)) {
+      if (succeededStores.has(store as StoreName)) sent[store as StoreName] = count
+    }
+    let pendingByStore: Record<string, number>
+    try {
+      pendingByStore = { ...(await subtractPending(sent)).pendingByStore }
+    } catch (bookkeepingError) {
+      // A successful push whose count could not be recorded must not make the
+      // rows look delivered. Overstating pending is the safe direction.
+      console.error('밀린 개수를 기록하지 못했습니다', bookkeepingError)
+      pendingByStore = { ...batch }
+    }
+
+    const failed = report.failures.length > 0
+    set((s) => ({
+      status: failed ? ('error' as SyncStatus) : ('synced' as SyncStatus),
+      lastSyncedAt: new Date().toISOString(),
+      error: failureMessage(report.failures),
+      // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
+      notice: failed ? s.notice : markSynced(s.notice, Date.now()),
+      report,
+      // 밀린 것이 남았는가 — 실패한 표는 아직 기기에만 있다
+      dirty: pendingCount(pendingByStore) > 0,
+      pendingByStore,
+    }))
+
+    // Tell other tabs only after this tab persisted both the watermarks and the
+    // visible state. A listener can then re-read the same shared record.
+    getSyncChannel().post({ type: 'synced', userId: startedUserId, report })
   } catch (error) {
     // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
     if (accountChanged()) return
@@ -471,13 +583,16 @@ async function doRun(set: Setter) {
       set({ status: 'local', error: null, dirty: false, pendingByStore: {} })
       return
     }
+    // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다.
+    // Counts may have grown in another tab during this cycle, so prefer the
+    // shared record and fall back to the batch when it cannot be read.
+    const pendingAfterFailure = await readPendingOr(batch)
     set({
       status: 'error',
       report: null,
       error: error instanceof Error ? error.message : String(error),
-      // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다
-      dirty: true,
-      pendingByStore: batch,
+      dirty: pendingCount(pendingAfterFailure) > 0,
+      pendingByStore: pendingAfterFailure,
     })
   }
 }
@@ -497,6 +612,18 @@ export function useCloudSync() {
   useEffect(() => {
     void restore()
   }, [restore])
+
+  /**
+   * Other tabs publish local writes and completed cycles on the sync channel.
+   * Pending counts still come from the shared record; the message only says
+   * when to look again.
+   */
+  useEffect(() => {
+    const unsubscribe = getSyncChannel().subscribe((message) => {
+      void applySyncMessage(message)
+    })
+    return unsubscribe
+  }, [])
 
   /**
    * 이 기기의 소유자를 먼저 정한다 — 동기화의 유일한 입구다.
@@ -567,26 +694,10 @@ export function useCloudSync() {
       maxWaitMs: SYNC_MAX_WAIT_MS,
     })
 
-    const unsubscribe = onLocalWrite((store) => {
+    const unsubscribe = onLocalWrite((store, meta) => {
       // 소유자가 이 계정이 아니면 '밀린 것' 으로 세지 않는다. 세면 화면이 이 기기의
       // 남의 기록을 이 계정의 진도처럼 말하게 된다 — 저장은 이미 끝났고 기기에만 있다.
-      const current = useAuthStore.getState().user
-      if (!current || !canSyncForUser(current.id)) {
-        useSyncStore.setState({ status: 'local' })
-        return
-      }
-
-      useSyncStore.setState((s) => ({
-        dirty: true,
-        pendingByStore: { ...s.pendingByStore, [store]: (s.pendingByStore[store] ?? 0) + 1 },
-        // 단어 상태를 바꿨을 때만 말한다 — 문서를 열거나 제목을 바꾸는 것으로는
-        // 알리지 않는다. 잃어버렸다고 느낀 것은 진도였고, 나머지는 조용히 보내도 된다
-        notice:
-          store === STORES.wordStates
-            ? { until: Date.now() + NOTICE_MS, synced: false }
-            : s.notice,
-      }))
-      scheduler.notify()
+      if (applyLocalWrite(store, meta)) scheduler.notify()
     })
 
     const syncDirty = () => {

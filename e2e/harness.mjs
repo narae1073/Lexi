@@ -94,10 +94,44 @@ class Page {
 const APP_ORIGIN = 'http://localhost:4173'
 
 class Ctx {
-  constructor(page, viewport) {
+  constructor(page, viewport, cdpPort) {
     this.page = page
     this.viewport = viewport
+    this.cdpPort = cdpPort
+    this.extraPages = []
     this.results = []
+  }
+
+  /**
+   * Opens a second same-origin page in the same browser profile.
+   *
+   * Used by the two-tab sync smoke: Web Locks and BroadcastChannel only work
+   * across pages that share an origin and a profile.
+   */
+  async openPage() {
+    const response = await fetch(
+      `http://127.0.0.1:${this.cdpPort}/json/new?${encodeURIComponent(APP_ORIGIN)}`,
+      { method: 'PUT' },
+    )
+    if (!response.ok) throw new Error(`두 번째 페이지를 열지 못했습니다 (${response.status})`)
+    const target = await response.json()
+    const page = await Page.open(target.webSocketDebuggerUrl)
+    await page.send('Page.enable')
+    await page.send('Runtime.enable')
+    this.extraPages.push(page)
+    return new Ctx(page, this.viewport, this.cdpPort)
+  }
+
+  async closeExtraPages() {
+    for (const page of this.extraPages) {
+      try {
+        await page.send('Page.close')
+      } catch {
+        // 이미 닫힌 페이지는 무시한다
+      }
+      page.close()
+    }
+    this.extraPages = []
   }
 
   async #eval(expression) {
@@ -696,7 +730,7 @@ export async function runAll(filter) {
 
   for (const file of specFiles) {
     const spec = await import(new URL(`./specs/${file}`, import.meta.url))
-    const ctx = new Ctx(page, { width: 420, height: 900 })
+    const ctx = new Ctx(page, { width: 420, height: 900 }, cdpPort)
     console.log(`\n▶ ${file.replace('.spec.mjs', '')}`)
 
     await ctx.resetOrigin()
@@ -707,6 +741,8 @@ export async function runAll(filter) {
       await spec.run(ctx)
     } catch (error) {
       ctx.check(`스펙 실행`, false, String(error.message ?? error))
+    } finally {
+      await ctx.closeExtraPages()
     }
 
     // 콘솔 오류는 스펙 실패로 본다 — key 충돌 같은 게 조용히 실패하기 때문이다
