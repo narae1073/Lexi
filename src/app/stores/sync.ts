@@ -9,8 +9,14 @@ import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
 import { createSyncScheduler } from './syncScheduler'
 import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } from './syncVisibility'
-import { onLocalWrite } from '../../lib/storage/localDb'
-import { STORES } from '../../lib/storage/localDb'
+import { hasLocalLearningData, onLocalWrite, STORES } from '../../lib/storage/localDb'
+import {
+  ensureLocalOwner,
+  readLocalOwner,
+  writeLocalOwner,
+  type LocalOwner,
+  type OwnerStorage,
+} from '../../lib/storage/accountOwner'
 import { supabase } from '../../lib/supabase/client'
 import type { LanguageCode } from '../../types'
 import {
@@ -77,10 +83,27 @@ export type SyncState = {
   status: SyncStatus
   lastSyncedAt: string | null
   error: string | null
+  /**
+   * 이 기기의 소유자를 확인했는가.
+   *
+   * 확인 전에는 화면이 동기화 여부를 말하지 않는다 — 아직 모르는 것을 아는 척하면
+   * 남의 기록을 보여 줄 수 있다. 소유자 확인이 끝나야 참이 된다.
+   */
+  accountReady: boolean
+  /** 다른 계정의 기록이 이 기기에 남아 있어 동기화가 막혔다 */
+  accountBlocked: boolean
+  /** 아직 주인 없는 기기 기록을 계정으로 넘겨받을지 물어야 한다 */
+  claimNeeded: boolean
+  /** 계정에 묶지 않고 이 기기에서만 쓴다 — 사용자가 고른 결정일 수도 있다 */
+  localOnly: boolean
   /** 사람이 누르는 즉시 돌린다 */
   syncNow: () => Promise<void>
   /** 로그인·앱 시작·온라인 복귀 때 조용히 돌린다 (실패해도 조용히) */
   syncQuietly: () => Promise<void>
+  /** 주인 없는 기기 기록을 지금 계정으로 넘겨받는다 */
+  claimLocalData: (userId: string) => void
+  /** 이 기기에서만 쓰기로 정한다 — 다시 묻지 않는다 */
+  keepLocalOnly: () => void
   /**
    * 이 기기에 저장된 것이 서버보다 앞서 있는지.
    *
@@ -117,6 +140,48 @@ export function pendingCount(byStore: Record<string, number>): number {
 }
 
 /**
+ * 소유자와 지금 계정만으로 동기화 범위를 정한다.
+ *
+ * `resolveAccountScope` 는 기기 데이터까지 보지만, 문 앞에서는 그것으로 충분하다 —
+ * 동기화는 이미 이 기기에 있는 것만 다루므로 '넘겨받을지' 와 '막혔는지' 만 갈리면 된다.
+ * 특히 `kept: true` 는 사용자가 이미 내린 결정이므로 넘겨받기(claim)로 되돌리지 않는다.
+ */
+export function ownerSyncState(
+  owner: LocalOwner | null,
+  userId: string | null,
+): { canSync: boolean; accountBlocked: boolean; claimNeeded: boolean; localOnly: boolean } {
+  if (userId === null) {
+    return { canSync: false, accountBlocked: false, claimNeeded: false, localOnly: true }
+  }
+
+  if (owner === null) {
+    return { canSync: false, accountBlocked: false, claimNeeded: true, localOnly: true }
+  }
+
+  if (owner.kind === 'user') {
+    return owner.userId === userId
+      ? { canSync: true, accountBlocked: false, claimNeeded: false, localOnly: false }
+      : { canSync: false, accountBlocked: true, claimNeeded: false, localOnly: true }
+  }
+
+  if (owner.kept === true) {
+    return { canSync: false, accountBlocked: false, claimNeeded: false, localOnly: true }
+  }
+
+  return { canSync: false, accountBlocked: false, claimNeeded: true, localOnly: true }
+}
+
+/**
+ * 이 계정이 지금 동기화해도 되는가.
+ *
+ * 저장된 소유자를 읽지 못하거나 망가졌으면 거짓이다 — 모르는 것을 추측해서 남의
+ * 기록을 올리지 않는다. 저장소를 주입할 수 있게 둔 것은 시험과 SSR 을 위해서다.
+ */
+export function canSyncForUser(userId: string, storage?: OwnerStorage): boolean {
+  return ownerSyncState(readLocalOwner(storage), userId).canSync
+}
+
+/**
  * 계정 동기화 상태.
  *
  * 로그인하지 않은 상태는 'local' 다 — 오류가 아니라 정상이다.
@@ -126,26 +191,68 @@ export const useSyncStore = create<SyncState>((set) => ({
   status: 'local',
   lastSyncedAt: null,
   error: null,
+  accountReady: false,
+  accountBlocked: false,
+  claimNeeded: false,
+  localOnly: true,
   dirty: false,
   pendingByStore: {},
   notice: null,
   report: null,
 
   syncNow: async () => {
-    if (!useAuthStore.getState().user) return
+    const user = useAuthStore.getState().user
+    // 소유자가 이 계정이 아니면 서버에 아무것도 보내지 않는다. 버튼을 눌렀어도
+    // 남의 기록을 올릴 수는 없다 — 기기 범위로 물러난다.
+    if (!user || !canSyncForUser(user.id)) {
+      set({ status: 'local', error: null })
+      return
+    }
     // 사람이 누른 것이다 — 결과를 알려야 한다
     useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
     await run(set)
   },
 
   syncQuietly: async () => {
-    if (!useAuthStore.getState().user) return
+    const user = useAuthStore.getState().user
+    if (!user || !canSyncForUser(user.id)) {
+      set({ status: 'local', error: null })
+      return
+    }
     try {
       await run(set)
     } catch {
       // 조용히 돌리는 경로에서는 실패해도 사용자를 막지 않는다.
       // 다시 켜졌을 때 온라인 복귀 훅이 재시도한다.
     }
+  },
+
+  claimLocalData: (userId) => {
+    // 화면이 다른 계정으로 바뀌었는데 예전 화면의 버튼이 늦게 눌릴 수 있다
+    if (useAuthStore.getState().user?.id !== userId) return
+
+    const owner = readLocalOwner()
+    // 다른 계정의 표시는 넘겨받을 수 없다 — 그 기록은 그 계정의 것이다
+    if (owner !== null && owner.kind !== 'local') return
+
+    writeLocalOwner({ kind: 'user', userId })
+    set({ claimNeeded: false, localOnly: false, accountBlocked: false })
+    void useSyncStore.getState().syncQuietly()
+  },
+
+  keepLocalOnly: () => {
+    const current = useSyncStore.getState()
+    // 넘겨받기를 묻는 상태에서만 의미가 있고, 막힌 상태에는 이 출구가 없다
+    if (!current.claimNeeded || current.accountBlocked) return
+
+    writeLocalOwner({ kind: 'local', kept: true })
+    set({
+      claimNeeded: false,
+      localOnly: true,
+      accountBlocked: false,
+      status: 'local',
+      error: null,
+    })
   },
 }))
 
@@ -167,7 +274,9 @@ async function run(set: Setter): Promise<void> {
 
 async function doRun(set: Setter) {
   const user = useAuthStore.getState().user
-  if (!user) return
+  // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다 — 문에서 다시 확인한다
+  if (!user || !canSyncForUser(user.id)) return
+  const startedUserId = user.id
 
   // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
   // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다
@@ -186,6 +295,15 @@ async function doRun(set: Setter) {
       since: stored?.pull,
       pushedAt: stored?.pushedAt,
     })
+
+    /**
+     * 기다리는 사이 계정이 바뀌었을 수 있다.
+     *
+     * 이 기기의 DB 에는 이미 A 의 병합 결과가 쓰였을 수 있지만, 그것을 B 의 화면에
+     * 채택하거나 B 의 워터마크로 남기면 안 된다. A 로 다시 돌아오면 같은 동기화를
+     * 한 번 더 하면 되고, 그 동기화는 멱등이다.
+     */
+    if (useAuthStore.getState().user?.id !== startedUserId) return
 
     // 성공한 뒤에만 워터마크를 옮긴다 — 실패하면 같은 구간을 다시 읽고 다시 보낸다
     writeStoredSyncState(user.id, {
@@ -248,6 +366,9 @@ async function doRun(set: Setter) {
       }
     })
   } catch (error) {
+    // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
+    if (useAuthStore.getState().user?.id !== startedUserId) return
+
     // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
     if (error instanceof SyncUnavailable) {
       // 서버를 쓰지 않는 상태다 — '밀렸다'고 하지 않는다. 오류도 아닌 정상이다
@@ -282,6 +403,55 @@ export function useCloudSync() {
   }, [restore])
 
   /**
+   * 이 기기의 소유자를 먼저 정한다 — 동기화의 유일한 입구다.
+   *
+   * 소유자를 확인하기 전에는 `accountReady` 가 거짓이라 화면이 동기화 여부를 말하지
+   * 않는다. `ensureLocalOwner` 는 IndexedDB 를 읽으므로 늦게 끝날 수 있다. 그 사이
+   * 사용자가 바뀌면 예전 계정 기준의 판정을 새 계정에 적용하면 안 되므로 `cancelled`
+   * 로 막는다.
+   *
+   * 계정이 바뀌면 이전 계정의 화면 상태(보고서·밀린 개수)는 지운다. 기기 기록과
+   * 소유자 표시는 지우지 않는다 — 로그아웃했다고 학습 기록을 잃으면 안 된다.
+   */
+  useEffect(() => {
+    let cancelled = false
+
+    useSyncStore.setState({
+      accountReady: false,
+      pendingByStore: {},
+      report: null,
+      dirty: false,
+      lastSyncedAt: null,
+      notice: null,
+    })
+
+    void (async () => {
+      const userId = user?.id ?? null
+      const owner = await ensureLocalOwner(userId, { hasLocalData: hasLocalLearningData })
+      if (cancelled) return
+
+      const scope = ownerSyncState(owner, userId)
+      const next: Partial<SyncState> = {
+        accountReady: true,
+        accountBlocked: scope.accountBlocked,
+        claimNeeded: scope.claimNeeded,
+        localOnly: scope.localOnly,
+      }
+      if (!scope.canSync) {
+        next.status = 'local'
+        next.error = null
+      }
+      useSyncStore.setState(next)
+
+      if (scope.canSync) void useSyncStore.getState().syncQuietly()
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+
+  /**
    * 무언가를 바꿨으면 곧바로 서버로 보낸다.
    *
    * 예전에는 로그인·앱 시작·온라인 복귀에만 돌았다. 그래서 진도는 이 기기의
@@ -298,6 +468,14 @@ export function useCloudSync() {
     })
 
     const unsubscribe = onLocalWrite((store) => {
+      // 소유자가 이 계정이 아니면 '밀린 것' 으로 세지 않는다. 세면 화면이 이 기기의
+      // 남의 기록을 이 계정의 진도처럼 말하게 된다 — 저장은 이미 끝났고 기기에만 있다.
+      const current = useAuthStore.getState().user
+      if (!current || !canSyncForUser(current.id)) {
+        useSyncStore.setState({ status: 'local' })
+        return
+      }
+
       useSyncStore.setState((s) => ({
         dirty: true,
         pendingByStore: { ...s.pendingByStore, [store]: (s.pendingByStore[store] ?? 0) + 1 },
@@ -342,12 +520,9 @@ export function useCloudSync() {
    * 그때는 스토어의 `user` 가 아직 null 이라 첫 동기화가 아무것도 하지 못했다.
    *
    * 이제 auth 스토어가 세션을 따라가므로 `user` 가 바뀌는 것만 보면 된다.
+   * 첫 동기화는 소유자 초기화 효과가 맡는다 — 여기서 또 부르면 소유자 확인 전에
+   * 달려들 수 있다.
    */
-  useEffect(() => {
-    if (!user) return
-    void syncQuietly()
-  }, [user, syncQuietly])
-
   useEffect(() => {
     if (!user) return
     const online = () => void syncQuietly()
