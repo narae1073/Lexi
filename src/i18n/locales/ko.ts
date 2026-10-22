@@ -226,6 +226,7 @@ export const ko: Dictionary = {
     lastSynced: '마지막 동기화',
     pending: '아직 안 올라간 변경',
     pendingHint: '저장 횟수 기준입니다 — 단어 수가 아닙니다',
+    clockRollback: '이 기기의 시계가 뒤로 이동했습니다. 보내기 진행을 다시 잡고 로컬 변경을 다시 올립니다.',
     notSentYet: '아직 서버에 못 올린 변경 {count}번',
     nothingSent: '보낸 것이 0입니다 — 새로 보낼 것이 없습니다.',
     errorRateLimit:

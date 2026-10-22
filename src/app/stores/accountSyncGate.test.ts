@@ -75,6 +75,7 @@ const report = (languages: string[] = []): SyncReport => ({
   localWords: 0,
   occurrencePush: [],
   failures: [],
+  warnings: [],
   localWrites: {
     documents: 0,
     folders: 0,
@@ -486,6 +487,48 @@ describe('동기화 입구', () => {
     expect(useSyncStore.getState()).toMatchObject({ status: 'local', error: null })
     expect(useSyncStore.getState().lastSyncedAt).toBe(seeded.lastSyncedAt)
     expect(readStoredSyncState('user-a')).toEqual(seeded)
+  })
+
+  /**
+   * A future push watermark means the device clock moved back. The store must
+   * clear push progress before planning while leaving the pull watermark alone,
+   * and it must surface the warning on the report.
+   */
+  it('clears future push watermarks before syncing and surfaces the warning', async () => {
+    writeLocalOwner({ kind: 'user', userId: 'user-a' }, storage)
+    useAuthStore.setState({ user: account('user-a') })
+    useLanguagesStore.setState({ enrolled: ['fr'], ready: true })
+    const pull = { snapshot: '2026-01-01T00:00:00.000Z' }
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push: {
+        documents: '2027-01-01T00:00:00.000Z',
+        wordStates: '2026-01-02T00:00:00.000Z',
+      },
+      localEpoch: 'epoch-a',
+    })
+
+    vi.mocked(syncOnce).mockResolvedValue({
+      ...report([]),
+      watermarks: pull,
+      pushWatermarks: { documents: '2026-10-23T00:00:00.000Z' },
+    })
+
+    vi.spyOn(useDocumentsStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useFoldersStore.getState(), 'load').mockImplementation(async () => {})
+    vi.spyOn(useWordStatesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+    vi.spyOn(useOccurrencesStore.getState(), 'loadLanguage').mockImplementation(async () => {})
+
+    await useSyncStore.getState().syncQuietly()
+
+    // The whole push map is cleared, and pull is still the stored snapshot.
+    expect(syncOnce).toHaveBeenCalledWith(expect.objectContaining({ push: {}, since: pull }))
+    expect(useSyncStore.getState().report?.warnings).toContain('clock-rollback')
+    expect(readStoredSyncState('user-a')).toMatchObject({
+      pull,
+      push: { documents: '2026-10-23T00:00:00.000Z' },
+    })
   })
 
   /**

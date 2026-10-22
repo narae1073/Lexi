@@ -54,6 +54,13 @@ export type SyncFailure = {
 }
 
 /**
+ * A safe-degradation notice for the cycle. `clock-rollback` means the device
+ * clock moved behind a stored push watermark, so every push watermark was
+ * cleared and the local rows were re-pushed by timestamp/dirty key.
+ */
+export type SyncWarning = 'clock-rollback'
+
+/**
  * What one push attempt did.
  *
  * `succeeded` names tables that fully went through; `succeededStores` maps those
@@ -122,6 +129,11 @@ export type SyncReport = {
   occurrencePush: string[]
   /** Rows, tables, or the pull that failed this cycle. */
   failures: SyncFailure[]
+  /**
+   * Non-fatal conditions the user should know about. A clock rollback clears
+   * every push watermark; the stored pull watermark is never cleared.
+   */
+  warnings: SyncWarning[]
   /**
    * What this cycle actually wrote locally — unchanged rows are not counted.
    * `occurrences` counts documents whose occurrence rows were replaced.

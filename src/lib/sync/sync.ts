@@ -38,11 +38,13 @@ import {
   pushOccurrences,
   wordStatePushKey,
 } from './push'
+import { clearPushOnClockRollback } from './syncState'
 import type {
   PullResult,
   PullWatermarks,
   PushWatermarks,
   SyncReport,
+  SyncWarning,
 } from './types'
 
 export type { PullResult, PullWatermarks, PushWatermarks, SyncReport } from './types'
@@ -51,6 +53,7 @@ export type {
   PushResult,
   PushTable,
   SyncFailure,
+  SyncWarning,
 } from './types'
 export { pull } from './pull'
 export { push, pushOccurrences } from './push'
@@ -393,8 +396,18 @@ export async function syncOnce({
           occurrences: pushWatermarks.occurrences ?? pushedAt,
         }
 
+  /**
+   * A clock rollback would leave every local row behind a future watermark
+   * forever. Clear all push watermarks for this cycle and retry from the local
+   * snapshot; the pull watermark is a server clock and is left untouched. The
+   * dirty-key union below still covers a write that lands during this cycle.
+   */
+  const clockGuard = clearPushOnClockRollback(initialPush)
+  const effectivePush = clockGuard.push
+  const warnings: SyncWarning[] = clockGuard.rolledBack ? ['clock-rollback'] : []
+
   const watermarkMs = (table: keyof PushWatermarks): number | undefined => {
-    const iso = initialPush[table]
+    const iso = effectivePush[table]
     if (iso === undefined) return undefined
     const at = Date.parse(iso)
     // An unreadable watermark is no evidence that a row was pushed.
@@ -566,7 +579,7 @@ export async function syncOnce({
 
   // Advance only the tables that fully went through. A failed table keeps its
   // old watermark so the next cycle retries it.
-  const nextPush: PushWatermarks = { ...initialPush }
+  const nextPush: PushWatermarks = { ...effectivePush }
   for (const table of ['documents', 'folders', 'wordStates', 'tombstones'] as const) {
     if (tableResult.succeeded.has(table)) nextPush[table] = syncStartedAt
   }
@@ -600,6 +613,7 @@ export async function syncOnce({
     localWords: mergedWords.length,
     occurrencePush: occurrenceDocumentIdsToPush,
     failures,
+    warnings,
     localWrites,
     succeededStores: [...succeededStores],
     succeededKeys,

@@ -224,6 +224,11 @@ export function AccountPanel() {
           )}
         </dl>
 
+        {/* The device clock moved back; push watermarks were cleared safely. */}
+        {report?.warnings.includes('clock-rollback') && (
+          <p className="text-status-unsure mt-2 text-xs">{t('account.clockRollback')}</p>
+        )}
+
         <button
           type="button"
           disabled={status === 'syncing'}

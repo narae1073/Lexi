@@ -25,7 +25,11 @@ import {
   syncOnce,
   type SyncReport,
 } from '../../lib/sync/sync'
-import { readStoredSyncState, writeStoredSyncState } from '../../lib/sync/syncState'
+import {
+  clearPushOnClockRollback,
+  readStoredSyncState,
+  writeStoredSyncState,
+} from '../../lib/sync/syncState'
 import { createSingleFlight, type SingleFlight } from '../../lib/sync/singleFlight'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
@@ -340,12 +344,18 @@ async function doRun(set: Setter) {
 
   try {
     const languages = useLanguagesStore.getState().enrolled
+    // A future push watermark means the clock moved back. Retry from the local
+    // snapshot instead of trusting timestamps; pull is a server clock and stays.
+    const clockGuard = clearPushOnClockRollback(stored?.push ?? {})
     const report = await syncOnce({
       userId: user.id,
       languages,
       since: stored?.pull,
-      push: stored?.push,
+      push: clockGuard.push,
     })
+    if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
+      report.warnings = [...report.warnings, 'clock-rollback']
+    }
 
     /**
      * 기다리는 사이 계정이 바뀌었을 수 있다.

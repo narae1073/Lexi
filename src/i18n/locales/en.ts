@@ -227,6 +227,8 @@ export const en = {
     lastSynced: 'Last synced',
     pending: 'Changes not sent yet',
     pendingHint: 'Counted as saves, not as words',
+    clockRollback:
+      "This device's clock moved back. Push progress was reset and local changes are being sent again.",
     notSentYet: '{count} change(s) not sent to the server yet',
     nothingSent: 'Nothing was sent — there was nothing new to send.',
     errorRateLimit:
