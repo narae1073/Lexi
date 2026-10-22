@@ -68,6 +68,60 @@ describe('resetLocalAccount', () => {
     expect(reload).toHaveBeenCalledTimes(1)
   })
 
+  it('동기화가 idle 이 될 때까지 기다린 뒤 그 사이의 로컬 쓰기까지 지운다', async () => {
+    const events: string[] = []
+    let releaseIdle!: () => void
+    const idleGate = new Promise<void>((resolve) => {
+      releaseIdle = resolve
+    })
+    const waitForIdle = vi.fn(async () => {
+      events.push('wait-start')
+      await idleGate
+      await idbPut(STORES.documents, { id: 'late-write', title: 'sync 중 쓰인 문서' })
+      events.push('wait-end')
+    })
+    const nativeDeleteDatabase = indexedDB.deleteDatabase.bind(indexedDB)
+    const deleteSpy = vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((name) => {
+      events.push('delete')
+      return nativeDeleteDatabase(name)
+    })
+    const reload = vi.fn()
+
+    const resetting = resetLocalAccount('user-b', { storage, reload, waitForIdle })
+    await Promise.resolve()
+    const deleteStartedBeforeIdle = events.includes('delete')
+    releaseIdle()
+    await resetting
+
+    expect(deleteStartedBeforeIdle).toBe(false)
+    expect(waitForIdle).toHaveBeenCalledTimes(1)
+    expect(events).toEqual(['wait-start', 'wait-end', 'delete'])
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    await expect(idbGetAll(STORES.documents)).resolves.toEqual([])
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('idle waiter 가 reject 되면 DB 를 지우거나 새로고침하지 않는다', async () => {
+    await idbPut(STORES.documents, { id: 'keep-doc', title: '남길 문서' })
+    const reload = vi.fn()
+    const error = new Error('sync is still active')
+
+    await expect(
+      resetLocalAccount('user-b', {
+        storage,
+        reload,
+        waitForIdle: async () => {
+          throw error
+        },
+      }),
+    ).rejects.toBe(error)
+
+    await expect(idbGetAll(STORES.documents)).resolves.toEqual([
+      { id: 'keep-doc', title: '남길 문서' },
+    ])
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   /**
    * `writeLocalOwner` 는 저장 실패를 삼킨다. 그대로 새로고침하면 소유자가 바뀌지
    * 않은 채 잠금 화면으로 돌아오고, 사용자는 초기화가 끝난 줄 안다. 소유자를

@@ -67,14 +67,16 @@ function warn(target, name, detail = '') {
 }
 
 function parseDirectives(value) {
-  const out = new Map()
+  const directives = new Map()
+  const duplicates = []
   for (const part of value.split(';')) {
     const tokens = part.trim().split(/\s+/).filter(Boolean)
     if (!tokens.length) continue
     const name = tokens.shift().toLowerCase()
-    out.set(name, tokens)
+    if (directives.has(name)) duplicates.push(name)
+    else directives.set(name, tokens)
   }
-  return out
+  return { directives, duplicates }
 }
 
 function parseCacheControl(value) {
@@ -140,8 +142,8 @@ function checkPermissions(target, headers) {
 function checkCsp(target, headers) {
   const value = headers.get('content-security-policy')
   if (value === null) return fail(target, 'content-security-policy', 'missing')
-  const directives = parseDirectives(value)
-  const problems = []
+  const { directives, duplicates } = parseDirectives(value)
+  const problems = duplicates.map((name) => `${name} is duplicated`)
   for (const [name, expected] of CSP_DIRECTIVES) {
     const actual = directives.get(name)
     if (!actual) {
@@ -152,12 +154,12 @@ function checkCsp(target, headers) {
       problems.push(`${name} is "${actual.join(' ')}", expected "${expected.join(' ')}"`)
     }
   }
-  if (problems.length) fail(target, 'content-security-policy', problems.join('; '))
-  else pass(target, 'content-security-policy', 'all required directives match')
-
   for (const name of directives.keys()) {
-    if (!CSP_DIRECTIVES.has(name)) warn(target, 'CSP extra directive', `${name} is not in the approved CSP`)
+    if (!CSP_DIRECTIVES.has(name)) problems.push(`${name} is not in the approved CSP`)
   }
+
+  if (problems.length) fail(target, 'content-security-policy', problems.join('; '))
+  else pass(target, 'content-security-policy', 'all reviewed directives match')
 }
 
 function checkSecurity(target, headers) {

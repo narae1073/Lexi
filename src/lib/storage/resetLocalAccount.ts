@@ -22,8 +22,13 @@ const ACCOUNT_KEYS = ['lexi.purged', 'lexi.languages', 'lexi.syncState'] as cons
  */
 export async function resetLocalAccount(
   userId: string,
-  options: { storage?: OwnerStorage; reload?: () => void } = {},
+  options: {
+    storage?: OwnerStorage
+    reload?: () => void
+    waitForIdle?: () => Promise<void>
+  } = {},
 ): Promise<void> {
+  await options.waitForIdle?.()
   await deleteLocalDatabase()
 
   const storage = options.storage ?? globalThis.localStorage

@@ -38,9 +38,9 @@ describe('makeQuotaLimits', () => {
 
     expect(limits).toEqual([
       {
-        bucket: sha256('translate:install:install-1'),
-        limit: 200,
-        windowSeconds: 3600,
+        bucket: sha256('translate:global'),
+        limit: 10000,
+        windowSeconds: 86400,
       },
       {
         bucket: sha256('translate:ip:203.0.113.7'),
@@ -48,9 +48,9 @@ describe('makeQuotaLimits', () => {
         windowSeconds: 3600,
       },
       {
-        bucket: sha256('translate:global'),
-        limit: 10000,
-        windowSeconds: 86400,
+        bucket: sha256('translate:install:install-1'),
+        limit: 200,
+        windowSeconds: 3600,
       },
     ])
   })
@@ -60,9 +60,9 @@ describe('makeQuotaLimits', () => {
 
     expect(limits).toEqual([
       {
-        bucket: sha256('dictionary:install:install-2'),
-        limit: 600,
-        windowSeconds: 3600,
+        bucket: sha256('dictionary:global'),
+        limit: 30000,
+        windowSeconds: 86400,
       },
       {
         bucket: sha256('dictionary:ip:198.51.100.9'),
@@ -70,9 +70,9 @@ describe('makeQuotaLimits', () => {
         windowSeconds: 3600,
       },
       {
-        bucket: sha256('dictionary:global'),
-        limit: 30000,
-        windowSeconds: 86400,
+        bucket: sha256('dictionary:install:install-2'),
+        limit: 600,
+        windowSeconds: 3600,
       },
     ])
   })
@@ -97,9 +97,9 @@ describe('makeQuotaLimits', () => {
 
 describe('enforceQuota', () => {
   const limits: QuotaLimit[] = [
-    { bucket: 'a', limit: 10, windowSeconds: 60 },
-    { bucket: 'b', limit: 20, windowSeconds: 3600 },
-    { bucket: 'c', limit: 30, windowSeconds: 86400 },
+    { bucket: 'global', limit: 30, windowSeconds: 86400 },
+    { bucket: 'ip', limit: 20, windowSeconds: 3600 },
+    { bucket: 'install', limit: 10, windowSeconds: 3600 },
   ]
 
   it('모든 버킷을 순서대로 소비하고 통과하면 true 다', async () => {
@@ -108,19 +108,32 @@ describe('enforceQuota', () => {
     await expect(enforceQuota(consume, limits)).resolves.toBe(true)
 
     expect(consume.mock.calls).toEqual([
-      ['a', 10, 60],
-      ['b', 20, 3600],
-      ['c', 30, 86400],
+      ['global', 30, 86400],
+      ['ip', 20, 3600],
+      ['install', 10, 3600],
     ])
   })
 
   it('하나라도 거부되면 즉시 false 로 멈춘다', async () => {
-    const consume = vi.fn(async (bucket: string) => bucket !== 'b')
+    const consume = vi.fn(async (bucket: string) => bucket !== 'ip')
 
     await expect(enforceQuota(consume, limits)).resolves.toBe(false)
 
     expect(consume).toHaveBeenCalledTimes(2)
-    expect(consume.mock.calls.map(([bucket]) => bucket)).toEqual(['a', 'b'])
+    expect(consume.mock.calls.map(([bucket]) => bucket)).toEqual(['global', 'ip'])
+  })
+
+  it('IP 거부 뒤에는 회전 가능한 install 버킷을 호출하지 않는다', async () => {
+    const routeLimits = await makeQuotaLimits('translate', 'rotating-install', '203.0.113.9')
+    const consume = vi.fn(async (bucket: string) => bucket !== routeLimits[1].bucket)
+
+    await expect(enforceQuota(consume, routeLimits)).resolves.toBe(false)
+
+    expect(consume.mock.calls.map(([bucket]) => bucket)).toEqual([
+      routeLimits[0].bucket,
+      routeLimits[1].bucket,
+    ])
+    expect(consume.mock.calls.some(([bucket]) => bucket === routeLimits[2].bucket)).toBe(false)
   })
 
   it('소비 중 오류는 삼키지 않는다', async () => {

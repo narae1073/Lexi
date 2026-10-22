@@ -50,16 +50,16 @@ export async function makeQuotaLimits(
 ): Promise<QuotaLimit[]> {
   const limits = ROUTE_LIMITS[route]
 
-  const [installBucket, ipBucket, globalBucket] = await Promise.all([
-    sha256Hex(`${route}:install:${installId}`),
-    sha256Hex(`${route}:ip:${normalizeIp(ip)}`),
+  const [globalBucket, ipBucket, installBucket] = await Promise.all([
     sha256Hex(`${route}:global`),
+    sha256Hex(`${route}:ip:${normalizeIp(ip)}`),
+    sha256Hex(`${route}:install:${installId}`),
   ])
 
   return [
-    { bucket: installBucket, limit: limits.install, windowSeconds: HOUR },
-    { bucket: ipBucket, limit: limits.ip, windowSeconds: HOUR },
     { bucket: globalBucket, limit: limits.global, windowSeconds: DAY },
+    { bucket: ipBucket, limit: limits.ip, windowSeconds: HOUR },
+    { bucket: installBucket, limit: limits.install, windowSeconds: HOUR },
   ]
 }
 

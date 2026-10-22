@@ -25,6 +25,7 @@ import {
   isAccountGateReady,
   ownerSyncState,
   useSyncStore,
+  waitForSyncIdle,
 } from './sync'
 import { syncOnce, type SyncReport } from '../../lib/sync/sync'
 import { useDocumentsStore } from './documents'
@@ -115,6 +116,12 @@ afterEach(() => {
   if (originalLocalStorage === undefined) delete globals.localStorage
   else globals.localStorage = originalLocalStorage
   vi.restoreAllMocks()
+})
+
+describe('동기화 idle 대기', () => {
+  it('동기화가 한 번도 시작되지 않았으면 바로 resolve 된다', async () => {
+    await expect(waitForSyncIdle()).resolves.toBeUndefined()
+  })
 })
 
 describe('소유자와 계정으로 정한 동기화 범위', () => {

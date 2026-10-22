@@ -25,7 +25,7 @@ import {
   type PullWatermarks,
   type SyncReport,
 } from '../../lib/sync/sync'
-import { createSingleFlight } from '../../lib/sync/singleFlight'
+import { createSingleFlight, type SingleFlight } from '../../lib/sync/singleFlight'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
@@ -324,7 +324,12 @@ type Setter = (partial: Partial<SyncState> | ((s: SyncState) => Partial<SyncStat
  * 행을 두 번 읽고 쓰고, 밀린 개수를 두 번 뺀다. 실행 중에 들어온 요청은 버리지
  * 않고 끝난 뒤 한 번 더 돈다.
  */
-let exclusive: (() => Promise<void>) | null = null
+let exclusive: SingleFlight | null = null
+
+/** Wait until the active sync and any queued rerun have both finished. */
+export function waitForSyncIdle(): Promise<void> {
+  return exclusive?.whenIdle() ?? Promise.resolve()
+}
 
 async function run(set: Setter): Promise<void> {
   exclusive ??= createSingleFlight(() => doRun(set))

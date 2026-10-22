@@ -8,7 +8,9 @@
  * `run` 은 스스로 실패를 삼키는 함수여야 한다. 여기서는 오류를 해석하지 않고
  * 그대로 호출자에게 넘긴다.
  */
-export function createSingleFlight(run: () => Promise<void>): () => Promise<void> {
+export type SingleFlight = (() => Promise<void>) & { whenIdle(): Promise<void> }
+
+export function createSingleFlight(run: () => Promise<void>): SingleFlight {
   let inFlight: Promise<void> | null = null
   let rerun = false
 
@@ -33,5 +35,13 @@ export function createSingleFlight(run: () => Promise<void>): () => Promise<void
     return inFlight
   }
 
-  return invoke
+  const singleFlight = invoke as SingleFlight
+  singleFlight.whenIdle = async () => {
+    while (inFlight || rerun) {
+      const current = inFlight
+      if (current) await current.catch(() => undefined)
+    }
+  }
+
+  return singleFlight
 }

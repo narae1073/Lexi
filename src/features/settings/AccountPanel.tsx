@@ -5,8 +5,7 @@ import { showGoogleLogin } from '../../lib/flags'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { resetLocalAccount } from '../../lib/storage/resetLocalAccount'
 import { CODE_MAX_DIGITS, CODE_MIN_DIGITS, useAuthStore } from '../../app/stores/auth'
-import { useSyncStore } from '../../app/stores/sync'
-import { usePendingSummary, useSyncStatus } from '../../app/stores/sync'
+import { usePendingSummary, useSyncStore, useSyncStatus, waitForSyncIdle } from '../../app/stores/sync'
 import { useTranslation } from '../../app/stores/settings'
 import { ConfirmDialog } from '../reader/ConfirmDialog'
 
@@ -77,7 +76,7 @@ export function AccountPanel() {
       setResetError(null)
       try {
         // 성공하면 새로고침된다 — 여기서 busy 를 풀면 잠깐 다시 눌린다
-        await resetLocalAccount(user.id)
+        await resetLocalAccount(user.id, { waitForIdle: waitForSyncIdle })
       } catch (cause) {
         // 지우지 못했으면 성공한 척하지 않는다 — 새로고침하지 않고 이유를 보여 준다
         setResetError(cause instanceof Error ? cause.message : String(cause))
