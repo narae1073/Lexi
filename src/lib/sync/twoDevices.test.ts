@@ -682,4 +682,46 @@ describe('증분 동기화', () => {
     )
     expect(local.find((row) => row.documentId === doc.id)?.sentence).toBe('새 문장')
   })
+
+  it('writes no occurrence rows when an incremental sync has nothing new — including the overlap re-read', async () => {
+    const server = memoryServer()
+    server.setSnapshot('2026-10-05T00:00:00.000Z')
+    server.add('documents', {
+      id: doc.id,
+      user_id: 'user-1',
+      title: doc.title,
+      language_code: 'fr',
+      raw_text: doc.rawText,
+      created_at: doc.createdAt,
+      updated_at: doc.updatedAt,
+      deleted_at: null,
+      folder_id: null,
+      folder_updated_at: null,
+      server_updated_at: '2026-10-05T00:00:00+00:00',
+    })
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: 'user-1',
+      document_id: doc.id,
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 0,
+      char_end: 4,
+      sentence: '옛 문장',
+      occurrences_count: 1,
+    })
+
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.documentMeta, { documentId: doc.id, lemmaVersion: -1 })
+    // Local content differs, so the first sync actually replaces this document.
+    await idbPut(STORES.wordOccurrences, state('chat', { sentence: '로컬 문장', charEnd: 4 }))
+
+    const first = await sync(server)
+    expect(first.localWrites.occurrences).toBe(1)
+
+    // The stamp equals the previous snapshot, so the five-minute overlap still pulls it.
+    const second = await sync(server, { since: first.watermarks, pushedAt: PUSHED_AT })
+    expect(second.localWrites.occurrences).toBe(0)
+  })
 })

@@ -19,7 +19,12 @@ import {
   type StoredWordState,
   type WordStateRecord,
 } from './merge'
-import { writeLocal } from './writeLocal'
+import {
+  changedLocalOccurrenceDocuments,
+  occurrenceContentKey,
+  writeLocal,
+  type WriteLocalResult,
+} from './writeLocal'
 import {
   documentTombstoneToRow,
   documentToRow,
@@ -31,7 +36,7 @@ import type { PullWatermarks } from './types'
 
 export type { PullResult, PullWatermarks } from './types'
 export { pull } from './pull'
-export { writeLocal } from './writeLocal'
+export { changedLocalOccurrenceDocuments, writeLocal } from './writeLocal'
 export type { WriteLocalOptions, WriteLocalResult } from './writeLocal'
 // Kept here so existing imports (sync.ts as the public sync surface) still work.
 export { mergeDocuments, mergeFolders, mergeTombstones }
@@ -63,6 +68,8 @@ export type SyncReport = {
    * 비어 있으면 아무것도 보내지 않는다.
    */
   occurrencePush: string[]
+  /** 이번 사이클이 로컬에 실제로 쓴 행 수 — 바뀐 것만 센다 */
+  localWrites: WriteLocalResult
 }
 
 /**
@@ -207,14 +214,16 @@ export async function syncOnce({
   )
 
   /**
-   * 증분 동기화에서 서버가 바뀐 문서는 등장 기록도 **통째로** 교체한다.
-   * 로컬에서 다시 계산한 문서는 로컬이 이긴다 — 서버의 옛 표기 기록을 받지 않는다.
+   * 서버가 준 문서는 등장 기록도 **통째로** 교체한다 — 전체 동기화는 서버의
+   * 모든 문서가, 증분 동기화는 이번에 받은 문서가 대상이다. 그러지 않으면 서버에서
+   * 사라진 옛 키가 로컬에 남는다. 로컬에서 다시 계산한 문서는 로컬이 이긴다 —
+   * 서버의 옛 표기 기록을 받지 않는다.
    */
   const remoteDocumentIds = new Set(remote.documents.map((row) => row.id))
   const incremental = since?.snapshot !== undefined
-  const replaceDocuments = incremental
-    ? new Set([...remoteDocumentIds].filter((id) => !recomputed.has(id)))
-    : new Set<string>()
+  const replaceDocuments = new Set(
+    [...remoteDocumentIds].filter((id) => !recomputed.has(id)),
+  )
 
   const occurrences = mergeOccurrences(
     local.occurrences,
@@ -255,17 +264,21 @@ export async function syncOnce({
   )
 
   /**
-   * Task 4 keeps Release 1's occurrence write behavior: every document present
-   * in the pull result is replaced, except one recomputed during this sync.
-   * Task 5 narrows this to documents whose merged occurrences actually changed.
+   * Only documents whose merged occurrence content differs from the local
+   * snapshot are written. A no-change sync — including the five-minute overlap
+   * pulling a document again, or a document opened elsewhere with identical
+   * occurrences — must not replace rows that are already correct. A document
+   * whose merged rows are gone stays in the set; `writeLocal` clears it with an
+   * empty list. Documents recomputed while the sync was running are skipped:
+   * their fresh local rows are newer than this plan.
    */
   const occurrenceDocumentIds = new Set(
-    occurrences
-      .map((record) => record.documentId)
-      .filter((documentId) => !changedDuringSync.has(documentId)),
+    changedLocalOccurrenceDocuments(occurrences, local.occurrences).filter(
+      (documentId) => !changedDuringSync.has(documentId),
+    ),
   )
 
-  await writeLocal(
+  const localWrites = await writeLocal(
     mergedDocuments,
     mergedWords,
     occurrences,
@@ -389,6 +402,7 @@ export async function syncOnce({
      */
     localWords: mergedWords.length,
     occurrencePush,
+    localWrites,
   }
 }
 
@@ -428,18 +442,6 @@ type OccurrenceContentRow = {
   occurrences_count?: number
 }
 
-/** 한 줄의 내용을 한 문자열로 — 표기만이 아니라 문장·위치·횟수까지 본다 */
-function occurrenceKey(
-  lemma: string,
-  surface: string,
-  charStart: number,
-  charEnd: number,
-  sentence: string,
-  count: number,
-): string {
-  return `${lemma}\u0000${surface}\u0000${charStart}\u0000${charEnd}\u0000${sentence}\u0000${count}`
-}
-
 export function changedOccurrenceDocuments(
   merged: WordOccurrence[],
   remoteRows: ReadonlyArray<OccurrenceContentRow>,
@@ -449,7 +451,7 @@ export function changedOccurrenceDocuments(
   for (const row of remoteRows) {
     const set = remoteKey.get(row.document_id) ?? new Set<string>()
     set.add(
-      occurrenceKey(
+      occurrenceContentKey(
         row.lemma,
         row.surface,
         row.char_start,
@@ -466,7 +468,7 @@ export function changedOccurrenceDocuments(
     for (const surface of record.surfaces) {
       const set = localKey.get(record.documentId) ?? new Set<string>()
       set.add(
-        occurrenceKey(
+        occurrenceContentKey(
           record.lemma,
           surface,
           record.charStart,

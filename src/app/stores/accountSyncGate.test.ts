@@ -71,6 +71,13 @@ const report = (languages: string[] = []): SyncReport => ({
   serverDocuments: 0,
   localWords: 0,
   occurrencePush: [],
+  localWrites: {
+    documents: 0,
+    folders: 0,
+    wordStates: 0,
+    tombstones: 0,
+    occurrences: 0,
+  },
 })
 
 let storage: MemoryStorage

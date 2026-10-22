@@ -18,6 +18,92 @@ import {
   type WordStateRecord,
 } from './merge'
 
+/**
+ * Content key for one occurrence row.
+ *
+ * The whole content matters, not just the lemma: a sentence, position, or
+ * count can change while the word stays in the same place. `surfaces` are
+ * expanded by the caller, one key per surface.
+ */
+export function occurrenceContentKey(
+  lemma: string,
+  surface: string,
+  charStart: number,
+  charEnd: number,
+  sentence: string,
+  count: number,
+): string {
+  return `${lemma}\u0000${surface}\u0000${charStart}\u0000${charEnd}\u0000${sentence}\u0000${count}`
+}
+
+function occurrenceKeysByDocument(
+  records: readonly WordOccurrence[],
+): Map<string, Set<string>> {
+  const byDocument = new Map<string, Set<string>>()
+  for (const record of records) {
+    const keys = byDocument.get(record.documentId) ?? new Set<string>()
+    for (const surface of record.surfaces) {
+      keys.add(
+        occurrenceContentKey(
+          record.lemma,
+          surface,
+          record.charStart,
+          record.charEnd,
+          record.sentence,
+          record.count,
+        ),
+      )
+    }
+    byDocument.set(record.documentId, keys)
+  }
+  return byDocument
+}
+
+function sameOccurrenceKeys(
+  left: ReadonlySet<string> | undefined,
+  right: ReadonlySet<string> | undefined,
+): boolean {
+  const leftSize = left?.size ?? 0
+  const rightSize = right?.size ?? 0
+  if (leftSize !== rightSize) return false
+  if (left === undefined) return true
+  for (const key of left) {
+    if (right === undefined || !right.has(key)) return false
+  }
+  return true
+}
+
+/**
+ * Documents whose occurrence rows actually differ between the merge result and
+ * the local snapshot.
+ *
+ * A sync plans from a read taken before the write transaction. The merge result
+ * still names every document it touched, but most of them are unchanged — a
+ * no-change sync, or an overlap re-read of a document that was only opened,
+ * would otherwise rewrite rows that are already correct. The write set is the
+ * difference, per document, over the full row content.
+ *
+ * A document whose local rows exist and whose merged rows are gone is included
+ * with no merged rows: the caller clears it instead of leaving stale keys.
+ */
+export function changedLocalOccurrenceDocuments(
+  merged: readonly WordOccurrence[],
+  local: readonly WordOccurrence[],
+  onlyDocumentIds?: ReadonlySet<string>,
+): string[] {
+  const mergedKeys = occurrenceKeysByDocument(merged)
+  const localKeys = occurrenceKeysByDocument(local)
+  const documentIds = new Set([...mergedKeys.keys(), ...localKeys.keys()])
+
+  const changed: string[] = []
+  for (const documentId of documentIds) {
+    if (onlyDocumentIds !== undefined && !onlyDocumentIds.has(documentId)) continue
+    if (sameOccurrenceKeys(mergedKeys.get(documentId), localKeys.get(documentId))) continue
+    changed.push(documentId)
+  }
+  return changed
+}
+
 export type WriteLocalOptions = {
   /** Document ids whose occurrence rows must be replaced, including empty lists. */
   occurrenceDocumentIds: ReadonlySet<string>
