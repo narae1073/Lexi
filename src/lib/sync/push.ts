@@ -351,6 +351,11 @@ export async function push({
 /**
  * Replaces occurrence rows one document at a time. A failed document is
  * recorded and the loop continues; only a fully clean table advances.
+ *
+ * `onlyDocumentIds` is authoritative: a document listed there with no records
+ * still sends `p_rows: []`, which clears its server rows. Only an omitted or
+ * empty list means "nothing to do" — never skip a listed live document just
+ * because `records` is empty.
  */
 export async function pushOccurrences(
   _userId: string,
@@ -366,6 +371,8 @@ export async function pushOccurrences(
     else byDocument.set(record.documentId, [record])
   }
 
+  // An explicit list is the push plan: keep every listed document, including a
+  // live one whose current row set is empty. Without a list, push what has rows.
   const documentIds = onlyDocumentIds
     ? [...new Set(onlyDocumentIds)]
     : [...byDocument.keys()]
@@ -442,6 +449,11 @@ export type DirtyCandidates = {
   resolved: DirtyKey[]
 }
 
+export type DirtyCandidateContext = {
+  /** Documents purged on either side; their server rows go with the tombstone. */
+  tombstoneIds?: ReadonlySet<string>
+}
+
 /**
  * Loads the **current** local row for every dirty key.
  *
@@ -449,9 +461,16 @@ export type DirtyCandidates = {
  * there is nothing to send, so the journal entry can be cleared. The union with
  * timestamp-selected rows then makes a write that landed at/below the watermark
  * impossible to skip.
+ *
+ * Occurrence keys are the exception: an empty local row set on a live document
+ * is still a meaningful push — "replace this document's occurrences with
+ * nothing" — and must reach the server so stale rows disappear elsewhere. A
+ * tombstoned document is resolved instead: the tombstone push deletes its
+ * occurrence rows already.
  */
 export async function loadDirtyCandidates(
   dirtyKeys: readonly DirtyKey[],
+  { tombstoneIds = new Set<string>() }: DirtyCandidateContext = {},
 ): Promise<DirtyCandidates> {
   const documents: Document[] = []
   const folders: Folder[] = []
@@ -501,11 +520,27 @@ export async function loadDirtyCandidates(
         'documentId',
         dirty.key,
       )
-      if (rows.length === 0) resolved.push(dirty)
-      else {
+      if (rows.length > 0) {
         occurrences.push(...rows)
         occurrenceDocumentIds.push(dirty.key)
+        continue
       }
+
+      // No local rows. The push unit is the document, so an empty row set is
+      // still a replace — but only when the document is live on this device.
+      if (tombstoneIds.has(dirty.key)) {
+        // The tombstone push deletes the server rows; nothing left to send.
+        resolved.push(dirty)
+        continue
+      }
+      const document = await idbGet<Document>(STORES.documents, dirty.key)
+      if (document === undefined) {
+        // Without a local document there is no evidence it is live, and an
+        // empty replace would delete rows another device may still need.
+        resolved.push(dirty)
+        continue
+      }
+      occurrenceDocumentIds.push(dirty.key)
       continue
     }
 

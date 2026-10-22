@@ -49,8 +49,8 @@ const doc = (id: string, over: Partial<Document> = {}): Document => ({
   ...over,
 })
 
-/** It is 2026-10-23 in this environment; any 2027 watermark is in the future. */
-const FUTURE = '2027-01-01T00:00:00.000Z'
+/** One day ahead of this run — always "the future", so it cannot date-rot. */
+const FUTURE = new Date(Date.now() + 86_400_000).toISOString()
 
 async function clearStore(store: StoreName) {
   for (const row of await idbGetAll<Record<string, unknown>>(store)) {

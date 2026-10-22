@@ -506,7 +506,7 @@ export async function syncOnce({
    * local row is loaded here and unioned with the timestamp-selected rows.
    */
   const dirtyKeys = await readDirtyKeys()
-  const dirtyCandidates = await loadDirtyCandidates(dirtyKeys)
+  const dirtyCandidates = await loadDirtyCandidates(dirtyKeys, { tombstoneIds })
   // A journal entry whose row no longer exists has nothing to send.
   for (const dirty of dirtyCandidates.resolved) {
     await clearDirtyIfRevision(dirty.store, dirty.key, dirty.revision)

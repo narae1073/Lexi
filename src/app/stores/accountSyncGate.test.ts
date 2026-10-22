@@ -790,7 +790,8 @@ describe('동기화 입구', () => {
       version: 2,
       pull,
       push: {
-        documents: '2027-01-01T00:00:00.000Z',
+        // One day ahead of this run: a future watermark without a fixed date.
+        documents: new Date(Date.now() + 86_400_000).toISOString(),
         wordStates: '2026-01-02T00:00:00.000Z',
       },
       localEpoch: (await ensureLocalSyncMeta()).epoch,

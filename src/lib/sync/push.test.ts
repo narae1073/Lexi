@@ -7,10 +7,12 @@ import {
   idbGetAll,
   idbPut,
   readDirtyKeys,
+  replaceOccurrences,
   type StoreName,
 } from '../../lib/storage/localDb'
 import type { Document } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
+import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { LEGACY_PURGE_AT } from '../storage/purged'
 import { push, syncOnce, type PullWatermarks, type PushWatermarks } from './sync'
 import { memoryServer, type Server } from './testMemoryServer'
@@ -295,6 +297,72 @@ describe('dirty keys are the clock-safe fallback', () => {
     expect(stale.succeededKeys).toEqual([firstDirty])
     expect(await readDirtyKeys()).toContainEqual(
       expect.objectContaining({ store: 'documents', key: 'doc-1', revision: newerDirty.revision }),
+    )
+  })
+})
+
+describe('occurrence keys with no local rows', () => {
+  const staleOccurrence = (documentId: string) => ({
+    id: 1,
+    user_id: USER,
+    document_id: documentId,
+    language_code: 'fr',
+    lemma: 'chat',
+    surface: 'chat',
+    char_start: 0,
+    char_end: 4,
+    sentence: '옛 문장',
+    occurrences_count: 1,
+  })
+
+  it('clears server rows for a live document with an empty replacement', async () => {
+    const server = memoryServer()
+    await idbPut(STORES.documents, doc('doc-1'))
+    // This device recomputed the document under the current rules and found
+    // nothing to record; the server still holds rows from an older pass.
+    await idbPut(STORES.documentMeta, { documentId: 'doc-1', lemmaVersion: LEMMA_VERSION })
+    await replaceOccurrences<WordOccurrence>('doc-1', [])
+    expect(await readDirtyKeys()).toContainEqual(
+      expect.objectContaining({ store: 'wordOccurrences', key: 'doc-1' }),
+    )
+    server.add('word_occurrences', staleOccurrence('doc-1'))
+
+    // Incremental pull: the stale row is not re-read this cycle, so the dirty
+    // journal is the only thing that selects the document for a push.
+    const report = await sync(server, { since: { snapshot: '2026-10-30T00:00:00.000Z' } })
+
+    expect(report.failures).toEqual([])
+    expect(server.rpcCalls('replace_word_occurrences')).toBe(1)
+    expect(
+      server.rows('word_occurrences').filter((row) => row.document_id === 'doc-1'),
+    ).toHaveLength(0)
+    expect(await readDirtyKeys()).not.toContainEqual(
+      expect.objectContaining({ store: 'wordOccurrences', key: 'doc-1' }),
+    )
+  })
+
+  it('does not send an empty replacement for a tombstoned document', async () => {
+    const server = memoryServer()
+    server.add('documents', serverDocument('doc-1'))
+    server.add('word_occurrences', staleOccurrence('doc-1'))
+    await idbPut(STORES.documents, doc('doc-1'))
+    await idbPut(
+      STORES.documentTombstones,
+      { documentId: 'doc-1', purgedAt: '2026-10-10T00:00:00.000Z' },
+      { silent: true },
+    )
+    await replaceOccurrences<WordOccurrence>('doc-1', [])
+
+    const report = await sync(server)
+
+    expect(report.failures).toEqual([])
+    // The tombstone push deletes the document; its rows go with it server-side,
+    // so no empty occurrence RPC is sent.
+    expect(server.rpcCalls('replace_word_occurrences')).toBe(0)
+    expect(server.rows('documents')).toHaveLength(0)
+    expect(server.rows('document_tombstones').map((row) => row.document_id)).toContain('doc-1')
+    expect(await readDirtyKeys()).not.toContainEqual(
+      expect.objectContaining({ store: 'wordOccurrences', key: 'doc-1' }),
     )
   })
 })
