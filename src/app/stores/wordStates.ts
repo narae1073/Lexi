@@ -208,7 +208,8 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next: WordState = {
       lemma,
       languageCode,
-      status: previous?.status ?? 'unsure',
+      // 상태와 독립이다 — 별만 붙인 단어는 표시하지 않은 채로 둔다
+      status: previous?.status,
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       lastSeenAt: previous?.lastSeenAt ?? timestamp,
@@ -270,8 +271,9 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next: WordState = {
       lemma,
       languageCode,
-      // 메모만 적은 단어도 행이 생긴다 — 서버의 status 는 NOT NULL 이라 기본값이 필요하다
-      status: previous?.status ?? 'unsure',
+      // 메모만 적은 단어도 행이 생기지만, 상태는 표시하지 않은 채로 둔다
+      // (서버의 status 는 nullable 이고 wordStateToRow 가 null 로 보낸다)
+      status: previous?.status,
       seenCount: previous?.seenCount ?? 1,
       firstSeenAt: previous?.firstSeenAt ?? timestamp,
       // 메모를 적은 것은 복습이 아니다 — 있던 시각은 그대로 둔다
