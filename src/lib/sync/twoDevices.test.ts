@@ -43,8 +43,15 @@ function memoryServer(rowCap = 1000) {
       const filters: Record<string, unknown> = {}
       const range = { from: 0, to: Infinity }
       let orderColumn = ''
+      let limitCount = Infinity
+      let greaterThan: { column: string; value: unknown } | null = null
       // 실제 클라이언트처럼 delete().eq() 체이닝을 받는다 — 실행은 await 때다
       let deleting = false
+
+      const compareValues = (a: unknown, b: unknown): number => {
+        if (typeof a === 'number' && typeof b === 'number') return a - b
+        return String(a ?? '').localeCompare(String(b ?? ''))
+      }
 
       const matches = (row: Record<string, unknown>): boolean => {
         for (const [k, v] of Object.entries(filters)) {
@@ -77,6 +84,14 @@ function memoryServer(rowCap = 1000) {
           range.to = to
           return query
         },
+        limit: (count: number) => {
+          limitCount = count
+          return query
+        },
+        gt: (column: string, value: unknown) => {
+          greaterThan = { column, value }
+          return query
+        },
         upsert: async (rows: Record<string, unknown>[]) => {
           upsertCalls[table] = (upsertCalls[table] ?? 0) + 1
           for (const row of rows) {
@@ -106,19 +121,42 @@ function memoryServer(rowCap = 1000) {
 
           let rows = tables[table].filter(matches)
 
+          const cursor = greaterThan
+          if (cursor) {
+            rows = rows.filter((row) => compareValues(row[cursor.column], cursor.value) > 0)
+          }
+
           // 순서를 명시하지 않으면 페이지가 겹치고 빠진다 — 우리가 정해야 한다
           if (orderColumn) {
-            rows = [...rows].sort((a, b) =>
-              String(a[orderColumn] ?? '').localeCompare(String(b[orderColumn] ?? '')),
-            )
+            rows = [...rows].sort((a, b) => compareValues(a[orderColumn], b[orderColumn]))
           }
 
           rows = rows.slice(range.from, range.to === Infinity ? undefined : range.to + 1)
+          if (Number.isFinite(limitCount)) rows = rows.slice(0, limitCount)
           const capped = rowCap > 0 ? rows.slice(0, rowCap) : rows
           return resolve({ data: capped.map((r) => ({ ...r })), error: null })
         },
       }
       return query
+    },
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      if (name !== 'replace_word_occurrences') {
+        return { data: null, error: { message: `unknown rpc ${name}` } }
+      }
+      const documentId = String(args.p_document_id)
+      const rows = (args.p_rows ?? []) as Record<string, unknown>[]
+      tables.word_occurrences = tables.word_occurrences.filter(
+        (row) => !(row.user_id === 'user-1' && row.document_id === documentId),
+      )
+      for (const row of rows) {
+        tables.word_occurrences.push({
+          id: nextOccurrenceId++,
+          user_id: 'user-1',
+          document_id: documentId,
+          ...row,
+        })
+      }
+      return { data: null, error: null }
     },
   }
 
@@ -518,6 +556,23 @@ describe('등장 기록 전송', () => {
     expect(rows.filter((r) => r.document_id === 'doc-1')).toHaveLength(1)
     expect(rows.filter((r) => r.document_id === 'doc-2')).toHaveLength(1)
     expect(rows.find((r) => r.document_id === 'doc-2')?.sentence).toBe('옛 문장')
+  })
+
+  it('같은 문서를 다시 보내도 행이 늘지 않는다 — 한 트랜잭션 교체', async () => {
+    const server = memoryServer()
+
+    await pushOccurrences('user-1', [state('été')], server.client)
+    expect(server.count('word_occurrences')).toBe(1)
+
+    await pushOccurrences(
+      'user-1',
+      [state('été', { surfaces: ["l'été", 'été'] })],
+      server.client,
+    )
+
+    const rows = server.rows('word_occurrences')
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.surface).sort()).toEqual(["l'été", 'été'])
   })
 
   it('서버와 달라진 문서만 다시 보낸다 — 동기화 한 사이클', async () => {

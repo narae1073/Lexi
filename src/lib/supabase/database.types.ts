@@ -262,7 +262,12 @@ export type Database = {
       }
     }
     Views: Record<never, never>
-    Functions: Record<never, never>
+    Functions: {
+      replace_word_occurrences: {
+        Args: { p_document_id: string; p_rows: Json }
+        Returns: undefined
+      }
+    }
     Enums: { word_status: 'known' | 'unsure' | 'unknown' }
     CompositeTypes: Record<never, never>
   }

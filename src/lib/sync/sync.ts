@@ -17,7 +17,6 @@ import {
   documentToRow,
   folderFromRow,
   folderToRow,
-  occurrenceToRows,
   wordStateFromRow,
   wordStateToRow,
   type DocumentRow,
@@ -244,14 +243,15 @@ export async function writeLocal(
  */
 const PAGE_SIZE = 1000
 
-/** 안전망 — 페이지를无数히 받지 않도록 */
+/** 안전망 — 넘으면 조용히 자르지 않고 동기화를 실패시킨다 */
 const MAX_ROWS = 200_000
 
 /**
  * 한 사용자의 행을 **끝까지** 읽는다.
  *
- * 순서를 고정하지 않으면 페이지를 나눠 읽을 때 행이 중복되거나 건너뛴다 — 서버가 정해 둔
- * 순서는 보장되지 않으므로, '다음 1000개' 가 무엇인지를 우리가 정해야 한다.
+ * 순서를 고정하지 않으면 페이지가 겹치거나 빠진다. offset 대신 마지막으로 읽은
+ * 값보다 큰 행만 받는다(keyset) — 읽는 도중 다른 기기가 행을 넣어도 건너뛰지 않는다.
+ * `order` 열은 반드시 고유해야 한다 (id 등).
  */
 async function fetchAll<T>(
   db: SupabaseClient<Database>,
@@ -266,19 +266,24 @@ async function fetchAll<T>(
   order: string,
   columns = '*',
 ): Promise<T[]> {
+  type PageResult = { data: unknown[] | null; error: { message: string } | null }
+  type Ordered = {
+    limit: (count: number) => PromiseLike<PageResult>
+    gt: (column: string, value: string | number) => {
+      limit: (count: number) => PromiseLike<PageResult>
+    }
+  }
+
   const rows: T[] = []
-  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
+  let last: string | number | undefined
+
+  while (true) {
     // 반환 타입은 호출부가 T 로 정한다 — 여긴 '한 사용자의 행을 끝까지 읽는다' 만 한다
-    const result = await (db as never as {
+    const ordered = (db as never as {
       from: (t: string) => {
         select: (c: string) => {
           eq: (column: string, value: string) => {
-            order: (column: string, opts: { ascending: boolean }) => {
-              range: (from: number, to: number) => PromiseLike<{
-                data: unknown[] | null
-                error: { message: string } | null
-              }>
-            }
+            order: (column: string, opts: { ascending: boolean }) => Ordered
           }
         }
       }
@@ -287,13 +292,32 @@ async function fetchAll<T>(
       .select(columns)
       .eq('user_id', userId)
       .order(order, { ascending: true })
-      .range(from, from + PAGE_SIZE - 1)
 
-    const { data, error } = result as { data: unknown[] | null; error: { message: string } | null }
+    const result =
+      last === undefined
+        ? await ordered.limit(PAGE_SIZE)
+        : await ordered.gt(order, last).limit(PAGE_SIZE)
+
+    const { data, error } = result
     if (error) throw error
-    rows.push(...((data ?? []) as T[]))
+
+    const page = (data ?? []) as T[]
+    rows.push(...page)
     // 한 페이지가 덜 찼으면 끝이다 — 다음 페이지가 없다
-    if ((data ?? []).length < PAGE_SIZE) break
+    if (page.length < PAGE_SIZE) break
+
+    const lastRow = page[page.length - 1] as Record<string, unknown>
+    const next = lastRow[order]
+    if (typeof next !== 'string' && typeof next !== 'number') {
+      throw new Error(`${table} 의 ${order} 값이 없어 다음 페이지를 읽을 수 없습니다`)
+    }
+    last = next
+
+    if (rows.length > MAX_ROWS) {
+      throw new Error(
+        `${table} 이 ${MAX_ROWS}행을 넘어 동기화를 멈췄습니다 — 데이터를 나눠 주세요`,
+      )
+    }
   }
   return rows
 }
@@ -840,36 +864,50 @@ export async function push({
  * 이 제한이 없으면 문제가 크다 — 아래 주석.
  */
 export async function pushOccurrences(
-  userId: string,
+  _userId: string,
   records: WordOccurrence[],
   db: SupabaseClient<Database> = client(),
   onlyDocumentIds?: readonly string[],
 ): Promise<void> {
   if (records.length === 0) return
 
-  const allDocumentIds = [...new Set(records.map((r) => r.documentId))]
+  const localDocumentIds = new Set(records.map((record) => record.documentId))
   const documentIds = onlyDocumentIds
-    ? allDocumentIds.filter((id) => onlyDocumentIds.includes(id))
-    : allDocumentIds
+    ? onlyDocumentIds.filter((id) => localDocumentIds.has(id))
+    : [...localDocumentIds]
   if (documentIds.length === 0) return
 
-  // 지우기도 나눈다 — 문서 id 가 많으면 요청이 길어진다
-  for (const part of chunk(documentIds, 100)) {
-    const { error } = await db
-      .from('word_occurrences')
-      .delete()
-      .eq('user_id', userId)
-      .in('document_id', part)
-    if (error) throw error
+  const byDocument = new Map<string, WordOccurrence[]>()
+  for (const record of records) {
+    if (!documentIds.includes(record.documentId)) continue
+    const list = byDocument.get(record.documentId)
+    if (list) list.push(record)
+    else byDocument.set(record.documentId, [record])
   }
 
-  const rows = records
-    .filter((record) => documentIds.includes(record.documentId))
-    .flatMap((record) => occurrenceToRows(userId, record))
-  if (rows.length === 0) return
-  // 서버는 표기 하나당 한 줄이라 묶음 제한을 넘지 않도록 잘라 보낸다
-  for (let i = 0; i < rows.length; i += 500) {
-    const { error } = await db.from('word_occurrences').insert(rows.slice(i, i + 500))
+  /**
+   * 문서 하나를 **한 트랜잭션에서** 갈아끼운다.
+   *
+   * delete 와 insert 를 따로 보내면 중간 실패에 기록이 비거나, 동시에 쓴 다른
+   * 기기의 행과 겹친다. 서버 함수가 지우기와 넣기를 함께 한다.
+   */
+  for (const [documentId, local] of byDocument) {
+    const rows = local.flatMap((record) =>
+      record.surfaces.map((surface) => ({
+        language_code: record.languageCode,
+        lemma: record.lemma,
+        surface,
+        char_start: record.charStart,
+        char_end: record.charEnd,
+        sentence: record.sentence,
+        occurrences_count: record.count,
+      })),
+    )
+
+    const { error } = await db.rpc('replace_word_occurrences', {
+      p_document_id: documentId,
+      p_rows: rows,
+    })
     if (error) throw error
   }
 }
