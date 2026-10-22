@@ -225,7 +225,7 @@ export async function writeLocal(
   }
   for (const [documentId, rows] of byDocument) {
     if (skipOccurrenceDocuments.has(documentId)) continue
-    // 동기화가 쓰는 길은 조용하다 — 받은 것을 '못 올린 변경' 으로 세면 안 된다
+    // The sync write path stays silent — received rows must not count as unpushed changes
     await replaceOccurrences(documentId, rows, { silent: true })
   }
 

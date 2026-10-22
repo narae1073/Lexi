@@ -26,8 +26,8 @@ import type { StoreName } from './localDb'
  */
 describe('저장 완료 알림', () => {
   beforeEach(async () => {
-    // 테스트 사이에 남은 데이터를 비운다. 정리용 쓰기는 사용자가 한 것이 아니므로
-    // 조용히 한다 — 리비전·밀린 개수에 남으면 안 된다
+    // Clear data left over between tests. Cleanup writes are not user writes,
+    // so they stay silent — they must not linger in the revision or pending counts.
     await Promise.all([
       idbDelete(STORES.documents, 'doc-1', { silent: true }),
       idbDelete(STORES.wordStates, 'en::run', { silent: true }),

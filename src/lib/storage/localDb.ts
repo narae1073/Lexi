@@ -234,7 +234,7 @@ function withSyncMeta<T>(update: (meta: LocalSyncMeta, metaStore: IDBObjectStore
           resolve(result)
         }
         transaction.onerror = () => {
-          // onabort 가 오류와 함께 이어진다 — 여기서 중복 거절하지 않는다
+          // onabort follows with the error — do not reject twice here
         }
         transaction.onabort = () =>
           reject(transaction.error ?? new Error('로컬 동기화 기록 트랜잭션이 중단되었습니다'))
@@ -463,7 +463,7 @@ function tx<T>(
             settled = true
             result = req.result
           }
-          // 요청이 실패하면 트랜잭션이 저절로 중단된다 — onabort 에서 거절한다
+          // A failed request aborts the transaction on its own — onabort rejects
           req.onerror = () => {}
         }
         transaction.oncomplete = () => {
@@ -476,7 +476,7 @@ function tx<T>(
           resolve(result)
         }
         transaction.onerror = () => {
-          // onabort 가 오류와 함께 이어진다 — 여기서 중복 거절하지 않는다
+          // onabort follows with the error — do not reject twice here
         }
         transaction.onabort = () =>
           reject(transaction.error ?? new Error('로컬 데이터베이스 트랜잭션이 중단되었습니다'))
@@ -553,9 +553,10 @@ export function idbDeleteByIndexRange(
 /**
  * 문서 하나의 등장 기록을 통째로 교체한다 (재저장 시 낡은 행이 남지 않게).
  *
- * 사용자가 다시 계산한 기록(조용하지 않은 쓰기)은 같은 트랜잭션에서 리비전·밀린
- * 개수·dirty 키(wordOccurrences, 문서 id)를 올린다. 동기화가 부르는 길은
- * `{ silent: true }` 로 조용해야 한다 — 받은 것을 '못 올린 변경' 으로 세면 안 된다.
+ * A user recomputation (a non-silent write) bumps the revision, the pending
+ * count, and the dirty key (wordOccurrences, document id) in the same
+ * transaction. The sync path must call this with `{ silent: true }` — rows
+ * received from the server must never count as unpushed changes.
  */
 export async function replaceOccurrences<T>(
   documentId: string,
@@ -595,11 +596,11 @@ export async function replaceOccurrences<T>(
       }
       for (const record of records) store.put(record)
     }
-    // 커서 요청이 실패하면 트랜잭션이 저절로 중단된다 — onabort 에서 거절한다
+    // A failed cursor request aborts the transaction on its own — onabort rejects
     cursorReq.onerror = () => {}
 
     transaction.oncomplete = () => {
-      // 커밋된 뒤에 알린다 — 사용자가 다시 계산한 기록은 밀린 일로 센다
+      // Notify after commit — a user recomputation counts as pending work
       if (bumped !== undefined) notifyLocalWrite(STORES.wordOccurrences, bumped)
       resolve()
     }
@@ -656,8 +657,8 @@ export function idbDeleteByIndex(
         }
 
         transaction.oncomplete = () => {
-          // 커밋된 뒤에 알린다 — 사용자가 지운 것은 밀린 일로 센다. 조용한 쓰기와
-          // 기기 전용 저장소는 알림이 없다 (notifyLocalWrite 가 건너뛴다).
+          // Notify after commit — a user deletion counts as pending work. Silent
+          // writes and device-local stores get no signal (notifyLocalWrite skips them).
           if (bumped !== undefined) notifyLocalWrite(store, bumped)
           resolve()
         }

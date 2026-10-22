@@ -41,11 +41,12 @@ const SYNC_DEBOUNCE_MS = 1_200
 const SYNC_MAX_WAIT_MS = 10_000
 
 /**
- * 증분 동기화의 위치 — `src/lib/sync/syncState.ts` 에 저장한다 (버전 2).
+ * Where incremental sync stands — persisted in `src/lib/sync/syncState.ts`
+ * as version 2.
  *
- * `pull` 은 서버가 찍은 워터마크, `push` 는 이 기기의 시계로 비교하는 워터마크다.
- * 버전 1 (단일 `pushedAt`) 은 없는 것으로 읽힌다 — 업그레이드 뒤 처음 한 번은
- * 전체 당겨오기·밀어내기를 한다.
+ * `pull` is the server's watermark; `push` is compared against this device's
+ * clock. Version 1 (a single `pushedAt`) reads as absent — the first cycle
+ * after the upgrade does one full pull and full push.
  */
 
 /**
