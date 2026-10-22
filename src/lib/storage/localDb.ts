@@ -115,7 +115,7 @@ let dbPromise: Promise<IDBDatabase> | null = null
  * A missing or malformed row yields null — callers decide whether to mint a
  * fresh epoch. Bookkeeping restarts rather than trusting a half-written record.
  */
-function normalizeSyncMeta(stored: unknown): LocalSyncMeta | null {
+export function normalizeLocalSyncMeta(stored: unknown): LocalSyncMeta | null {
   if (typeof stored !== 'object' || stored === null) return null
   const row = stored as Partial<LocalSyncMeta>
   if (row.documentId !== SYNC_META_KEY) return null
@@ -223,7 +223,7 @@ function withSyncMeta<T>(update: (meta: LocalSyncMeta, metaStore: IDBObjectStore
         const getReq = metaStore.get(SYNC_META_KEY)
         let result: T | undefined
         getReq.onsuccess = () => {
-          const meta = normalizeSyncMeta(getReq.result) ?? freshSyncMeta()
+          const meta = normalizeLocalSyncMeta(getReq.result) ?? freshSyncMeta()
           result = update(meta, metaStore)
         }
         transaction.oncomplete = () => {
@@ -245,7 +245,7 @@ function withSyncMeta<T>(update: (meta: LocalSyncMeta, metaStore: IDBObjectStore
 /** Reads the reserved sync-meta record; null when it does not exist yet. */
 export async function readLocalSyncMeta(): Promise<LocalSyncMeta | null> {
   const stored = await idbGet<unknown>(STORES.documentMeta, SYNC_META_KEY)
-  return stored === undefined ? null : normalizeSyncMeta(stored)
+  return stored === undefined ? null : normalizeLocalSyncMeta(stored)
 }
 
 /**
@@ -403,6 +403,18 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise
 }
 
+/**
+ * The shared IndexedDB connection.
+ *
+ * Exported for callers that must read and write several stores in one
+ * transaction. Separate `idbGet`/`idbPut` calls would each open their own
+ * transaction and reopen the read-check-then-write race such callers exist to
+ * close.
+ */
+export function openLocalDatabase(): Promise<IDBDatabase> {
+  return openDb()
+}
+
 type WriteOptions = {
   /**
    * 저장 완료 알림을 보내지 않는다.
@@ -453,7 +465,7 @@ function tx<T>(
         const getReq = metaStore.get(SYNC_META_KEY)
         getReq.onsuccess = () => {
           bumped = bumpedSyncMeta(
-            normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+            normalizeLocalSyncMeta(getReq.result) ?? freshSyncMeta(),
             store,
             options?.dirtyKey,
           )
@@ -578,7 +590,7 @@ export async function replaceOccurrences<T>(
       const getReq = metaStore.get(SYNC_META_KEY)
       getReq.onsuccess = () => {
         bumped = bumpedSyncMeta(
-          normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+          normalizeLocalSyncMeta(getReq.result) ?? freshSyncMeta(),
           STORES.wordOccurrences,
           documentId,
         )
@@ -648,7 +660,7 @@ export function idbDeleteByIndex(
           const getReq = metaStore.get(SYNC_META_KEY)
           getReq.onsuccess = () => {
             bumped = bumpedSyncMeta(
-              normalizeSyncMeta(getReq.result) ?? freshSyncMeta(),
+              normalizeLocalSyncMeta(getReq.result) ?? freshSyncMeta(),
               store,
               dirtyKeyForKey(store, key),
             )

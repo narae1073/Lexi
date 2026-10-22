@@ -1,15 +1,25 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { STORES, idbDelete, idbGet, idbGetAll, idbPut, replaceOccurrences, SYNC_META_KEY } from '../storage/localDb'
+import { STORES, idbGetAll, SYNC_META_KEY } from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { supabase } from '../supabase/client'
 import type { Database } from '../supabase/database.types'
-import type { Document, Folder, WordStatus } from '../../types'
+import type { Document, Folder } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
-import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
-import { isNewer, mergeLanguages, mergeWordStates, type WordStateRecord } from './merge'
+import {
+  isNewer,
+  mergeDocuments,
+  mergeFolders,
+  mergeLanguages,
+  mergeTombstones,
+  mergeWordStates,
+  normalizeWordState,
+  type StoredWordState,
+  type WordStateRecord,
+} from './merge'
+import { writeLocal } from './writeLocal'
 import {
   documentTombstoneToRow,
   documentToRow,
@@ -21,6 +31,10 @@ import type { PullWatermarks } from './types'
 
 export type { PullResult, PullWatermarks } from './types'
 export { pull } from './pull'
+export { writeLocal } from './writeLocal'
+export type { WriteLocalOptions, WriteLocalResult } from './writeLocal'
+// Kept here so existing imports (sync.ts as the public sync surface) still work.
+export { mergeDocuments, mergeFolders, mergeTombstones }
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
 
@@ -89,23 +103,7 @@ export async function readLocal(): Promise<{
   const [documents, folders, wordStates, occurrences, tombstones] = await Promise.all([
     idbGetAll<Document>(STORES.documents),
     idbGetAll<Folder>(STORES.folders),
-    idbGetAll<
-      Omit<
-        WordStateRecord,
-        'favorite' | 'favoriteUpdatedAt' | 'starAngle' | 'starColor' | 'note' | 'noteUpdatedAt'
-      > & {
-        surface?: string
-        status?: WordStatus
-        /** 별 기능 이전에 쓰인 행에는 없다 */
-        favorite?: boolean
-        favoriteUpdatedAt?: string
-        starAngle?: number
-        starColor?: string
-        /** 메모 기능 이전에 쓰인 행에는 없다 */
-        note?: string
-        noteUpdatedAt?: string
-      }
-    >(STORES.wordStates),
+    idbGetAll<StoredWordState>(STORES.wordStates),
     idbGetAll<WordOccurrence>(STORES.wordOccurrences),
     idbGetAll<DocumentTombstone>(STORES.documentTombstones),
   ])
@@ -119,121 +117,9 @@ export async function readLocal(): Promise<{
       folderUpdatedAt: doc.folderUpdatedAt ?? doc.updatedAt,
     })),
     folders,
-    wordStates: wordStates.map((r) => ({
-      languageCode: r.languageCode,
-      lemma: r.lemma,
-      status: r.status,
-      seenCount: r.seenCount,
-      firstSeenAt: r.firstSeenAt,
-      lastSeenAt: r.lastSeenAt,
-      // 없던 것을 있다고 말하지 않는다
-      favorite: r.favorite ?? false,
-      favoriteUpdatedAt: r.favoriteUpdatedAt ?? r.lastSeenAt,
-      starAngle: r.starAngle ?? 0,
-      starColor: r.starColor ?? STAR_COLOR_DEFAULT,
-      // 없던 것을 있다고 말하지 않는다 — 이 열이 생기기 전의 행은 0 이다
-      knownPresses: r.knownPresses ?? 0,
-      unsurePresses: r.unsurePresses ?? 0,
-      unknownPresses: r.unknownPresses ?? 0,
-      // null/undefined 는 '고친 적 없음' 이다 — 상태만 바꾼 기기가 메모를 지우지 않게
-      note: r.note,
-      noteUpdatedAt: r.noteUpdatedAt,
-    })),
+    wordStates: wordStates.map(normalizeWordState),
     occurrences,
     tombstones,
-  }
-}
-
-/**
- * 병합 결과를 로컬에 쓴다.
- *
- * **이미 같은 것은 다시 쓰지 않는다.**
- *
- * 동기화는 병합 결과를 통째로 되돌려 쓴다. 그대로 쓰면 매번 모든 문서와 단어 상태를
- * 다시 저장하게 되고, 저장이 곧 '아직 서버에 못 갔다' 는 신호가 되므로 동기화가
- * '밀렸다' 고 영영 알리는 상태에 놓인다 — 실제로는 다 올라간 뒤에도 'Not synced yet'
- * 이 사라지지 않는 원인이었다.
- *
- * 같은 것을 다시 쓰는 일은 없는데, 저장은 조용해야 할 곳에 시끄러웠다.
- */
-/**
- * 저장된 것과 같으면 건드리지 않는다 — 조용해야 할 곳에 시끄러움을 두지 않는다.
- */
-async function idbPutIfChanged<T>(
-  store: (typeof STORES)[keyof typeof STORES],
-  value: T,
-): Promise<void> {
-  const key = idbKeyOf(store, value)
-  if (key === undefined) {
-    // 동기화가 받은 것을 쓰는 중이다 — 사용자가 저장한 것으로 세지 않는다
-    await idbPut(store, value, { silent: true })
-    return
-  }
-  const stored = await idbGet<T>(store, key)
-  if (stored !== undefined && JSON.stringify(stored) === JSON.stringify(value)) return
-  await idbPut(store, value, { silent: true })
-}
-
-/**
- * 저장소의 주키를 만들어 낸다.
- *
- * 문서·폴더는 'id', 단어 상태는 [languageCode, lemma] 다. 저장소가 늘어날 때마다
- * 여기만 늘리면 된다 — 그래야 '같은 것' 을 저장소의 원래 규칙대로 판단할 수 있다.
- */
-function idbKeyOf(
-  store: (typeof STORES)[keyof typeof STORES],
-  value: unknown,
-): IDBValidKey | undefined {
-  if (store === STORES.documents) return (value as { id?: IDBValidKey }).id
-  if (store === STORES.folders) return (value as { id?: IDBValidKey }).id
-  if (store === STORES.wordStates) {
-    const state = value as { languageCode?: string; lemma?: string }
-    return state.languageCode !== undefined && state.lemma !== undefined
-      ? [state.languageCode, state.lemma]
-      : undefined
-  }
-  if (store === STORES.documentTombstones) {
-    return (value as { documentId?: IDBValidKey }).documentId
-  }
-  return undefined
-}
-
-export async function writeLocal(
-  documents: Document[],
-  wordStates: WordStateRecord[],
-  occurrences: WordOccurrence[],
-  folders: Folder[],
-  tombstones: DocumentTombstone[] = [],
-  /** 이 문서들의 등장 기록은 건드리지 않는다 — 동기화 중에 새로 계산된 것 */
-  skipOccurrenceDocuments: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  await Promise.all([
-    ...documents.map((doc) => idbPutIfChanged(STORES.documents, doc)),
-    ...folders.map((folder) => idbPutIfChanged(STORES.folders, folder)),
-    ...wordStates.map((state) => idbPutIfChanged(STORES.wordStates, state)),
-    ...tombstones.map((tombstone) =>
-      idbPutIfChanged(STORES.documentTombstones, tombstone),
-    ),
-  ])
-
-  // 등장 기록은 문서 단위로 갈아끼운다 — 일부만 덮으면 옛 표기가 남는다
-  const byDocument = new Map<string, WordOccurrence[]>()
-  for (const record of occurrences) {
-    const list = byDocument.get(record.documentId)
-    if (list) list.push(record)
-    else byDocument.set(record.documentId, [record])
-  }
-  for (const [documentId, rows] of byDocument) {
-    if (skipOccurrenceDocuments.has(documentId)) continue
-    // The sync write path stays silent — received rows must not count as unpushed changes
-    await replaceOccurrences(documentId, rows, { silent: true })
-  }
-
-  // 다른 기기에서 완전 삭제된 문서는 이 기기에서도 지운다 — 묘비가 이긴다
-  for (const tombstone of tombstones) {
-    await idbDelete(STORES.documents, tombstone.documentId, { silent: true })
-    await idbDelete(STORES.documentMeta, tombstone.documentId, { silent: true })
-    await replaceOccurrences(tombstone.documentId, [], { silent: true })
   }
 }
 
@@ -368,13 +254,24 @@ export async function syncOnce({
       .map((m) => m.documentId),
   )
 
+  /**
+   * Task 4 keeps Release 1's occurrence write behavior: every document present
+   * in the pull result is replaced, except one recomputed during this sync.
+   * Task 5 narrows this to documents whose merged occurrences actually changed.
+   */
+  const occurrenceDocumentIds = new Set(
+    occurrences
+      .map((record) => record.documentId)
+      .filter((documentId) => !changedDuringSync.has(documentId)),
+  )
+
   await writeLocal(
     mergedDocuments,
     mergedWords,
     occurrences,
     folders,
     tombstones,
-    changedDuringSync,
+    { occurrenceDocumentIds },
   )
 
   /**
@@ -496,68 +393,6 @@ export async function syncOnce({
 }
 
 /**
- * 문서 묘비 합치기 — 삭제는 되돌릴 수 없으므로 한 번이라도 지웠으면 남긴다.
- * 같은 문서를 두 기기에서 지웠다면 이른 시각을 쓴다.
- */
-export function mergeTombstones(
-  local: DocumentTombstone[],
-  remote: DocumentTombstone[],
-): DocumentTombstone[] {
-  const byId = new Map<string, DocumentTombstone>()
-  for (const tombstone of [...local, ...remote]) {
-    const existing = byId.get(tombstone.documentId)
-    if (!existing) {
-      byId.set(tombstone.documentId, tombstone)
-      continue
-    }
-    if (Date.parse(tombstone.purgedAt) < Date.parse(existing.purgedAt)) {
-      byId.set(tombstone.documentId, tombstone)
-    }
-  }
-  return [...byId.values()]
-}
-
-/** 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다 */
-export function mergeDocuments(local: Document[], remote: Document[]): Document[] {
-  const byId = new Map(remote.map((d) => [d.id, d]))
-  for (const doc of local) {
-    const theirs = byId.get(doc.id)
-    if (!theirs) {
-      byId.set(doc.id, doc)
-      continue
-    }
-    /**
-     * 문서 내용은 '마지막으로 고친(열은)' 쪽이 이긴다. 폴더는 그보다
-     * **언제 옮겼는가**로 따로 이긴다 — 오래 전에 열Pi는 문서를 방금 옮긴
-     * 기록이 열기의 무게로 잡혀 먹히면 안 되므로 두 인장을 따로 본다.
-     */
-    const winner = isNewer(doc.updatedAt, theirs.updatedAt) ? doc : theirs
-    const folderWinner = folderWinnerOf(doc, theirs)
-    if (winner === folderWinner) byId.set(doc.id, winner)
-    else byId.set(doc.id, { ...winner, folderId: folderWinner.folderId ?? null, folderUpdatedAt: folderWinner.folderUpdatedAt })
-  }
-  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-}
-
-/**
- * 두 기록 가운데 폴더를 늦게 옮긴 쪽.
- *
- * 인장도 없는 옛 기록(폴더 기능 이전의 행)은 '없음' 이다 — 둘 다 인장이 없으면
- * 아무런 폴더 기록이 없는 것이고, 폴더에 없는 결과가 남는다. 한쪽에만 있으면
- * 그쪽이 이긴다.
- */
-function folderWinnerOf(a: Document, b: Document): Document {
-  const aStamp = a.folderUpdatedAt
-  const bStamp = b.folderUpdatedAt
-  // 둘 다 인장이 없으면 폴더 기록 자체가 없는 것이다 — 폴더에 없다고 남는다
-  if (!aStamp && !bStamp) return { ...a, folderId: null, folderUpdatedAt: undefined }
-  if (!bStamp) return a
-  if (!aStamp) return b
-  return isNewer(aStamp, bStamp) ? a : b
-}
-
-
-/**
  * 서버에 없는 것만 보낸다.
  *
  * 전부 다시 보내면 RLS 통과는 하지만 다른 기기의 변경과 부딪힐 수 있고,
@@ -662,35 +497,6 @@ export function changedOccurrenceDocuments(
     }
   }
   return changed
-}
-
-/**
- * 폴더는 id 로 갈아끼운다 — 문서와 같은 규칙이다.
- *
- * 톰스톤도 같은 자리로 온다. 지운 폴더의 updated_at 이 늦으면 그 지움이 이기고,
- * 옛 폴더가 되살아나지 않는다 (문서 휴지통 상태가 같은 방식으로 병합된다).
- *
- * 폴더에는 서버 트리거가 없다 — updated_at 을 우리가 찍어서 보내므로, 이
- * 병합은 클라이언트 인장을 그대로 믿는다.
- */
-export function mergeFolders(local: Folder[], remote: Folder[]): Folder[] {
-  const byId = new Map(remote.map((f) => [f.id, f]))
-  for (const folder of local) {
-    const theirs = byId.get(folder.id)
-    if (!theirs) {
-      byId.set(folder.id, folder)
-      continue
-    }
-    if (!isNewer(folder.updatedAt, theirs.updatedAt)) {
-      // 인장이 같은데 내용이 다르면 (지움 vs 고침) 지움을 믿는다 —
-      // 되살려 놓는 실수보다 지운 채로 남는 쪽이 조용하다
-      const tieGoesToTombstone = Boolean(folder.deletedAt && !theirs.deletedAt)
-      byId.set(folder.id, tieGoesToTombstone ? folder : theirs)
-      continue
-    }
-    byId.set(folder.id, folder)
-  }
-  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 /**

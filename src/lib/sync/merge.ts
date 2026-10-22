@@ -1,4 +1,6 @@
-import type { WordStatus } from '../../types'
+import { STAR_COLOR_DEFAULT } from '../../app/stores/settings'
+import type { Document, Folder, WordStatus } from '../../types'
+import type { DocumentTombstone } from '../storage/purged'
 
 /**
  * 로컬 ↔ 서버 병합 규칙 (PLAN.md Phase 6).
@@ -43,6 +45,62 @@ export type WordStateRecord = {
    * 지워 버리기 때문이다.
    */
   noteUpdatedAt?: string
+}
+
+/**
+ * A word-state row as it may sit in IndexedDB.
+ *
+ * Rows written before the star, quiz-press, or note fields existed lack them,
+ * so every one of those fields is optional here. `normalizeWordState` fills the
+ * holes without inventing history the user never made.
+ */
+export type StoredWordState = Omit<
+  WordStateRecord,
+  | 'favorite'
+  | 'favoriteUpdatedAt'
+  | 'starAngle'
+  | 'starColor'
+  | 'knownPresses'
+  | 'unsurePresses'
+  | 'unknownPresses'
+> & {
+  /** Legacy field from an older row shape; not part of the merge. */
+  surface?: string
+  favorite?: boolean
+  favoriteUpdatedAt?: string
+  starAngle?: number
+  starColor?: string
+  knownPresses?: number
+  unsurePresses?: number
+  unknownPresses?: number
+}
+
+/**
+ * Fills the fields old rows may not have.
+ *
+ * Missing is not the same as a value: a row from before the star feature has
+ * no star, and a row from before notes has no note. Absence becomes the field's
+ * neutral value, never a claim that the user did something.
+ */
+export function normalizeWordState(row: StoredWordState): WordStateRecord {
+  return {
+    languageCode: row.languageCode,
+    lemma: row.lemma,
+    status: row.status,
+    seenCount: row.seenCount,
+    firstSeenAt: row.firstSeenAt,
+    lastSeenAt: row.lastSeenAt,
+    favorite: row.favorite ?? false,
+    favoriteUpdatedAt: row.favoriteUpdatedAt ?? row.lastSeenAt,
+    starAngle: row.starAngle ?? 0,
+    starColor: row.starColor ?? STAR_COLOR_DEFAULT,
+    knownPresses: row.knownPresses ?? 0,
+    unsurePresses: row.unsurePresses ?? 0,
+    unknownPresses: row.unknownPresses ?? 0,
+    // null/undefined means "never edited" — a status-only device must not erase a note
+    note: row.note,
+    noteUpdatedAt: row.noteUpdatedAt,
+  }
 }
 
 export type MergeOutcome<T> = {
@@ -282,4 +340,94 @@ function sameAsServer(a: WordStateRecord, b: WordStateRecord): boolean {
  */
 export function mergeLanguages(local: string[], remote: string[]): string[] {
   return [...new Set([...local, ...remote])]
+}
+
+/**
+ * 문서 묘비 합치기 — 삭제는 되돌릴 수 없으므로 한 번이라도 지웠으면 남긴다.
+ * 같은 문서를 두 기기에서 지웠다면 이른 시각을 쓴다.
+ */
+export function mergeTombstones(
+  local: DocumentTombstone[],
+  remote: DocumentTombstone[],
+): DocumentTombstone[] {
+  const byId = new Map<string, DocumentTombstone>()
+  for (const tombstone of [...local, ...remote]) {
+    const existing = byId.get(tombstone.documentId)
+    if (!existing) {
+      byId.set(tombstone.documentId, tombstone)
+      continue
+    }
+    if (Date.parse(tombstone.purgedAt) < Date.parse(existing.purgedAt)) {
+      byId.set(tombstone.documentId, tombstone)
+    }
+  }
+  return [...byId.values()]
+}
+
+/** 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다 */
+export function mergeDocuments(local: Document[], remote: Document[]): Document[] {
+  const byId = new Map(remote.map((d) => [d.id, d]))
+  for (const doc of local) {
+    const theirs = byId.get(doc.id)
+    if (!theirs) {
+      byId.set(doc.id, doc)
+      continue
+    }
+    /**
+     * 문서 내용은 '마지막으로 고친(열은)' 쪽이 이긴다. 폴더는 그보다
+     * **언제 옮겼는가**로 따로 이긴다 — 오래 전에 열Pi는 문서를 방금 옮긴
+     * 기록이 열기의 무게로 잡혀 먹히면 안 되므로 두 인장을 따로 본다.
+     */
+    const winner = isNewer(doc.updatedAt, theirs.updatedAt) ? doc : theirs
+    const folderWinner = folderWinnerOf(doc, theirs)
+    if (winner === folderWinner) byId.set(doc.id, winner)
+    else byId.set(doc.id, { ...winner, folderId: folderWinner.folderId ?? null, folderUpdatedAt: folderWinner.folderUpdatedAt })
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+/**
+ * 두 기록 가운데 폴더를 늦게 옮긴 쪽.
+ *
+ * 인장도 없는 옛 기록(폴더 기능 이전의 행)은 '없음' 이다 — 둘 다 인장이 없으면
+ * 아무런 폴더 기록이 없는 것이고, 폴더에 없는 결과가 남는다. 한쪽에만 있으면
+ * 그쪽이 이긴다.
+ */
+function folderWinnerOf(a: Document, b: Document): Document {
+  const aStamp = a.folderUpdatedAt
+  const bStamp = b.folderUpdatedAt
+  // 둘 다 인장이 없으면 폴더 기록 자체가 없는 것이다 — 폴더에 없다고 남는다
+  if (!aStamp && !bStamp) return { ...a, folderId: null, folderUpdatedAt: undefined }
+  if (!bStamp) return a
+  if (!aStamp) return b
+  return isNewer(aStamp, bStamp) ? a : b
+}
+
+/**
+ * 폴더는 id 로 갈아끼운다 — 문서와 같은 규칙이다.
+ *
+ * 톰스톤도 같은 자리로 온다. 지운 폴더의 updated_at 이 늦으면 그 지움이 이기고,
+ * 옛 폴더가 되살아나지 않는다 (문서 휴지통 상태가 같은 방식으로 병합된다).
+ *
+ * 폴더에는 서버 트리거가 없다 — updated_at 을 우리가 찍어서 보내므로, 이
+ * 병합은 클라이언트 인장을 그대로 믿는다.
+ */
+export function mergeFolders(local: Folder[], remote: Folder[]): Folder[] {
+  const byId = new Map(remote.map((f) => [f.id, f]))
+  for (const folder of local) {
+    const theirs = byId.get(folder.id)
+    if (!theirs) {
+      byId.set(folder.id, folder)
+      continue
+    }
+    if (!isNewer(folder.updatedAt, theirs.updatedAt)) {
+      // 인장이 같은데 내용이 다르면 (지움 vs 고침) 지움을 믿는다 —
+      // 되살려 놓는 실수보다 지운 채로 남는 쪽이 조용하다
+      const tieGoesToTombstone = Boolean(folder.deletedAt && !theirs.deletedAt)
+      byId.set(folder.id, tieGoesToTombstone ? folder : theirs)
+      continue
+    }
+    byId.set(folder.id, folder)
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
