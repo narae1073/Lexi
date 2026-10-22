@@ -8,11 +8,11 @@ import {
 } from './storagePersistence'
 
 /**
- * 저장 공간 상태는 브라우저마다 다르고, 없는 브라우저도 있다.
+ * Storage status differs by browser, and some browsers have none at all.
  *
- * 지원하지 않는 API 를 부르면 예외가 나고 설정 화면 전체가 무너질 수 있다. 여기서
- * 지키는 계약은 하나다 — **모르면 조용히 '모른다' 고 답한다.** 저장소가 없다고
- * 동기화나 다른 설정이 막히면 안 된다.
+ * Calling an unsupported API throws and can take down the whole settings screen.
+ * The contract here is one thing: **when in doubt, quietly answer "unknown."**
+ * A missing Storage API must never block sync or any other setting.
  */
 
 type NavigatorWithStorage = { storage?: unknown }

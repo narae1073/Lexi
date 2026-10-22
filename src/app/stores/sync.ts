@@ -100,11 +100,11 @@ export type SyncState = {
   /** 로그인·앱 시작·온라인 복귀 때 조용히 돌린다 (실패해도 조용히) */
   syncQuietly: () => Promise<void>
   /**
-   * 서버에서 모든 것을 한 번 다시 읽는다 — 사람이 고른 복구 동작.
+   * Re-reads everything from the server once — the user's recovery action.
    *
-   * 지우는 것이 아니다. 로컬에 남은 변경은 그대로 두고 다시 올리며, 다음 주기부터는
-   * 평소처럼 워터마크를 이어 쓴다. 기기 저장소가 비워졌을 때 사용자가 직접 누르는
-   * 출구다.
+   * This is not destructive: local changes stay and are pushed again, and later
+   * cycles resume from their watermarks as usual. It is the exit users can take
+   * when the browser evicted this device's local database.
    */
   fullResync: () => Promise<void>
   /** 주인 없는 기기 기록을 지금 계정으로 넘겨받는다 */
@@ -287,13 +287,14 @@ export const useSyncStore = create<SyncState>((set) => ({
 
   fullResync: async () => {
     const user = useAuthStore.getState().user
-    // 소유자가 이 계정이 아니면 서버에서 읽을 범위도 정할 수 없다
+    // Without ownership of this account there is no server scope to read.
     if (!user || !canSyncForUser(user.id)) {
       set({ status: 'local', error: null })
       return
     }
-    // 사람이 고른 동작이므로 결과를 말한다. 요청은 다음 계획에서 한 번만 쓰인다.
-    requestFullResync()
+    // The user chose this, so report the outcome. The request stays owed until
+    // a full-pull cycle actually completes for this account.
+    requestFullResync(user.id)
     useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
     await run(set)
   },
@@ -457,21 +458,26 @@ export async function applySyncMessage(message: SyncMessage): Promise<void> {
 let exclusive: SingleFlight | null = null
 
 /**
- * One-shot request for the next cycle to read every server row.
+ * A still-owed request to read every server row, scoped to the account that
+ * made it.
  *
- * Module-level because the UI action and the planner are separate; the flag is
- * consumed as the cycle starts planning, so it cannot leak into later cycles.
+ * The request survives any cycle that does not finish its full pull — a hard
+ * network error, an unavailable backend, a deferred plan, or an account change
+ * must not silently drop the user's explicit choice. Scoping by user id also
+ * keeps one account's request from turning another account's next cycle into a
+ * full pull.
  */
-let fullResyncRequested = false
+let fullResyncRequestedFor: string | null = null
 
-function requestFullResync(): void {
-  fullResyncRequested = true
+function requestFullResync(userId: string): void {
+  fullResyncRequestedFor = userId
 }
 
-function takeFullResyncRequest(): boolean {
-  const requested = fullResyncRequested
-  fullResyncRequested = false
-  return requested
+/** Takes the request for `userId`; another account's request is left untouched. */
+function takeFullResyncRequest(userId: string): boolean {
+  if (fullResyncRequestedFor !== userId) return false
+  fullResyncRequestedFor = null
+  return true
 }
 
 /**
@@ -504,204 +510,219 @@ async function run(set: Setter): Promise<void> {
 }
 
 async function doRun(set: Setter) {
-  // Consume the one-shot request before any early return: a request made for
-  // one account must never turn the next account's first cycle into a full pull.
-  const fullResyncWasRequested = takeFullResyncRequest()
   const user = useAuthStore.getState().user
   // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다 — 문에서 다시 확인한다
   if (!user || !canSyncForUser(user.id)) return
   const startedUserId = user.id
   const accountChanged = () => useAuthStore.getState().user?.id !== startedUserId
+  // Taking the request after the gate leaves it owed for this account if the
+  // gate is closed, and keeps it off another account's cycle.
+  const fullResyncWasRequested = takeFullResyncRequest(startedUserId)
+  let fullResyncCompleted = false
 
   // 이번에 보낼 것을 기억해 둔다 — 실패하면 되돌려야 하고, 성공하면 뺀 것만
   // 빼야 보내는 중에 쌓인 것이 '밀린 것' 으로 남는다. The reserved record is
   // shared by every tab, so read it there rather than trusting this tab's copy.
   const batch = await readPendingOr(useSyncStore.getState().pendingByStore)
-  // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다
-  if (accountChanged()) return
-  // Version 1 reads as absent: the first cycle after the upgrade is a full
-  // pull and full push (one-time cost, no local data is touched).
-  const stored = readStoredSyncState(user.id)
-  // 이 시각 이전에 바뀐 것은 지난 동기화가 이미 보냈다. 이번에 바뀐 것만 다음에 보낸다
-  const startedAt = new Date().toISOString()
-  const localEpoch = await readLocalEpochSafely(stored?.localEpoch ?? '')
-  if (accountChanged()) return
-
-  /**
-   * A version 2 state describes **one** local database through its epoch.
-   *
-   * When the browser evicts IndexedDB, the next open mints a new epoch while
-   * localStorage still holds the old entry. Both watermarks then belong to a
-   * database that no longer exists: the pull snapshot would skip rows older
-   * than it, and push timestamps would hide local writes made in this new
-   * database. Restart both — nothing is deleted, this is only a full read and
-   * a full re-push.
-   *
-   * Version 1 reads as absent and takes the same path. An ordinary database
-   * that is merely empty (words/docs gone, epoch intact) only needs a full
-   * pull; its push progress still describes this database and is kept.
-   */
-  const epochMismatch = stored === null || stored.localEpoch !== localEpoch
-  const hasPullSnapshot =
-    typeof stored?.pull.snapshot === 'string' && stored.pull.snapshot !== ''
-  const localIsEmpty =
-    !epochMismatch && hasPullSnapshot ? await localLearningDataIsEmpty() : false
-  if (accountChanged()) return
-
-  const since = epochMismatch || fullResyncWasRequested || localIsEmpty ? {} : stored?.pull
-  // A manual refresh merges: local dirty rows still need to go up, so push
-  // watermarks stay unless the database itself changed underneath them.
-  const push = epochMismatch ? {} : (stored?.push ?? {})
-
-  set({ status: 'syncing', error: null })
 
   try {
-    const languages = useLanguagesStore.getState().enrolled
-    // A future push watermark means the clock moved back. Retry from the local
-    // snapshot instead of trusting timestamps; pull is a server clock and stays.
-    const clockGuard = clearPushOnClockRollback(push)
-    const report = await syncOnce({
-      userId: user.id,
-      languages,
-      since,
-      push: clockGuard.push,
-    })
-    if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
-      report.warnings = [...report.warnings, 'clock-rollback']
-    }
-
-    /**
-     * 기다리는 사이 계정이 바뀌었을 수 있다.
-     *
-     * 이 기기의 DB 에는 이미 A 의 병합 결과가 쓰였을 수 있지만, 그것을 B 의 화면에
-     * 채택하거나 B 의 워터마크로 남기면 안 된다. A 로 다시 돌아오면 같은 동기화를
-     * 한 번 더 하면 되고, 그 동기화는 멱등이다.
-     */
+    // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다
     if (accountChanged()) return
-
-    // 성공한 표의 워터마크만 옮긴다. 실패한 표는 옛 워터마크를 지켜 다음에 재시도한다.
-    writeStoredSyncState(user.id, {
-      version: 2,
-      pull: report.watermarks,
-      push: report.pushWatermarks,
-      // Persist the epoch this cycle actually ran against, so the next cycle
-      // can tell whether the database was replaced in between.
-      localEpoch,
-      lastSyncedAt: startedAt,
-    })
-
-    /**
-     * 계정의 언어를 그대로 채택한다.
-     *
-     * 배운 언어는 계정에 묶여 있다 — 폰에서 프랑스어를 추가하고 노트북에서 보면 거기에도
-     * 있어야 한다. 병합은 합집합이므로 이 기기에서 고르지 않은 언어도 함께 온다.
-     *
-     * 새 기기에서 로그인하면 이 순간 온보딩도 끝난 것으로 본다 — 같은 선택을 다시
-     * 하지 않게 하는 것이 그 이유다.
-     */
-    if (report.languages.length > 0) {
-      useLanguagesStore.getState().adopt(report.languages as LanguageCode[])
-    }
-
-    // 받은 내용을 화면 스토어에 불어넣는다 — 안 하면 기록은 있어도 안 보인다
-    const documents = useDocumentsStore.getState()
-    await documents.load()
-    // 읽는 사이 계정이 바뀌었으면 이 기기의 병합 결과를 새 계정 화면에 밀어 넣지 않는다.
-    // 이후 읽기도, 마지막 성공 상태도 모두 이번 계정의 것이어야 한다.
-    if (accountChanged()) return
-    // 폴더도 다른 기기에서 온다 — 만들어진 폴더가 여기에도 나와야 한다
-    await useFoldersStore.getState().load()
+    // Version 1 reads as absent: the first cycle after the upgrade is a full
+    // pull and full push (one-time cost, no local data is touched).
+    const stored = readStoredSyncState(user.id)
+    // 이 시각 이전에 바뀐 것은 지난 동기화가 이미 보냈다. 이번에 바뀐 것만 다음에 보낸다
+    const startedAt = new Date().toISOString()
+    const localEpoch = await readLocalEpochSafely(stored?.localEpoch ?? '')
     if (accountChanged()) return
 
     /**
-     * 방금 써 넣은 병합 결과를 화면에 반영한다.
+     * A version 2 state describes **one** local database through its epoch.
      *
-     * force 없이 부르면 이미 읽은 언어라 아무것도 하지 않는다 — 그러면 다른 기기에서 온
-     * 진도가 IndexedDB 에만 있고 화면에 없다. 사용자가 새로고침을 한 번 더 해야 보게 된다.
+     * When the browser evicts IndexedDB, the next open mints a new epoch while
+     * localStorage still holds the old entry. Both watermarks then belong to a
+     * database that no longer exists: the pull snapshot would skip rows older
+     * than it, and push timestamps would hide local writes made in this new
+     * database. Restart both — nothing is deleted, this is only a full read and
+     * a full re-push.
+     *
+     * Version 1 reads as absent and takes the same path. An ordinary database
+     * that is merely empty (words/docs gone, epoch intact) only needs a full
+     * pull; its push progress still describes this database and is kept.
      */
-    const wordStates = useWordStatesStore.getState()
-    await Promise.all(languages.map((code) => wordStates.loadLanguage(code, { force: true })))
+    const epochMismatch = stored === null || stored.localEpoch !== localEpoch
+    const hasPullSnapshot =
+      typeof stored?.pull.snapshot === 'string' && stored.pull.snapshot !== ''
+    const localIsEmpty =
+      !epochMismatch && hasPullSnapshot ? await localLearningDataIsEmpty() : false
     if (accountChanged()) return
 
-    const occurrences = useOccurrencesStore.getState()
-    await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
-    if (accountChanged()) return
+    const since = epochMismatch || fullResyncWasRequested || localIsEmpty ? {} : stored?.pull
+    // A manual refresh merges: local dirty rows still need to go up, so push
+    // watermarks stay unless the database itself changed underneath them.
+    const push = epochMismatch ? {} : (stored?.push ?? {})
 
-    // 기록이 없는/옛 기록인 문서의 재계산은 App 이 문서 목록에 반응해 맡는다.
-    // 여기서 다시 부르면 같은 계산을 두 번 한다.
+    set({ status: 'syncing', error: null })
 
-    // 마지막 확인 — 여기까지 왔어도 set 직전에 바뀔 수 있다
-    if (accountChanged()) return
-
-    // Only stores whose whole batch went through are subtracted. A failed
-    // table's count stays pending so the next cycle retries it. The shared
-    // record is authoritative: subtract there, then adopt what remains.
-    const succeededStores = new Set<StoreName>(report.succeededStores)
-    const sent: Partial<Record<StoreName, number>> = {}
-    for (const [store, count] of Object.entries(batch)) {
-      if (succeededStores.has(store as StoreName)) sent[store as StoreName] = count
-    }
-    let pendingByStore: Record<string, number>
     try {
-      pendingByStore = { ...(await subtractPending(sent)).pendingByStore }
-    } catch (bookkeepingError) {
-      // A successful push whose count could not be recorded must not make the
-      // rows look delivered. Overstating pending is the safe direction.
-      console.error('밀린 개수를 기록하지 못했습니다', bookkeepingError)
-      pendingByStore = { ...batch }
+      const languages = useLanguagesStore.getState().enrolled
+      // A future push watermark means the clock moved back. Retry from the local
+      // snapshot instead of trusting timestamps; pull is a server clock and stays.
+      const clockGuard = clearPushOnClockRollback(push)
+      const report = await syncOnce({
+        userId: user.id,
+        languages,
+        since,
+        push: clockGuard.push,
+      })
+      if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
+        report.warnings = [...report.warnings, 'clock-rollback']
+      }
+
+      /**
+       * 기다리는 사이 계정이 바뀌었을 수 있다.
+       *
+       * 이 기기의 DB 에는 이미 A 의 병합 결과가 쓰였을 수 있지만, 그것을 B 의 화면에
+       * 채택하거나 B 의 워터마크로 남기면 안 된다. A 로 다시 돌아오면 같은 동기화를
+       * 한 번 더 하면 되고, 그 동기화는 멱등이다.
+       */
+      if (accountChanged()) return
+
+      // 성공한 표의 워터마크만 옮긴다. 실패한 표는 옛 워터마크를 지켜 다음에 재시도한다.
+      writeStoredSyncState(user.id, {
+        version: 2,
+        pull: report.watermarks,
+        push: report.pushWatermarks,
+        // Persist the epoch this cycle actually ran against, so the next cycle
+        // can tell whether the database was replaced in between.
+        localEpoch,
+        lastSyncedAt: startedAt,
+      })
+
+      /**
+       * 계정의 언어를 그대로 채택한다.
+       *
+       * 배운 언어는 계정에 묶여 있다 — 폰에서 프랑스어를 추가하고 노트북에서 보면 거기에도
+       * 있어야 한다. 병합은 합집합이므로 이 기기에서 고르지 않은 언어도 함께 온다.
+       *
+       * 새 기기에서 로그인하면 이 순간 온보딩도 끝난 것으로 본다 — 같은 선택을 다시
+       * 하지 않게 하는 것이 그 이유다.
+       */
+      if (report.languages.length > 0) {
+        useLanguagesStore.getState().adopt(report.languages as LanguageCode[])
+      }
+
+      // 받은 내용을 화면 스토어에 불어넣는다 — 안 하면 기록은 있어도 안 보인다
+      const documents = useDocumentsStore.getState()
+      await documents.load()
+      // 읽는 사이 계정이 바뀌었으면 이 기기의 병합 결과를 새 계정 화면에 밀어 넣지 않는다.
+      // 이후 읽기도, 마지막 성공 상태도 모두 이번 계정의 것이어야 한다.
+      if (accountChanged()) return
+      // 폴더도 다른 기기에서 온다 — 만들어진 폴더가 여기에도 나와야 한다
+      await useFoldersStore.getState().load()
+      if (accountChanged()) return
+
+      /**
+       * 방금 써 넣은 병합 결과를 화면에 반영한다.
+       *
+       * force 없이 부르면 이미 읽은 언어라 아무것도 하지 않는다 — 그러면 다른 기기에서 온
+       * 진도가 IndexedDB 에만 있고 화면에 없다. 사용자가 새로고침을 한 번 더 해야 보게 된다.
+       */
+      const wordStates = useWordStatesStore.getState()
+      await Promise.all(languages.map((code) => wordStates.loadLanguage(code, { force: true })))
+      if (accountChanged()) return
+
+      const occurrences = useOccurrencesStore.getState()
+      await Promise.all(languages.map((code) => occurrences.loadLanguage(code)))
+      if (accountChanged()) return
+
+      // 기록이 없는/옛 기록인 문서의 재계산은 App 이 문서 목록에 반응해 맡는다.
+      // 여기서 다시 부르면 같은 계산을 두 번 한다.
+
+      // 마지막 확인 — 여기까지 왔어도 set 직전에 바뀔 수 있다
+      if (accountChanged()) return
+
+      // Only stores whose whole batch went through are subtracted. A failed
+      // table's count stays pending so the next cycle retries it. The shared
+      // record is authoritative: subtract there, then adopt what remains.
+      const succeededStores = new Set<StoreName>(report.succeededStores)
+      const sent: Partial<Record<StoreName, number>> = {}
+      for (const [store, count] of Object.entries(batch)) {
+        if (succeededStores.has(store as StoreName)) sent[store as StoreName] = count
+      }
+      let pendingByStore: Record<string, number>
+      try {
+        pendingByStore = { ...(await subtractPending(sent)).pendingByStore }
+      } catch (bookkeepingError) {
+        // A successful push whose count could not be recorded must not make the
+        // rows look delivered. Overstating pending is the safe direction.
+        console.error('밀린 개수를 기록하지 못했습니다', bookkeepingError)
+        pendingByStore = { ...batch }
+      }
+
+      const failed = report.failures.length > 0
+      set((s) => ({
+        status: failed ? ('error' as SyncStatus) : ('synced' as SyncStatus),
+        lastSyncedAt: new Date().toISOString(),
+        error: failureMessage(report.failures),
+        // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
+        notice: failed ? s.notice : markSynced(s.notice, Date.now()),
+        report,
+        // 밀린 것이 남았는가 — 실패한 표는 아직 기기에만 있다
+        dirty: pendingCount(pendingByStore) > 0,
+        pendingByStore,
+      }))
+
+      // The full pull is what the manual request was for. A push-only failure
+      // still means it completed; a failed pull must be retried from scratch.
+      fullResyncCompleted = !report.failures.some((failure) => failure.table === 'pull')
+
+      // Tell other tabs only after this tab persisted both the watermarks and the
+      // visible state. A listener can then re-read the same shared record.
+      getSyncChannel().post({ type: 'synced', userId: startedUserId, report })
+    } catch (error) {
+      // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
+      if (accountChanged()) return
+
+      /**
+       * Local writes kept landing while this cycle planned. Nothing was written
+       * and no watermark moved, so there is no error for the user to act on.
+       * The write that caused the conflict already notified the debounced sync
+       * scheduler, so keep the pending batch and let that retry handle it — a
+       * private timer would pull again every couple of seconds during a burst.
+       */
+      if (error instanceof SyncDeferredError) {
+        set({ status: 'local', error: null })
+        return
+      }
+
+      // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
+      if (error instanceof SyncUnavailable) {
+        // 서버를 쓰지 않는 상태다 — '밀렸다'고 하지 않는다. 오류도 아닌 정상이다
+        set({ status: 'local', error: null, dirty: false, pendingByStore: {} })
+        return
+      }
+      // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다.
+      // Counts may have grown in another tab during this cycle, so prefer the
+      // shared record and fall back to the batch when it cannot be read.
+      const pendingAfterFailure = await readPendingOr(batch)
+      set({
+        status: 'error',
+        report: null,
+        error: error instanceof Error ? error.message : String(error),
+        dirty: pendingCount(pendingAfterFailure) > 0,
+        pendingByStore: pendingAfterFailure,
+      })
     }
-
-    const failed = report.failures.length > 0
-    set((s) => ({
-      status: failed ? ('error' as SyncStatus) : ('synced' as SyncStatus),
-      lastSyncedAt: new Date().toISOString(),
-      error: failureMessage(report.failures),
-      // 올라갔다고 확인해 준다 — 올라간 것을 알아야 안심한다
-      notice: failed ? s.notice : markSynced(s.notice, Date.now()),
-      report,
-      // 밀린 것이 남았는가 — 실패한 표는 아직 기기에만 있다
-      dirty: pendingCount(pendingByStore) > 0,
-      pendingByStore,
-    }))
-
-    // Tell other tabs only after this tab persisted both the watermarks and the
-    // visible state. A listener can then re-read the same shared record.
-    getSyncChannel().post({ type: 'synced', userId: startedUserId, report })
-  } catch (error) {
-    // 계정이 바뀐 뒤에는 이전 계정의 실패를 새 계정의 화면에 남기지 않는다
-    if (accountChanged()) return
-
+  } finally {
     /**
-     * Local writes kept landing while this cycle planned. Nothing was written
-     * and no watermark moved, so there is no error for the user to act on.
-     * The write that caused the conflict already notified the debounced sync
-     * scheduler, so keep the pending batch and let that retry handle it — a
-     * private timer would pull again every couple of seconds during a burst.
+     * Keep the user's explicit full-refresh request while it is still owed.
+     * The success path clears it; every other exit leaves it for the account
+     * that asked, so the next cycle still performs a full pull.
      */
-    if (error instanceof SyncDeferredError) {
-      // No cycle happened, so a manual full-refresh request is still owed.
-      if (fullResyncWasRequested) requestFullResync()
-      set({ status: 'local', error: null })
-      return
+    if (fullResyncWasRequested && !fullResyncCompleted) {
+      requestFullResync(startedUserId)
     }
-
-    // Supabase 미설정은 설정 안내가 따로 있으므로 여기서 다루지 않는다
-    if (error instanceof SyncUnavailable) {
-      // 서버를 쓰지 않는 상태다 — '밀렸다'고 하지 않는다. 오류도 아닌 정상이다
-      set({ status: 'local', error: null, dirty: false, pendingByStore: {} })
-      return
-    }
-    // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다.
-    // Counts may have grown in another tab during this cycle, so prefer the
-    // shared record and fall back to the batch when it cannot be read.
-    const pendingAfterFailure = await readPendingOr(batch)
-    set({
-      status: 'error',
-      report: null,
-      error: error instanceof Error ? error.message : String(error),
-      dirty: pendingCount(pendingAfterFailure) > 0,
-      pendingByStore: pendingAfterFailure,
-    })
   }
 }
 

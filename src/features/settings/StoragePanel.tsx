@@ -21,11 +21,12 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * 저장 공간 카드.
+ * Storage card.
  *
- * 브라우저가 로컬 데이터를 지울 수 있는지와 얼마나 쓰고 있는지 보여 준다. 모든
- * 브라우저가 같은 API 를 제공하지 않으므로, 모르면 **모른다고** 말한다 — 지원하지
- * 않는 환경에서 '보관됨' 이라고 단정하면 사용자가 데이터가 안전하다고 오해한다.
+ * Shows whether the browser may clear local data and how much the app uses. Not
+ * every browser exposes the same Storage API, so an unknown state is reported
+ * as unknown — claiming "persisted" on an unsupported browser would tell the
+ * user their data is safer than it is.
  */
 export function StoragePanel() {
   const t = useTranslation()

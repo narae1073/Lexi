@@ -240,8 +240,8 @@ export function AccountPanel() {
             {t('account.syncNow')}
           </button>
           {/*
-            기기 저장소가 비워졌다고 느낄 때의 출구. 지우지 않고 서버에서 다시
-            읽어 합치므로, 눌러서 잃을 것이 없다.
+            The way out when the device looks like it lost local data. It
+            re-reads from the server and merges, so pressing it loses nothing.
           */}
           <button
             type="button"
