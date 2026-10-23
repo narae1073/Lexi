@@ -8,7 +8,7 @@ No production migration, deployment, or production data change was performed.
 - Branch: `r3-scale-data-usage`
 - R3 scale/pre-public work HEAD: `044a642`
 - Original gates commit: `7296c83`
-- Review-fix commit: `FIX_COMMIT_PENDING` (adds the C1/I1–I5 fixes below)
+- Review-fix commit: `81f5998` (adds the C1/I1–I5 fixes below)
 - Verified tree: the review-fix commit above, plus its follow-up evidence commit
 
 The only Supabase target used below was the local stack at
