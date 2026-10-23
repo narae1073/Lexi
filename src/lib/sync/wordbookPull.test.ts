@@ -66,7 +66,10 @@ function projectionServer(rows: ProjectionRow[]) {
   const client = {
     rpc: async (name: string, args: PageArgs) => {
       calls.push(args)
-      if (name !== 'get_wordbook_projection_page') {
+      if (
+        name !== 'get_wordbook_projection_page' &&
+        name !== 'get_wordbook_projection_page_bounded'
+      ) {
         return { data: null, error: { message: `unknown rpc ${name}` } }
       }
       if (args.p_snapshot !== null && args.p_updated_since !== null) {
@@ -95,7 +98,17 @@ function projectionServer(rows: ProjectionRow[]) {
         )
         .slice(0, args.p_limit)
 
-      return { data: page.map((entry) => ({ ...entry })), error: null }
+      const resultRows = page.map((entry) => ({ ...entry }))
+      if (name === 'get_wordbook_projection_page') return { data: resultRows, error: null }
+      const last = resultRows[resultRows.length - 1]
+      return {
+        data: {
+          rows: resultRows,
+          hasMore: resultRows.length === args.p_limit,
+          nextCursor: last === undefined ? args.p_after_lemma : last.lemma,
+        },
+        error: null,
+      }
     },
   }
 
@@ -106,8 +119,17 @@ function projectionServer(rows: ProjectionRow[]) {
 }
 
 function scriptedClient(rows: ProjectionRow[]) {
+  const copied = rows.map((entry) => ({ ...entry }))
+  const last = copied[copied.length - 1]
   return {
-    rpc: async () => ({ data: rows.map((entry) => ({ ...entry })), error: null }),
+    rpc: async () => ({
+      data: {
+        rows: copied,
+        hasMore: false,
+        nextCursor: last === undefined ? null : last.lemma,
+      },
+      error: null,
+    }),
   } as never
 }
 

@@ -62,18 +62,19 @@ begin
   where n.nspname = 'public'
     and p.proname in (
       'get_wordbook_projection_page',
+      'get_wordbook_projection_page_bounded',
       'consume_projection_quota',
       'consume_projection_sync',
       'record_projection_usage',
       'prune_projection_usage'
     )
     and (
-      -- The page RPC is the only read path now, so it must be definer-owned
+      -- The page RPCs are the only read paths now, so they must be definer-owned
       -- with a pinned search_path. Every internal helper is definer-owned too.
       not p.prosecdef
       or not (p.proconfig @> array['search_path=public, pg_temp'])
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
-        and p.proname = 'get_wordbook_projection_page'
+        and p.proname in ('get_wordbook_projection_page', 'get_wordbook_projection_page_bounded')
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
         and p.proname = 'consume_projection_quota'
       or has_function_privilege('authenticated', p.oid, 'EXECUTE')
@@ -328,26 +329,25 @@ begin
     raise exception 'first page is %, expected {alpha,beta}', v_lemmas;
   end if;
 
-  -- Page 2 matches the stored cursor and stores delta.
+  -- Page 2 matches the stored cursor and returns the last two rows. The
+  -- server knows no row follows gamma, so `hasMore` is false and the pass
+  -- completes on this page; a client never requests an empty page.
   select array_agg(lemma order by lemma) into v_lemmas
   from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
   if v_lemmas is distinct from array['delta', 'gamma'] then
     raise exception 'second page is %, expected {delta,gamma}', v_lemmas;
   end if;
 
-  -- Final page (0 rows) completes the pass with final_cursor = gamma.
-  perform 1
-  from public.get_wordbook_projection_page('fr', 'gamma', v_snapshot, null, 2);
-
   -- Replaying the final page is idempotent: a crash after the server stored
   -- completion but before the client stored the rows must still get them.
+  -- The replay anchor is the input cursor of the page that completed (beta).
   perform 1
-  from public.get_wordbook_projection_page('fr', 'gamma', v_snapshot, null, 2);
+  from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
 
   -- Any other cursor is rejected: it could skip rows.
   begin
     perform 1
-    from public.get_wordbook_projection_page('fr', 'delta', v_snapshot, null, 2);
+    from public.get_wordbook_projection_page('fr', 'gamma', v_snapshot, null, 2);
     raise exception 'a completed pass accepted another cursor';
   exception
     when sqlstate 'PT409' then null;

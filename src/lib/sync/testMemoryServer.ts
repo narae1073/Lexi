@@ -220,7 +220,10 @@ export function memoryServer(
         return { data: null, error: { message: `${name} rejected` } }
       }
       if (name === 'sync_snapshot') return { data: snapshot, error: null }
-      if (name === 'get_wordbook_projection_page') {
+      if (
+        name === 'get_wordbook_projection_page' ||
+        name === 'get_wordbook_projection_page_bounded'
+      ) {
         const language = String(args.p_language_code)
         const after = args.p_after_lemma as string | null
         const upper = args.p_snapshot as string | null
@@ -238,7 +241,7 @@ export function memoryServer(
           Math.max(Math.trunc(Number(args.p_limit ?? 1000)) || 1000, 1),
           1000,
         )
-        const page = tables.wordbook_entries
+        const all = tables.wordbook_entries
           .filter(
             (row) =>
               row.language_code === language &&
@@ -249,9 +252,31 @@ export function memoryServer(
                 compare(row.server_updated_at, updatedSince) > 0),
           )
           .sort((a, b) => compare(a.lemma, b.lemma))
-          .slice(0, limit)
-          .map((row) => ({ ...row }))
-        return { data: page, error: null }
+        const page = all.slice(0, limit).map((row) => ({ ...row }))
+        if (name === 'get_wordbook_projection_page') {
+          return { data: page, error: null }
+        }
+        // Mirror the server's ~1 MiB byte cap. A single oversized row is still
+        // returned, and hasMore says the language continues.
+        const budget = 1024 * 1024
+        const picked: Record<string, unknown>[] = []
+        let bytes = 0
+        for (const row of page) {
+          const size = JSON.stringify(row).length
+          if (picked.length > 0 && bytes + size > budget) break
+          picked.push(row)
+          bytes += size
+        }
+        const hasMore = picked.length < all.length
+        const last = picked[picked.length - 1]
+        return {
+          data: {
+            rows: picked,
+            hasMore,
+            nextCursor: last === undefined ? after : String(last.lemma),
+          },
+          error: null,
+        }
       }
       if (name === 'get_document_payload') {
         const document = tables.documents.find(

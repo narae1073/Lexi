@@ -341,6 +341,27 @@ describe('occurrence keys with no local rows', () => {
     )
   })
 
+  it('does not send an empty replacement for a metadata-only document', async () => {
+    const server = memoryServer()
+    server.add('documents', serverDocument('doc-1'))
+    server.add('word_occurrences', staleOccurrence('doc-1'))
+    // This device never held the text (it only has the metadata row), so an
+    // empty local occurrence set is not evidence that the document has none.
+    await idbPut(STORES.documents, doc('doc-1', { hasContent: false, rawText: '' }))
+    await replaceOccurrences<WordOccurrence>('doc-1', [])
+
+    const report = await sync(server)
+
+    expect(report.failures).toEqual([])
+    expect(server.rpcCalls('replace_word_occurrences')).toBe(0)
+    expect(
+      server.rows('word_occurrences').filter((row) => row.document_id === 'doc-1'),
+    ).toHaveLength(1)
+    expect(await readDirtyKeys()).not.toContainEqual(
+      expect.objectContaining({ store: 'wordOccurrences', key: 'doc-1' }),
+    )
+  })
+
   it('does not send an empty replacement for a tombstoned document', async () => {
     const server = memoryServer()
     server.add('documents', serverDocument('doc-1'))

@@ -21,12 +21,13 @@
 import {
   DEFAULT_PASSWORD,
   PROJECTION_LANGUAGE,
-  clearProjectionQuota,
+  clearProjectionPageQuota,
   deleteTestUser,
   installProbes,
   navigate,
   prepareTestUser,
   projectionRequests,
+  projectionPassState,
   psql,
   readProjectionState,
   requests,
@@ -284,6 +285,13 @@ export async function run(ctx) {
       JSON.stringify(firstPages[0]?.params ?? null),
     )
 
+    // The quota report and the document list commit in separate React updates;
+    // wait for the banner instead of racing the list's first paint.
+    await ctx.waitFor(
+      `!!document.querySelector('[data-list-paused]')`,
+      'paused projection banner',
+      10_000,
+    )
     const paused = await ctx.page.evaluate(`(() => {
       const node = document.querySelector('[data-list-paused]');
       return node ? node.innerText : null;
@@ -312,8 +320,11 @@ export async function run(ctx) {
       `${storedRows.length} projection rows`,
     )
 
-    // ── resume: the retry uses the stored cursor ──────────────────────────
-    await clearProjectionQuota(config, user.id)
+    // ── resume: the retry uses the stored cursor and the same snapshot ─────
+    // Only the page-rate counters are cleared. Keeping `projection_sync_passes`
+    // is what proves this is a real resume of the charged pass: deleting it
+    // would let the client look like it resumed while starting a fresh one.
+    await clearProjectionPageQuota(config, user.id)
     await waitForProjectionComplete(ctx, user.id, PROJECTION_LANGUAGE, 180_000)
     const completeState = await readProjectionState(ctx, user.id)
     ctx.check(
@@ -325,12 +336,32 @@ export async function run(ctx) {
     const resumedLog = await requests(ctx)
     const resumedPages = projectionRequests(resumedLog)
     const cursor = interruptedLanguage?.cursor?.lemma
+    const interruptedSnapshot = interruptedLanguage?.snapshot
     ctx.check(
       'resumed sync asks for the stored cursor, not lemma 0',
       resumedPages.some((page) => page.params?.p_after_lemma === cursor),
       `cursor ${JSON.stringify(cursor)}; requests ${JSON.stringify(
         resumedPages.map((page) => page.params?.p_after_lemma ?? null),
       )}`,
+    )
+    ctx.check(
+      'resumed sync reuses the charged snapshot',
+      resumedPages.length > 0 &&
+        resumedPages.every((page) => page.params?.p_snapshot === interruptedSnapshot),
+      `snapshot ${JSON.stringify(interruptedSnapshot)}; requests ${JSON.stringify(
+        resumedPages.map((page) => page.params?.p_snapshot ?? null),
+      )}`,
+    )
+    const passState = await projectionPassState(
+      config,
+      user.id,
+      interruptedSnapshot,
+      PROJECTION_LANGUAGE,
+    )
+    ctx.check(
+      'the interrupted pass is the same server pass and completed once',
+      passState?.count === 1 && passState?.complete === true,
+      JSON.stringify(passState ?? null),
     )
 
     const finalRows = await storeRows(ctx, 'wordbookEntries')

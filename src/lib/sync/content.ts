@@ -474,6 +474,19 @@ export async function openDocumentContent({
     return openedFromRecord(cached, { fetched: false, paged: false, lastOpenedAt })
   }
 
+  // 1b. A metadata-only row can lag a body another tab stored. The newer local
+  // copy is the last write and must win over both the row's absent text and a
+  // needless refetch.
+  if (
+    !force &&
+    cached !== undefined &&
+    !sameContentVersion(cached.contentUpdatedAt, docVersion) &&
+    isNewerVersion(docVersion, cached.contentUpdatedAt)
+  ) {
+    await recordOpen()
+    return openedFromRecord(cached, { fetched: false, paged: false, lastOpenedAt })
+  }
+
   // 2. Text that is already in the document row: created here, or an R2 row.
   if (!force && doc.hasContent !== false) {
     // The same last-write-wins rule as a fetch: a copy with a newer version

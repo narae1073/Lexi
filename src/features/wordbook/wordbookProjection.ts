@@ -407,7 +407,7 @@ export function computeDocumentProgress(
 }
 
 /** Visits each distinct document association of one entry. */
-function visitEntryDocuments(
+export function visitEntryDocuments(
   entry: ProgressEntry,
   visit: (documentId: string | undefined) => void,
 ): void {

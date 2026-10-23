@@ -916,6 +916,24 @@ begin
     raise exception 'delete_document left a unique lemma live';
   end if;
 
+  -- Cross-device deletion: the RPC must leave a tombstone another device can
+  -- pull. A bare delete would let that device push its local copy back.
+  if not exists (
+    select 1 from public.document_tombstones t
+    where t.user_id = current_setting('test.user_id')::uuid
+      and t.document_id = current_setting('test.d4')::uuid
+  ) then
+    raise exception 'delete_document did not write a document tombstone';
+  end if;
+  if not exists (
+    select 1 from public.document_tombstones t
+    where t.user_id = current_setting('test.user_id')::uuid
+      and t.document_id = current_setting('test.d4')::uuid
+      and t.server_updated_at >= t.purged_at
+  ) then
+    raise exception 'delete_document tombstone has no pull watermark';
+  end if;
+
   if exists (
     select 1 from public.wordbook_refresh_queue
     where user_id = current_setting('test.user_id')::uuid

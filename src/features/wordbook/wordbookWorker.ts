@@ -34,6 +34,7 @@ import {
 import {
   compareWordbookEntries,
   computeDocumentProgress,
+  visitEntryDocuments,
   type DocumentProgress,
   type ProgressDocument,
   type ProgressEntry,
@@ -304,6 +305,46 @@ function handleLocalRebuild(
 }
 
 /**
+ * Applies status overrides to an already-computed progress map.
+ *
+ * A status tap changes one lemma. Re-walking all 200k contexts for that is the
+ * difference between a few milliseconds and the whole computation under load,
+ * so adjust only the documents that contain an overridden lemma: the cached
+ * progress already counts the lemma at its rebuilt status, and each entry's
+ * contexts name exactly the documents to move by ±1.
+ */
+function applyProgressOverrides(
+  merged: Map<string, DocumentProgress>,
+  entries: readonly unknown[],
+  statuses: Record<string, ProgressEntry['status']>,
+): void {
+  for (const value of entries) {
+    const entry = value as ProgressEntry & { languageCode?: string }
+    if (!entry.languageCode) continue
+    const overridden = statuses[`${entry.languageCode}::${entry.lemma}`]
+    if (overridden === undefined) continue
+    const before = entry.status !== 'unmarked'
+    const after = overridden !== 'unmarked'
+    if (before === after) continue
+
+    const delta = after ? 1 : -1
+    const seen = new Set<string>()
+    visitEntryDocuments(entry, (documentId) => {
+      if (!documentId || seen.has(documentId)) return
+      seen.add(documentId)
+      const current = merged.get(documentId)
+      if (current === undefined) return
+      const marked = Math.max(0, Math.min(current.total, current.marked + delta))
+      merged.set(documentId, {
+        total: current.total,
+        marked,
+        percent: current.total === 0 ? 0 : Math.round((marked / current.total) * 100),
+      })
+    })
+  }
+}
+
+/**
  * The one implementation of the worker protocol.
  *
  * Shared by the real worker, the inline fallback used where `Worker` does not
@@ -361,17 +402,22 @@ export function handleWordbookRequest(
   const datasets = [...state.datasets.values()]
   const statuses = request.statuses
   /**
-   * The common request has no overrides: DocumentList's status map only carries
-   * rows that differ from what the worker rebuilt. Reuse the rebuild's progress
-   * and filter it to the live documents instead of walking every context again.
+   * DocumentList's status map only carries rows that differ from what the
+   * worker rebuilt. Reuse the rebuild's progress, then move just the documents
+   * that contain an overridden lemma by ±1. Walking every context again on a
+   * status tap was measurable under the 200k fixture and made the round trip
+   * depend on main-thread contention.
    */
-  if (request.entries === undefined && (!statuses || Object.keys(statuses).length === 0)) {
+  if (request.entries === undefined) {
     const merged = new Map<string, DocumentProgress>()
     for (const dataset of datasets) {
       dataset.progress ??= computeDocumentProgress(
         dataset.entries as unknown as readonly ProgressEntry[],
       )
       for (const [documentId, entry] of dataset.progress) merged.set(documentId, entry)
+      if (statuses && Object.keys(statuses).length > 0) {
+        applyProgressOverrides(merged, dataset.entries, statuses)
+      }
     }
     return { type: 'progress', progress: Object.fromEntries(filterProgress(merged, request.documents)) }
   }

@@ -11,6 +11,7 @@ import {
 } from '../../lib/storage/localDb'
 import type { Document, Folder } from '../../types'
 import type { WordOccurrence } from '../../app/stores/occurrences'
+import { putDocumentContent, readDocumentContent } from '../storage/documentContent'
 import { writeLocal } from './sync'
 
 /**
@@ -290,6 +291,25 @@ describe('newest-write guard', () => {
       (await idbGet<{ purgedAt: string }>(STORES.documentTombstones, 'doc-purged'))?.purgedAt,
     ).toBe(T1)
     expect(result.tombstones).toBe(0)
+  })
+
+  it('removes the cached document body when a remote tombstone arrives', async () => {
+    await putDocumentContent('doc-purged', {
+      rawText: 'A body the user deleted.',
+      contentUpdatedAt: T1,
+      occurrencesUpdatedAt: T1,
+    })
+
+    await writeLocal(
+      [],
+      [],
+      [],
+      [],
+      [{ documentId: 'doc-purged', purgedAt: T2 }],
+      options(),
+    )
+
+    expect(await readDocumentContent('doc-purged')).toBeUndefined()
   })
 
   it('writes a genuinely newer incoming row', async () => {

@@ -307,6 +307,30 @@ describe('opening a document', () => {
     expect(server.rpcCalls('get_document_payload')).toBe(1)
   })
 
+  it('uses a cached body newer than the metadata row without refetching', async () => {
+    const server = memoryServer()
+    seed(server)
+    // Another tab already fetched a newer revision; this device's metadata row
+    // still carries the older version. Refetching would be a needless request
+    // and could replace the newer body with an older one.
+    await putDocumentContent('doc-1', {
+      rawText: 'Newer local body',
+      contentUpdatedAt: T2,
+      occurrencesUpdatedAt: T2,
+    })
+
+    const opened = await openDocumentContent({
+      document: metadataDocument({ contentUpdatedAt: T1 }),
+      db: server.client,
+      openedAt: T2,
+    })
+
+    expect(opened.rawText).toBe('Newer local body')
+    expect(opened.fetched).toBe(false)
+    expect(server.rpcCalls('get_document_payload')).toBe(0)
+    expect(server.rpcCalls('get_document_content_page')).toBe(0)
+  })
+
   it('calls touch_document only — no document upsert and no raw_text write', async () => {
     const server = memoryServer()
     seed(server)

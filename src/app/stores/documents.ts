@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 
+import { clearDocumentContent } from '../../lib/storage/documentContent'
 import { STORES, idbDelete, idbGet, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import { markPurged, putDocumentTombstone } from '../../lib/storage/purged'
 import { openDocumentContent, type OpenedDocument } from '../../lib/sync/content'
@@ -184,6 +185,15 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
       await idbDelete(STORES.documents, id)
     } catch (error) {
       console.error('문서 저장 지우기 실패', error)
+    }
+
+    // The cached body belongs to the deleted document; keeping it would retain
+    // text the user asked to erase and could serve a stale body on a future
+    // document id reuse.
+    try {
+      await clearDocumentContent(id)
+    } catch (error) {
+      console.error('문서 본문 캐시 지우기 실패', error)
     }
 
     try {

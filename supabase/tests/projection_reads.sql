@@ -99,6 +99,32 @@ select
   current_setting('test.snapshot')::timestamptz - interval '1 minute'
 from generate_series(1, 1005) as g;
 
+-- Byte-cap fixture: three ~400 kB rows must split a page even though the row
+-- limit is 1000. A single >1 MB row must still be returned (never dropped).
+insert into public.wordbook_entries (user_id, language_code, lemma, contexts, server_updated_at)
+select
+  :'user_id'::uuid,
+  'it',
+  'big-' || g,
+  jsonb_build_array(jsonb_build_object(
+    'documentId', gen_random_uuid(),
+    'sentence', repeat('x', 400000)
+  )),
+  current_setting('test.snapshot')::timestamptz - interval '1 minute'
+from generate_series(1, 3) as g;
+
+insert into public.wordbook_entries (user_id, language_code, lemma, contexts, server_updated_at)
+values (
+  :'user_id'::uuid,
+  'pt',
+  'huge',
+  jsonb_build_array(jsonb_build_object(
+    'documentId', gen_random_uuid(),
+    'sentence', repeat('y', 1200000)
+  )),
+  current_setting('test.snapshot')::timestamptz - interval '1 minute'
+);
+
 alter table public.wordbook_entries enable trigger wordbook_entries_server_updated_at;
 
 -- Test-only reset for the server pass/counter state. Only reachable as the
@@ -125,15 +151,18 @@ begin
   where n.nspname = 'public'
     and p.proname in (
       'get_wordbook_projection_page',
+      'get_wordbook_projection_page_bounded',
       'get_document_payload',
       'get_document_content_page',
       'touch_document'
     )
     and (
-      -- The page RPC is the only read path and is definer-owned; the other
+      -- The page RPCs are the only read paths and are definer-owned; the other
       -- read/touch endpoints remain invoker-owned.
-      (p.proname = 'get_wordbook_projection_page' and not p.prosecdef)
-      or (p.proname <> 'get_wordbook_projection_page' and p.prosecdef)
+      (p.proname in ('get_wordbook_projection_page', 'get_wordbook_projection_page_bounded')
+        and not p.prosecdef)
+      or (p.proname not in ('get_wordbook_projection_page', 'get_wordbook_projection_page_bounded')
+        and p.prosecdef)
       or not (p.proconfig @> array['search_path=public, pg_temp'])
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
       or has_function_privilege('anon', p.oid, 'EXECUTE')
@@ -407,6 +436,85 @@ begin
   if v_count <> 0 then
     raise exception 'a NULL language returned % rows', v_count;
   end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 3b. Byte-bounded pages report hasMore/nextCursor, keep an oversized row, and
+--     allow a same-snapshot restart from lemma 0.
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_user uuid := current_setting('test.user_id')::uuid;
+  v_page jsonb;
+  v_count int;
+  v_next text;
+  v_last_cursor text;
+begin
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
+
+  v_page := public.get_wordbook_projection_page_bounded('it', null, v_snapshot, null, 1000);
+  v_count := jsonb_array_length(v_page->'rows');
+  if v_count <> 2 then
+    raise exception 'byte-bounded page returned % rows, expected 2 under 1 MiB', v_count;
+  end if;
+  if not (v_page->>'hasMore')::boolean then
+    raise exception 'a byte-truncated page did not report hasMore';
+  end if;
+  v_next := v_page->>'nextCursor';
+  if v_next <> 'big-2' then
+    raise exception 'byte-bounded nextCursor is %, expected big-2', v_next;
+  end if;
+
+  v_page := public.get_wordbook_projection_page_bounded('it', v_next, v_snapshot, null, 1000);
+  v_count := jsonb_array_length(v_page->'rows');
+  if v_count <> 1 or (v_page->>'hasMore')::boolean then
+    raise exception 'continuation page was % rows / hasMore %', v_count, v_page->>'hasMore';
+  end if;
+
+  -- A row larger than the whole budget is returned alone, not dropped.
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
+  v_page := public.get_wordbook_projection_page_bounded('pt', null, v_snapshot, null, 1000);
+  if jsonb_array_length(v_page->'rows') <> 1
+     or v_page->'rows'->0->>'lemma' is distinct from 'huge' then
+    raise exception 'an oversized single row was dropped: %', v_page;
+  end if;
+  if (v_page->>'hasMore')::boolean then
+    raise exception 'a single oversized row reported hasMore with no following row';
+  end if;
+
+  -- An interrupted pass can restart the same snapshot from lemma 0 even though
+  -- the server had already stored a later cursor. This is the recovery path for
+  -- a failure between a page response and the client applying it.
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  insert into public.projection_sync_passes
+    (user_id, snapshot, language_code, started_at, last_cursor, previous_cursor, complete)
+  values (v_user, v_snapshot, 'it', clock_timestamp(), 'big-2', 'big-1', false);
+  set role authenticated;
+
+  v_page := public.get_wordbook_projection_page_bounded('it', null, v_snapshot, null, 1000);
+  if v_page->'rows'->0->>'lemma' is distinct from 'big-1' then
+    raise exception 'same-snapshot restart did not begin at the first lemma: %', v_page;
+  end if;
+  if not (v_page->>'hasMore')::boolean then
+    raise exception 'same-snapshot restart lost the rest of the language';
+  end if;
+
+  reset role;
+  select last_cursor into v_last_cursor
+  from public.projection_sync_passes
+  where user_id = v_user and snapshot = v_snapshot and language_code = 'it';
+  if v_last_cursor is distinct from 'big-2' then
+    raise exception 'restarted pass stored cursor %, expected big-2', v_last_cursor;
+  end if;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
 end $$;
 
 -- An authenticated request with no subject sees no rows, and a touch without a
@@ -722,6 +830,13 @@ begin
   begin
     perform public.get_wordbook_projection_page('fr', null, null, null, 1);
     raise exception 'anon executed get_wordbook_projection_page';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    perform public.get_wordbook_projection_page_bounded('fr', null, null, null, 1);
+    raise exception 'anon executed get_wordbook_projection_page_bounded';
   exception
     when insufficient_privilege then null;
   end;

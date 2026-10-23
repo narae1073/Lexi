@@ -198,6 +198,44 @@ describe('worker protocol', () => {
     if (response.type !== 'progress') throw new Error('unexpected')
     expect(response.progress).toEqual({ d1: { total: 1, marked: 1, percent: 100 } })
   })
+
+  it('applies overrides incrementally with the same counts as a full recompute', () => {
+    const state = createWordbookWorkerState()
+    const entries = [
+      entry('shared', {
+        status: 'known',
+        documentIds: ['d1', 'd2'],
+        languageCode: 'en',
+      } as unknown as Partial<WordbookEntry>),
+      entry('only-one', {
+        status: 'unmarked',
+        documentIds: ['d1'],
+        languageCode: 'en',
+      } as unknown as Partial<WordbookEntry>),
+      entry('only-two', {
+        status: 'known',
+        documentIds: ['d2'],
+        languageCode: 'en',
+      } as unknown as Partial<WordbookEntry>),
+    ] as unknown as ProjectionWordbookEntry[]
+    handleWordbookRequest(state, { type: 'rebuild', entries, languageCode: 'en' })
+
+    const statuses = { 'en::shared': 'unmarked', 'en::only-one': 'known' } as const
+    const first = handleWordbookRequest(state, { type: 'progress', statuses })
+    if (first.type !== 'progress') throw new Error('unexpected')
+    // d1: shared loses its mark (-1), only-one gains one (+1) → 1 / 2.
+    // d2: shared loses its mark (-1), only-two stays marked → 1 / 2.
+    expect(first.progress).toEqual({
+      d1: { total: 2, marked: 1, percent: 50 },
+      d2: { total: 2, marked: 1, percent: 50 },
+    })
+
+    // A repeated request applies the same delta to the cached base, never to
+    // the previous override result.
+    const second = handleWordbookRequest(state, { type: 'progress', statuses })
+    if (second.type !== 'progress') throw new Error('unexpected')
+    expect(second.progress).toEqual(first.progress)
+  })
 })
 
 describe('wordbook worker boundary', () => {

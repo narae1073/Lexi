@@ -148,11 +148,16 @@ export async function run(ctx) {
     `${tableReads(firstLog, 'word_states').length} requests`,
   )
   const pages = projectionRequests(firstLog)
-  const expectedPages = Math.floor(fixture.projection / 1000) + 1
+  // Pages are capped by both rows (1000) and bytes (~1 MiB), so a large
+  // context-heavy account needs more than the row-only minimum. The cursor must
+  // still be a strictly new keyset each time: no repeats, no empty restart.
+  const minimumPages = Math.ceil(fixture.projection / 1000)
   const snapshots = new Set(pages.map((page) => page.params?.p_snapshot))
+  const cursors = pages.slice(1).map((page) => page.params?.p_after_lemma)
   ctx.check(
-    'projection is downloaded in exactly the bounded page sequence',
-    pages.length === expectedPages &&
+    'projection is downloaded in bounded pages with one snapshot',
+    pages.length >= minimumPages &&
+      pages.length <= fixture.projection &&
       snapshots.size === 1 &&
       pages.every(
         (page) =>
@@ -161,8 +166,10 @@ export async function run(ctx) {
           page.params?.p_snapshot !== null,
       ) &&
       pages[0]?.params?.p_after_lemma === null &&
-      pages.slice(1).every((page) => typeof page.params?.p_after_lemma === 'string'),
-    `${pages.length} pages (expected ${expectedPages}) for ${fixture.projection} rows; ` +
+      cursors.every((cursor) => typeof cursor === 'string') &&
+      new Set(cursors).size === cursors.length,
+    `${pages.length} pages (minimum ${minimumPages}) for ${fixture.projection} rows; ` +
+      `${new Set(cursors).size}/${cursors.length} unique cursors; ` +
       `snapshots=${JSON.stringify([...snapshots])}`,
   )
 
@@ -262,12 +269,17 @@ export async function run(ctx) {
 
   ctx.check(
     'document progress computation under 100 ms',
-    direct.ms >= 0 && direct.ms < 100,
-    `${direct.ms.toFixed(1)} ms for ${direct.progress} documents; client calls ` +
+    direct.ms >= 0 && direct.ms < 100 && direct.progress === fixture.documents,
+    `${direct.ms.toFixed(1)} ms for ${direct.progress}/${fixture.documents} documents; ` +
+      `client calls ` +
       `${progressCalls.map((call) => `${call.ms.toFixed(1)}(${call.statusCount ?? '—'})`).join(', ') || '(none)'} ` +
       `(UI ready ${progressWallMs} ms)`,
   )
 
+  // Let the direct result's document-list render (1,112 rows) and any queued
+  // rebuild commit before measuring the override computation. Otherwise the
+  // round trip includes unrelated main-thread work.
+  await sleep(2500)
   const overrideStatus = fixture.status === 'known' ? 'unknown' : 'known'
   const override = await measureWorkerProgress(ctx, {
     [`en::${fixture.lemma}`]: overrideStatus,

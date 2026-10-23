@@ -66,7 +66,10 @@ function quotaAfter(
     ...(server.client as unknown as Record<string, unknown>),
     rpc: async (name: string, args: Record<string, unknown>) => {
       rpcNames.push(name)
-      if (name === 'get_wordbook_projection_page') {
+      if (
+        name === 'get_wordbook_projection_page' ||
+        name === 'get_wordbook_projection_page_bounded'
+      ) {
         pageCalls += 1
         calls.push({
           after: (args.p_after_lemma as string | null) ?? null,
@@ -162,10 +165,12 @@ describe('quota-aware projection pulls', () => {
     expect(result.projection.pauseReason).toBe('quota')
     expect(result.projection.quota).toEqual({ bucket: 'sync', retryAfterSeconds: 42 })
     // Nothing was read, so the local wordbook must not be emptied for an empty
-    // download. Snapshot null makes the next cycle start the pass over and
-    // clear the language only once it can actually download it.
+    // download. The charged snapshot is retained so the next cycle resumes the
+    // same pass without another daily unit; the language is cleared only once
+    // it can actually download it.
     expect(result.projection.reset).toEqual([])
-    expect(result.projection.next.fr.snapshot).toBeNull()
+    expect(result.projection.next.fr.snapshot).not.toBeNull()
+    expect(result.projection.next.fr.cursor).toBeNull()
     expect(result.projection.next.fr.complete).toBe(false)
   })
 
@@ -200,7 +205,10 @@ describe('quota-aware projection pulls', () => {
     const client = {
       ...(server.client as unknown as Record<string, unknown>),
       rpc: async (name: string, args: Record<string, unknown>) => {
-        if (name === 'get_wordbook_projection_page') {
+        if (
+          name === 'get_wordbook_projection_page' ||
+          name === 'get_wordbook_projection_page_bounded'
+        ) {
           pageCalls += 1
           if (pageCalls === 2) {
             return {
@@ -222,11 +230,11 @@ describe('quota-aware projection pulls', () => {
     expect(result.projection.pauseReason).toBe('state')
     expect(result.projection.paused).toContain('fr')
     expect(result.projection.quota).toBeNull()
-    // Reset to "not started": the next cycle takes a new snapshot and starts
-    // the language over instead of retrying the rejected cursor forever.
+    // Restart the same charged snapshot from lemma 0 instead of retrying the
+    // rejected cursor. A new snapshot would spend another daily unit.
     expect(result.projection.next.fr).toEqual({
       complete: false,
-      snapshot: null,
+      snapshot: '2026-10-30T00:00:00.000Z',
       cursor: null,
       hydratedAt: null,
     })

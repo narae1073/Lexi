@@ -381,6 +381,10 @@ export type Database = {
         Args: { p_document_id: string; p_rows: Json }
         Returns: undefined
       }
+      delete_document: {
+        Args: { p_document_id: string }
+        Returns: undefined
+      }
       get_wordbook_projection_page: {
         Args: {
           p_language_code: string
@@ -413,6 +417,16 @@ export type Database = {
           deleted_at: string | null
           server_updated_at: string
         }[]
+      }
+      get_wordbook_projection_page_bounded: {
+        Args: {
+          p_language_code: string
+          p_after_lemma: string | null
+          p_snapshot: string | null
+          p_updated_since: string | null
+          p_limit: number | null
+        }
+        Returns: Json
       }
       get_document_payload: {
         Args: { p_document_id: string }

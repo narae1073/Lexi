@@ -7,6 +7,7 @@ import {
   idbCount,
   idbGet,
   idbGetAll,
+  idbGetAllByIndex,
   isReservedDocumentMetaId,
   normalizeLocalSyncMeta,
   openLocalDatabase,
@@ -243,6 +244,21 @@ function entryFromWordState(state: WordStateRecord): WordbookEntryInput {
     noteUpdatedAt: state.noteUpdatedAt ?? null,
     serverUpdatedAt: null,
   }
+}
+
+/**
+ * True when this device still has at least one occurrence for the word.
+ *
+ * A word state can outlive its occurrences (learning history is kept after a
+ * document is purged), while the projection row is removed when the last
+ * occurrence goes. Re-seeding a cleared language from every dirty state would
+ * therefore create a wordbook row with no source, i.e. a phantom.
+ */
+async function hasLocalOccurrence(languageCode: string, lemma: string): Promise<boolean> {
+  const rows = await idbGetAllByIndex<WordOccurrence>(STORES.wordOccurrences, 'lemma', lemma).catch(
+    () => [] as WordOccurrence[],
+  )
+  return rows.some((row) => row.languageCode === languageCode)
 }
 
 /**
@@ -664,14 +680,15 @@ export async function syncOnce({
     )
     for (const language of remote.projection.reset) {
       // Mark the language incomplete before clearing it. If this cycle dies
-      // between the clear and the cursor write, the next cycle must start a
-      // full pull rather than resume an incremental watermark over an empty
-      // local language.
-      await updateProjectionState(userId, language, () => ({
+      // between the clear and the cursor write, the next cycle must restart the
+      // same snapshot from the first lemma instead of spending a new daily
+      // unit or resuming an incremental watermark over an empty language.
+      const resetState = remote.projection.next[language]
+      await updateProjectionState(userId, language, (current) => ({
         complete: false,
-        snapshot: null,
+        snapshot: resetState?.snapshot ?? current.snapshot,
         cursor: null,
-        hydratedAt: null,
+        hydratedAt: current.hydratedAt,
       }))
       const seeds: WordbookEntryInput[] = []
       const prefix = `${language}\u0000`
@@ -679,7 +696,12 @@ export async function syncOnce({
         if (!key.startsWith(prefix)) continue
         const lemma = key.slice(prefix.length)
         const stored = await idbGet<StoredWordState>(STORES.wordStates, [language, lemma])
-        if (stored !== undefined) seeds.push(entryFromWordState(normalizeWordState(stored)))
+        if (stored === undefined) continue
+        // A dirty state with no local occurrence has no projection source. The
+        // server soft-deletes such an entry, so seeding it would show a phantom
+        // until the next incremental pull.
+        if (!(await hasLocalOccurrence(language, lemma))) continue
+        seeds.push(entryFromWordState(normalizeWordState(stored)))
       }
       await clearWordbookEntries(language)
       // Full pages are server-canonical, but the merge skips keys with an
@@ -1079,13 +1101,21 @@ export function changedFolders(
   })
 }
 
-/** 문서를 지웠을 때 서버에서도 지운다 — 안 지우면 다른 기기에 다시 나타난다 */
+/**
+ * 문서를 지웠을 때 서버에서도 지운다 — 안 지우면 다른 기기에 다시 나타난다.
+ *
+ * The RPC writes the document tombstone in the same transaction as the delete.
+ * A plain row delete cannot tell another device that the document is gone, so
+ * that device would push its local copy back and resurrect it. `userId` is kept
+ * for callers; the RPC derives the tenant from the session.
+ */
 export async function deleteDocumentRemote(
   userId: string,
   documentId: string,
   db: SupabaseClient<Database> = client(),
 ): Promise<void> {
+  void userId
   // word_occurrences 는 documents 의 on delete cascade 로 함께 사라진다
-  const { error } = await db.from('documents').delete().eq('user_id', userId).eq('id', documentId)
+  const { error } = await db.rpc('delete_document', { p_document_id: documentId })
   if (error) throw error
 }

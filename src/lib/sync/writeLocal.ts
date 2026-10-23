@@ -126,6 +126,7 @@ const WRITE_STORES: StoreName[] = [
   STORES.wordStates,
   STORES.wordOccurrences,
   STORES.documentTombstones,
+  STORES.documentContent,
   STORES.documentMeta,
 ]
 
@@ -228,6 +229,7 @@ export async function writeLocal(
     const wordStatesStore = transaction.objectStore(STORES.wordStates)
     const occurrencesStore = transaction.objectStore(STORES.wordOccurrences)
     const tombstonesStore = transaction.objectStore(STORES.documentTombstones)
+    const contentStore = transaction.objectStore(STORES.documentContent)
     const metaStore = transaction.objectStore(STORES.documentMeta)
 
     let revisionReady = false
@@ -367,6 +369,9 @@ export async function writeLocal(
         // The tombstone wins over any document row. Reserved bookkeeping
         // records are never a document, even if a hostile row names one.
         documentsStore.delete(tombstone.documentId)
+        // A permanent delete removes the cached body too: it is user text, not
+        // a disposable cache, and the tombstone is the last local trace.
+        contentStore.delete(tombstone.documentId)
         if (!isReservedDocumentMetaId(tombstone.documentId)) {
           metaStore.delete(tombstone.documentId)
         }

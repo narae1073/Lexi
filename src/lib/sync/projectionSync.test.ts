@@ -36,6 +36,10 @@ const CONTENT_SNAPSHOT = new Date(Date.parse(OLDER_SNAPSHOT) - 60 * 60_000).toIS
 /** Changed after OLDER_SNAPSHOT but before the cycle snapshot. */
 const CHANGED_AT = new Date(Date.parse(OLDER_SNAPSHOT) + 60_000).toISOString()
 const R2_PULL = new Date(Date.parse(SNAPSHOT) - 48 * 60 * 60_000).toISOString()
+/** Incremental reads start five minutes before the stored completion snapshot. */
+function incrementalSince(snapshot: string): string {
+  return new Date(Date.parse(snapshot) - 5 * 60_000).toISOString()
+}
 
 /** This project has no jsdom; the R2 state tests use the same localStorage stub. */
 class MemoryStorage {
@@ -184,7 +188,10 @@ function recordingClient(server: Server) {
   const client = {
     ...(server.client as unknown as Record<string, unknown>),
     rpc: async (name: string, args: Record<string, unknown>) => {
-      if (name === 'get_wordbook_projection_page') {
+      if (
+        name === 'get_wordbook_projection_page' ||
+        name === 'get_wordbook_projection_page_bounded'
+      ) {
         calls.push({
           language: String(args.p_language_code),
           afterLemma: (args.p_after_lemma as string | null) ?? null,
@@ -302,6 +309,9 @@ describe('R2 upgrade and the full projection', () => {
       firstSeenAt: OLDER_SNAPSHOT,
       lastSeenAt: OLDER_SNAPSHOT,
     })
+    // The dirty re-seed is source-backed only; an occurrence proves this word
+    // belongs in the local wordbook while the projection is downloading.
+    await idbPut(STORES.wordOccurrences, localOccurrence())
 
     const entered = deferred()
     const release = deferred()
@@ -313,7 +323,11 @@ describe('R2 upgrade and the full projection', () => {
       ...(server.client as unknown as Record<string, unknown>),
       rpc: async (name: string, args: Record<string, unknown>) => {
         const result = await base.rpc(name, args)
-        if (name === 'get_wordbook_projection_page' && !gated) {
+        if (
+          (name === 'get_wordbook_projection_page' ||
+            name === 'get_wordbook_projection_page_bounded') &&
+          !gated
+        ) {
           gated = true
           entered.resolve()
           await release.promise
@@ -416,7 +430,7 @@ describe('projection completeness', () => {
     expect(deCalls.length).toBeGreaterThan(0)
     expect(deCalls.every((call) => call.snapshot === SNAPSHOT)).toBe(true)
     expect(frCalls.every((call) => call.snapshot === null)).toBe(true)
-    expect(frCalls.every((call) => call.updatedSince === SNAPSHOT)).toBe(true)
+    expect(frCalls.every((call) => call.updatedSince === incrementalSince(SNAPSHOT))).toBe(true)
     expect(report.projectionComplete).toEqual({ fr: true, de: true })
     expect((await readWordbookEntries('fr')).map((row) => row.lemma)).toEqual(['chat'])
     expect((await readWordbookEntries('de')).map((row) => row.lemma)).toEqual(['Haus'])
@@ -463,7 +477,9 @@ describe('projection completeness', () => {
     // The incremental starts at the watermark and ignores the stored cursor.
     expect(calls).toHaveLength(1)
     expect(calls[0]?.afterLemma).toBeNull()
-    expect(calls.every((call) => call.updatedSince === OLDER_SNAPSHOT)).toBe(true)
+    expect(calls.every((call) => call.updatedSince === incrementalSince(OLDER_SNAPSHOT))).toBe(
+      true,
+    )
     const rows = await readWordbookEntries('fr')
     expect(rows.find((row) => row.lemma === 'aaa-changed')?.note).toBe(
       'changed behind the cursor',
@@ -502,10 +518,13 @@ describe('projection completeness', () => {
     // First page from the watermark, then a keyset page after the last lemma of
     // the first page. The 5-row short page ends the pass.
     expect(calls).toHaveLength(2)
-    expect(calls[0]).toMatchObject({ afterLemma: null, updatedSince: OLDER_SNAPSHOT })
+    expect(calls[0]).toMatchObject({
+      afterLemma: null,
+      updatedSince: incrementalSince(OLDER_SNAPSHOT),
+    })
     expect(calls[1]).toMatchObject({
       afterLemma: 'mot-0999',
-      updatedSince: OLDER_SNAPSHOT,
+      updatedSince: incrementalSince(OLDER_SNAPSHOT),
     })
 
     const rows = await readWordbookEntries('fr')
@@ -561,6 +580,244 @@ describe('projection completeness', () => {
     const rows = await readWordbookEntries('fr')
     expect(rows.some((row) => row.lemma === 'zzz-sentinel')).toBe(true)
     expect(rows.length).toBe(1051)
+  })
+
+  it('rereads the five-minute overlap so a row committed behind the watermark is not lost', async () => {
+    const server = memoryServer(1000, SNAPSHOT)
+    // Stamped before the stored watermark but committed late enough to be read
+    // only by an overlap query. Without the overlap this row is invisible
+    // forever because the next watermark is the snapshot itself.
+    server.add(
+      'wordbook_entries',
+      projectionRow({
+        lemma: 'late-row',
+        note: 'committed behind the watermark',
+        server_updated_at: new Date(Date.parse(OLDER_SNAPSHOT) - 60_000).toISOString(),
+      }),
+    )
+    server.add(
+      'wordbook_entries',
+      projectionRow({
+        lemma: 'new-row',
+        note: 'after the watermark',
+        server_updated_at: CHANGED_AT,
+      }),
+    )
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: true,
+        snapshot: OLDER_SNAPSHOT,
+        cursor: null,
+        hydratedAt: OLDER_SNAPSHOT,
+      },
+    })
+
+    const { client, calls } = recordingClient(server)
+    const report = await syncOnce({ userId: USER_ID, languages: ['fr'], db: client })
+
+    expect(calls.every((call) => call.updatedSince === incrementalSince(OLDER_SNAPSHOT))).toBe(
+      true,
+    )
+    const rows = await readWordbookEntries('fr')
+    expect(rows.find((row) => row.lemma === 'late-row')?.note).toBe(
+      'committed behind the watermark',
+    )
+    expect(rows.find((row) => row.lemma === 'new-row')?.note).toBe('after the watermark')
+    expect(report.projectionComplete.fr).toBe(true)
+    // Completion still stores the snapshot, not the overlap start.
+    expect(projectionStateFor(await readProjectionState(USER_ID), 'fr').snapshot).toBe(SNAPSHOT)
+  })
+
+  it('applies the byte budget to incremental passes and resumes without skipping', async () => {
+    const server = memoryServer(2000, SNAPSHOT)
+    const total = 1005
+    for (let index = 0; index < total; index++) {
+      server.add(
+        'wordbook_entries',
+        projectionRow({
+          lemma: `mot-${String(index).padStart(4, '0')}`,
+          note: 'x'.repeat(50),
+          server_updated_at: CHANGED_AT,
+        }),
+      )
+    }
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: true,
+        snapshot: OLDER_SNAPSHOT,
+        cursor: null,
+        hydratedAt: OLDER_SNAPSHOT,
+      },
+    })
+
+    const first = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      projectionByteBudget: 1024,
+    })
+
+    expect(first.projectionPaused).toContain('fr')
+    expect(first.projectionPausedReason).toBe('bytes')
+    // The language is still complete at its previous watermark; this cycle's
+    // change set did not finish.
+    expect(first.projectionComplete.fr).toBe(true)
+    const paused = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(paused).toMatchObject({
+      complete: true,
+      snapshot: OLDER_SNAPSHOT,
+      cursor: null,
+    })
+    const applied = await readWordbookEntries('fr')
+    expect(applied.length).toBeGreaterThan(0)
+    expect(applied.length).toBeLessThan(total)
+
+    const second = await syncOnce({ userId: USER_ID, languages: ['fr'], db: server.client })
+
+    expect(second.projectionPaused).toEqual([])
+    const rows = await readWordbookEntries('fr')
+    expect(rows).toHaveLength(total)
+    expect(new Set(rows.map((row) => row.lemma)).size).toBe(total)
+    expect(projectionStateFor(await readProjectionState(USER_ID), 'fr').snapshot).toBe(SNAPSHOT)
+  }, 20_000)
+
+  it('restarts an interrupted first projection on the same snapshot and spends one pass', async () => {
+    const server = memoryServer(2000, SNAPSHOT)
+    const total = 1050
+    for (let index = 0; index < total; index++) {
+      server.add(
+        'wordbook_entries',
+        projectionRow({ lemma: `mot-${String(index).padStart(4, '0')}` }),
+      )
+    }
+
+    const calls: Array<{ snapshot: string | null; afterLemma: string | null }> = []
+    const base = server.client as unknown as {
+      rpc: (name: string, args: Record<string, unknown>) => Promise<unknown>
+    }
+    let failed = false
+    const client = {
+      ...(server.client as unknown as Record<string, unknown>),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        if (name === 'get_wordbook_projection_page_bounded') {
+          calls.push({
+            snapshot: (args.p_snapshot as string | null) ?? null,
+            afterLemma: (args.p_after_lemma as string | null) ?? null,
+          })
+          // Fail page 2 of the first attempt. The server has already charged
+          // the snapshot and stored page 1's cursor.
+          if (!failed && args.p_after_lemma === 'mot-0999') {
+            failed = true
+            return { data: null, error: { message: 'page 2 failed' } }
+          }
+        }
+        return base.rpc(name, args)
+      },
+    } as never
+
+    await expect(syncOnce({ userId: USER_ID, languages: ['fr'], db: client })).rejects.toThrow(
+      'page 2 failed',
+    )
+
+    // Nothing was applied and no cursor was stored, but the snapshot was
+    // persisted before the first page.
+    expect(await readWordbookEntries('fr')).toHaveLength(0)
+    const interrupted = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(interrupted).toMatchObject({
+      complete: false,
+      snapshot: SNAPSHOT,
+      cursor: null,
+    })
+
+    // The next cycle would normally take this newer snapshot. The interrupted
+    // pass must reuse the charged snapshot instead.
+    server.setSnapshot(new Date(Date.parse(SNAPSHOT) + 60 * 60_000).toISOString())
+    const pagesBefore = calls.length
+    const report = await syncOnce({ userId: USER_ID, languages: ['fr'], db: client })
+
+    expect(report.projectionComplete.fr).toBe(true)
+    expect(report.projectionPaused).toEqual([])
+    const retryCalls = calls.slice(pagesBefore)
+    expect(retryCalls.length).toBeGreaterThan(0)
+    expect(retryCalls.every((call) => call.snapshot === SNAPSHOT)).toBe(true)
+    expect(retryCalls[0]?.afterLemma).toBeNull()
+    // Every page of both attempts used one snapshot: one daily pass.
+    expect(new Set(calls.map((call) => call.snapshot))).toEqual(new Set([SNAPSHOT]))
+    const rows = await readWordbookEntries('fr')
+    expect(rows).toHaveLength(total)
+    expect(new Set(rows.map((row) => row.lemma)).size).toBe(total)
+  })
+
+  it('does not re-seed a dirty word state that has no local occurrence', async () => {
+    const server = memoryServer(1000, SNAPSHOT)
+    server.add('wordbook_entries', projectionRow({ lemma: 'chat' }))
+
+    // A learned state can outlive its occurrences. Seeding it would create a
+    // wordbook row the server has already soft-deleted.
+    await idbPut(STORES.wordStates, {
+      languageCode: 'fr',
+      lemma: 'phantom',
+      status: 'known',
+      seenCount: 1,
+      firstSeenAt: OLDER_SNAPSHOT,
+      lastSeenAt: OLDER_SNAPSHOT,
+      note: 'no occurrence left',
+      noteUpdatedAt: OLDER_SNAPSHOT,
+    })
+
+    const report = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      resetProjection: true,
+    })
+
+    expect(report.projectionComplete.fr).toBe(true)
+    expect((await readWordbookEntries('fr')).map((row) => row.lemma)).toEqual(['chat'])
+  })
+
+  it('does not clear a fresh language that received no page when another pass is rejected', async () => {
+    const server = memoryServer(1000, SNAPSHOT)
+    server.add('wordbook_entries', projectionRow({ language_code: 'fr', lemma: 'chat' }))
+    server.add('wordbook_entries', projectionRow({ language_code: 'de', lemma: 'Haus' }))
+    await putWordbookEntries([entry({ languageCode: 'de', lemma: 'de-sentinel' })])
+
+    const base = server.client as unknown as {
+      rpc: (name: string, args: Record<string, unknown>) => Promise<unknown>
+    }
+    let rejected = false
+    const client = {
+      ...(server.client as unknown as Record<string, unknown>),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        if (
+          name === 'get_wordbook_projection_page_bounded' &&
+          args.p_language_code === 'de' &&
+          !rejected
+        ) {
+          rejected = true
+          return {
+            data: null,
+            error: {
+              code: 'PT409',
+              details: 'reason=start',
+              message: 'projection cursor does not match this pass',
+            },
+          }
+        }
+        return base.rpc(name, args)
+      },
+    } as never
+
+    const report = await syncOnce({ userId: USER_ID, languages: ['fr', 'de'], db: client })
+
+    expect(report.projectionPaused).toContain('de')
+    // `de` read nothing, so its local wordbook must survive even though a full
+    // pass would normally clear it before applying rows.
+    expect((await readWordbookEntries('de')).map((row) => row.lemma)).toContain('de-sentinel')
+    // The rejected pass keeps its charged snapshot for a same-snapshot retry.
+    const deState = projectionStateFor(await readProjectionState(USER_ID), 'de')
+    expect(deState.snapshot).toBe(SNAPSHOT)
+    expect(deState.cursor).toBeNull()
   })
 
   it('resumes a paused full projection from its stored cursor instead of throwing', async () => {
@@ -647,6 +904,8 @@ describe('fresh full passes replace the language', () => {
       note: 'local note',
       noteUpdatedAt: SNAPSHOT,
     })
+    // The local edit is real because a local occurrence backs it.
+    await idbPut(STORES.wordOccurrences, localOccurrence())
 
     const report = await syncOnce({ userId: USER_ID, languages: ['fr'], db: server.client })
 
@@ -787,6 +1046,51 @@ describe('occurrence and content isolation', () => {
     expect(await idbGetAll(STORES.wordOccurrences)).toHaveLength(1)
     // No lazy content fetch is planned by a metadata-only change either.
     expect(await idbGetAll(STORES.documentContent)).toHaveLength(0)
+  })
+})
+
+describe('byte-bounded projection pages', () => {
+  it('continues after a short page that reports hasMore instead of treating it as the end', async () => {
+    const server = memoryServer(1000, SNAPSHOT)
+    server.add('wordbook_entries', projectionRow({ lemma: 'alpha' }))
+    server.add('wordbook_entries', projectionRow({ lemma: 'beta' }))
+    server.add('wordbook_entries', projectionRow({ lemma: 'gamma' }))
+
+    const base = server.client as unknown as {
+      rpc: (name: string, args: Record<string, unknown>) => Promise<unknown>
+    }
+    let shortPageSent = false
+    const client = {
+      ...(server.client as unknown as Record<string, unknown>),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        if (
+          name === 'get_wordbook_projection_page_bounded' &&
+          args.p_after_lemma === null &&
+          !shortPageSent
+        ) {
+          shortPageSent = true
+          // Simulate the server's ~1 MB cap: one row, but the language goes on.
+          return {
+            data: {
+              rows: [projectionRow({ lemma: 'alpha' })],
+              hasMore: true,
+              nextCursor: 'alpha',
+            },
+            error: null,
+          }
+        }
+        return base.rpc(name, args)
+      },
+    } as never
+
+    const report = await syncOnce({ userId: USER_ID, languages: ['fr'], db: client })
+
+    expect(report.projectionComplete.fr).toBe(true)
+    expect((await readWordbookEntries('fr')).map((row) => row.lemma).sort()).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ])
   })
 })
 

@@ -166,6 +166,37 @@ function assertPage(
   }
 }
 
+/** One page from the byte-bounded server RPC. */
+export type ProjectionPage = {
+  rows: ProjectionRow[]
+  /** More rows exist after this page (the page may be short because of bytes). */
+  hasMore: boolean
+  /** Lemma to pass as `afterLemma` for the next page. */
+  nextCursor: string | null
+}
+
+function normalizePage(value: unknown): ProjectionPage {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('projection page response was not an object')
+  }
+  const record = value as { rows?: unknown; hasMore?: unknown; nextCursor?: unknown }
+  if (!Array.isArray(record.rows) || typeof record.hasMore !== 'boolean') {
+    throw new Error('projection page response is missing rows or hasMore')
+  }
+  const rows = record.rows as ProjectionRow[]
+  const nextCursor = typeof record.nextCursor === 'string' ? record.nextCursor : null
+  if (record.hasMore && rows.length === 0) {
+    throw new Error('projection page reported more rows without returning any')
+  }
+  if (rows.length > 0) {
+    const last = rows[rows.length - 1]
+    if (nextCursor !== last.lemma) {
+      throw new Error('projection page cursor did not name the last row')
+    }
+  }
+  return { rows, hasMore: record.hasMore, nextCursor }
+}
+
 /**
  * Reads one page of a language's wordbook projection.
  *
@@ -188,15 +219,17 @@ function assertPage(
  * Passing both bounds is an error on the server (SQLSTATE 22023).
  *
  * `afterLemma` is the last lemma of the previous page (null for the first);
- * `limit` is clamped by {@link projectionPageLimit}, which the caller must use
- * for its end-of-language test. The server binds the page to the caller's
- * account and enforces the same ceiling.
+ * `limit` is clamped by {@link projectionPageLimit}. The server also bounds a
+ * page by bytes (~1 MB), so a page can be shorter than the row limit before the
+ * language ends: callers must use the returned `hasMore`, never
+ * `rows.length < limit`. The server binds the page to the caller's account and
+ * enforces the same row ceiling.
  *
  * Ordering for the caller: store the page's rows first, then persist the new
  * cursor (and the bound it came from). Persisting the cursor before the rows
  * are applied is the one way a correct page can still lose data.
  */
-export async function pullProjectionPage(
+export async function pullProjectionPageBounded(
   client: SupabaseClient<Database>,
   userId: string,
   language: string,
@@ -204,8 +237,8 @@ export async function pullProjectionPage(
   afterLemma: string | null,
   limit: number,
   updatedSince: string | null = null,
-): Promise<ProjectionRow[]> {
-  const { data, error } = await client.rpc('get_wordbook_projection_page', {
+): Promise<ProjectionPage> {
+  const { data, error } = await client.rpc('get_wordbook_projection_page_bounded', {
     p_language_code: language,
     p_after_lemma: afterLemma,
     p_snapshot: snapshot,
@@ -220,7 +253,35 @@ export async function pullProjectionPage(
     throw error
   }
 
-  const rows = (data ?? []) as ProjectionRow[]
-  assertPage(rows, userId, language)
-  return rows
+  const page = normalizePage(data)
+  assertPage(page.rows, userId, language)
+  return page
+}
+
+/**
+ * Row-only compatibility wrapper used by callers that do not need the byte
+ * bound's `hasMore`. New pull code should use {@link pullProjectionPageBounded};
+ * comparing `rows.length` to the limit cannot distinguish a short byte-bounded
+ * page from the end of a language.
+ */
+export async function pullProjectionPage(
+  client: SupabaseClient<Database>,
+  userId: string,
+  language: string,
+  snapshot: string | null,
+  afterLemma: string | null,
+  limit: number,
+  updatedSince: string | null = null,
+): Promise<ProjectionRow[]> {
+  return (
+    await pullProjectionPageBounded(
+      client,
+      userId,
+      language,
+      snapshot,
+      afterLemma,
+      limit,
+      updatedSince,
+    )
+  ).rows
 }

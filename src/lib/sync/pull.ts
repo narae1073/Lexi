@@ -19,6 +19,7 @@ import {
   emptyProjectionState,
   projectionStateFor,
   readProjectionState,
+  updateProjectionState,
   type ProjectionState,
   type ProjectionStateMap,
 } from './projectionState'
@@ -27,7 +28,7 @@ import {
   ProjectionPassError,
   ProjectionQuotaError,
   projectionPageLimit,
-  pullProjectionPage,
+  pullProjectionPageBounded,
   recordProjectionQuotaDenial,
 } from './wordbookPull'
 import type { ProjectionQuotaBucket, ProjectionRow } from './wordbookPull'
@@ -201,7 +202,10 @@ type ProjectionPass = {
   full: boolean
   /** A fresh full pass: the language must be cleared before its rows apply. */
   fresh: boolean
-  /** Snapshot for a full pass, or the incremental watermark for a complete one. */
+  /**
+   * Snapshot for a full pass, or the overlap-adjusted incremental watermark
+   * (`prior snapshot - SNAPSHOT_OVERLAP_MS`) for a complete one.
+   */
   bound: string
   /** Resume point inside this pass; null starts at the first lemma. */
   cursor: string | null
@@ -211,6 +215,21 @@ type ProjectionPass = {
   received: number
   /** The server rejected this pass's cursor state; start over next cycle. */
   restart: boolean
+  /**
+   * Snapshot the restarted pass must reuse. Null means the server rejected a
+   * completed pass, so only a new snapshot can make progress.
+   */
+  restartSnapshot: string | null
+}
+
+/**
+ * Incremental reads start a few minutes before the stored completion
+ * watermark. A transaction that commits after our snapshot but stamped a row
+ * slightly earlier (commit/clock skew) would otherwise be invisible forever,
+ * because the next watermark is the snapshot itself.
+ */
+function incrementalSince(snapshot: string): string {
+  return new Date(Date.parse(snapshot) - SNAPSHOT_OVERLAP_MS).toISOString()
 }
 
 /**
@@ -229,15 +248,17 @@ type ProjectionPass = {
  * That is what makes a paused manual reset converge instead of re-downloading
  * from the first lemma forever.
  *
- * Incremental passes are watermark-bounded and never paused by the byte
- * budget: a cursor plus a watermark can skip rows that changed *behind* the
- * cursor while a pass was paused, so the pass always starts at the stored
- * watermark and applies rows idempotently.
+ * Incremental passes are watermark-bounded and also obey the byte budget. They
+ * always restart at the stored watermark (minus the overlap) rather than a
+ * keyset cursor, because rows that changed *behind* a cursor while a pass was
+ * paused would otherwise be skipped. Re-reading the overlap is idempotent, so
+ * a paused incremental pass can make progress or resume safely.
  *
  * A server quota denial pauses every unfinished pass instead of failing the
  * cycle. Pages already read are returned and stored with their cursors; a
- * brand-new pass denied before its first page stays "not started" so the next
- * cycle does not clear a local wordbook for an empty download.
+ * brand-new pass denied before its first page keeps its snapshot without being
+ * marked for a clear, so the next cycle resumes the same pass (no new daily
+ * charge) and clears the local wordbook only when it can actually download.
  *
  * The caller must store the rows before persisting `next`; advancing a cursor
  * over rows that were not written is the one way a correct page can lose data.
@@ -269,8 +290,14 @@ async function pullProjection(
     // A complete language pulls incrementally from its stored watermark. An
     // incomplete one resumes its full snapshot (or starts a new one).
     const full = !previous.complete || previous.snapshot === null
-    const fresh = full && previous.snapshot === null
-    const bound = previous.snapshot ?? snapshot
+    // A full pass with no cursor has applied no row of its snapshot yet, so it
+    // must still clear the language before applying. This covers a manual
+    // reset, a new language, and a same-snapshot restart after an interrupted
+    // first projection.
+    const fresh = full && (previous.snapshot === null || previous.cursor === null)
+    const bound = full
+      ? (previous.snapshot ?? snapshot)
+      : incrementalSince(previous.snapshot as string)
     if (full) fullLanguages.push(language)
     if (fresh) resetLanguages.push(language)
     passes.push({
@@ -285,7 +312,28 @@ async function pullProjection(
       done: false,
       received: 0,
       restart: false,
+      restartSnapshot: null,
     })
+  }
+
+  /**
+   * Persist a new full pass's snapshot *before* its first page.
+   *
+   * Without this, a failed second page leaves no local state even though the
+   * server already charged the snapshot. The next attempt would take a new
+   * snapshot and spend a second daily unit; two failures could strand the
+   * device for the rest of the UTC day. The cursor stays null here: rows are
+   * only applied later, and this marker is what lets the retry restart the
+   * same snapshot (free) from the first lemma.
+   */
+  for (const pass of passes) {
+    if (!pass.full || pass.previous.snapshot !== null) continue
+    await updateProjectionState(userId, pass.language, (current) => ({
+      complete: false,
+      snapshot: pass.bound,
+      cursor: null,
+      hydratedAt: current.hydratedAt,
+    }))
   }
 
   let bytes = 0
@@ -299,10 +347,12 @@ async function pullProjection(
 
     const limit = projectionPageLimit(PROJECTION_PAGE_MAX)
     let page: ProjectionRow[]
+    let hasMore: boolean
+    let nextCursor: string | null
     try {
-      page = pass.full
-        ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
-        : await pullProjectionPage(
+      const result = pass.full
+        ? await pullProjectionPageBounded(db, userId, pass.language, pass.bound, pass.cursor, limit)
+        : await pullProjectionPageBounded(
             db,
             userId,
             pass.language,
@@ -316,16 +366,28 @@ async function pullProjection(
             limit,
             pass.bound,
           )
+      page = result.rows
+      hasMore = result.hasMore
+      nextCursor = result.nextCursor
     } catch (error) {
       if (error instanceof ProjectionPassError) {
-        // The server cursor state and this device's state disagree beyond the
-        // one-page retry window. Do not retry the rejected cursor: reset the
-        // language to "not started" so the next cycle takes a new snapshot and
-        // clears/rebuilds it once it can actually download.
+        // The server cursor state and this device's state disagree. Reusing the
+        // same snapshot from the first lemma is safe for an incomplete pass
+        // (rows are re-applied idempotently) and does not spend another daily
+        // unit. A completed pass cannot rewind, so only that reason needs a new
+        // snapshot next cycle.
         pauseReason = 'state'
         pass.restart = true
+        pass.restartSnapshot = error.reason === 'complete' ? null : pass.bound
         for (const pending of passes) {
-          if (!pending.done) paused.push(pending.language)
+          if (pending.done) continue
+          paused.push(pending.language)
+          if (pending.fresh && pending.received === 0) {
+            // Nothing was read for this new pass. Keep its snapshot marker but
+            // do not clear the local language for an empty download.
+            const resetIndex = resetLanguages.indexOf(pending.language)
+            if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
+          }
         }
         break
       }
@@ -342,8 +404,8 @@ async function pullProjection(
         paused.push(pending.language)
         if (pending.fresh && pending.received === 0) {
           // Nothing was read for this new pass, so the local language must not
-          // be cleared for an empty download. Leave it fresh (snapshot null)
-          // so the next cycle starts it over and clears at that point.
+          // be cleared for an empty download. The snapshot marker remains, so
+          // the next cycle resumes the same pass without a new daily charge.
           const resetIndex = resetLanguages.indexOf(pending.language)
           if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
         }
@@ -354,20 +416,23 @@ async function pullProjection(
     const pageBytes = page.reduce((sum, row) => sum + projectionRowBytes(row), 0)
     rows.push(...page)
     pass.received += page.length
-    // Only full passes are byte-budgeted. The check runs after the page is
-    // counted, including a final short page: the soft cap may be crossed by the
-    // page that finishes a language, and the next language is then deferred.
-    if (pass.full) bytes += pageBytes
+    // Incremental pages count too: a huge change set must not ignore the soft
+    // cap just because the language was already complete.
+    bytes += pageBytes
 
-    if (page.length < limit) pass.done = true
-    else pass.cursor = page[page.length - 1].lemma
+    // `hasMore` is authoritative, not `page.length < limit`: a byte-bounded
+    // page can be short while the language continues.
+    if (!hasMore) {
+      pass.done = true
+    } else {
+      pass.cursor = nextCursor
+    }
 
-    if (bytes >= budget && passes.some((pending) => !pending.done && pending.full)) {
-      // Store what was read; the unfinished full passes resume from their
-      // cursors. Incremental passes are not paused — they are watermark-bounded
-      // and finish in this cycle (or on the next ordinary pull).
+    if (bytes >= budget && passes.some((pending) => !pending.done)) {
+      // Store what was read. Full passes resume from their cursor; incremental
+      // passes restart from their watermark next cycle, which is idempotent.
       for (const pending of passes) {
-        if (!pending.done && pending.full) paused.push(pending.language)
+        if (!pending.done) paused.push(pending.language)
       }
       pauseReason = 'bytes'
       break
@@ -378,24 +443,28 @@ async function pullProjection(
   const complete: Partial<Record<string, boolean>> = {}
   for (const pass of passes) {
     if (pass.restart) {
-      // The server rejected this pass; the next cycle must start it over.
-      // Do not clear the local language now (nothing was downloaded).
-      const resetIndex = resetLanguages.indexOf(pass.language)
-      if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
-      next[pass.language] = emptyProjectionState()
+      // Reuse the same snapshot when the server rejected an incomplete pass:
+      // it was already charged, and restarting from lemma 0 is idempotent. Only
+      // a completed-pass rejection must take a new snapshot next cycle.
+      if (pass.restartSnapshot === null) {
+        const resetIndex = resetLanguages.indexOf(pass.language)
+        if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
+      }
+      next[pass.language] = {
+        complete: false,
+        snapshot: pass.restartSnapshot,
+        cursor: null,
+        hydratedAt: pass.previous.hydratedAt,
+      }
       complete[pass.language] = false
       continue
     }
 
-    // A brand-new pass that never read a page (a quota denial on its first
-    // request) must stay "not started": snapshot null makes the next cycle
-    // clear the language only when it can actually download it.
-    const notStarted = pass.fresh && pass.received === 0
     const state: ProjectionState = pass.done
       ? {
           complete: true,
           // An incremental pass advances its watermark to this cycle's server
-          // snapshot. Rows changed after it are re-read by the normal overlap.
+          // snapshot. Rows changed after it are re-read by the overlap.
           snapshot: pass.full ? pass.bound : snapshot,
           cursor: null,
           hydratedAt: pass.full ? new Date().toISOString() : pass.previous.hydratedAt,
@@ -404,11 +473,14 @@ async function pullProjection(
           // A fresh pass is not complete at any stored watermark. Only a
           // resumed pass may still describe an already-complete language.
           complete: pass.fresh ? false : pass.previous.complete,
-          snapshot: notStarted ? null : pass.bound,
+          // A paused incremental pass keeps its prior watermark: advancing it
+          // now would skip the rows it did not read. Its cursor is always null
+          // so the next cycle re-reads from the watermark.
+          snapshot: pass.full ? pass.bound : pass.previous.snapshot,
           cursor:
-            pass.cursor === null
-              ? null
-              : { languageCode: pass.language, lemma: pass.cursor },
+            pass.full && pass.cursor !== null
+              ? { languageCode: pass.language, lemma: pass.cursor }
+              : null,
           hydratedAt: pass.previous.hydratedAt,
         }
     next[pass.language] = state

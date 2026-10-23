@@ -409,6 +409,92 @@ drop extension if exists dblink;
 \endif
 
 -- ---------------------------------------------------------------------------
+-- Direct occurrence DML is denied; replace_word_occurrences is the only write
+-- path. This is what keeps the canonical hash and projection refresh from being
+-- bypassed by a plain PostgREST table write.
+-- ---------------------------------------------------------------------------
+
+reset role;
+
+do $$
+begin
+  if has_table_privilege('authenticated', 'public.word_occurrences', 'INSERT')
+     or has_table_privilege('authenticated', 'public.word_occurrences', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.word_occurrences', 'DELETE') then
+    raise exception 'authenticated still has direct write privileges on word_occurrences';
+  end if;
+  if has_table_privilege('anon', 'public.word_occurrences', 'INSERT')
+     or has_table_privilege('anon', 'public.word_occurrences', 'UPDATE')
+     or has_table_privilege('anon', 'public.word_occurrences', 'DELETE')
+     or has_table_privilege('anon', 'public.word_occurrences', 'SELECT') then
+    raise exception 'anon still has privileges on word_occurrences';
+  end if;
+  if not has_table_privilege('authenticated', 'public.word_occurrences', 'SELECT') then
+    raise exception 'authenticated lost SELECT on word_occurrences';
+  end if;
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_document_id uuid := current_setting('test.document_id')::uuid;
+begin
+  begin
+    insert into public.word_occurrences
+      (user_id, document_id, language_code, lemma, surface, char_start, char_end, sentence, occurrences_count)
+    values (auth.uid(), v_document_id, 'fr', 'direct', 'direct', 0, 6, 'Direct insert.', 1);
+    raise exception 'authenticated inserted a word_occurrences row directly';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    update public.word_occurrences set sentence = 'changed' where document_id = v_document_id;
+    raise exception 'authenticated updated word_occurrences directly';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    delete from public.word_occurrences where document_id = v_document_id;
+    raise exception 'authenticated deleted word_occurrences directly';
+  exception
+    when insufficient_privilege then null;
+  end;
+end $$;
+
+-- The security-definer RPC still writes, and its projection refresh still runs.
+select replace_word_occurrences(:'document_id', '[
+  {"language_code":"fr","lemma":"rpcword","surface":"rpcword","char_start":0,"char_end":7,"sentence":"The rpcword path.","occurrences_count":1}
+]'::jsonb);
+
+do $$
+begin
+  if (select array_agg(lemma order by lemma) from public.word_occurrences
+      where document_id = current_setting('test.document_id')::uuid)
+     is distinct from array['rpcword'] then
+    raise exception 'replace_word_occurrences stopped writing after the grant revoke';
+  end if;
+end $$;
+
+reset role;
+
+-- wordbook_entries has no client SELECT (the page RPC owns that read), so the
+-- projection assertion runs as the database owner.
+do $$
+begin
+  if not exists (
+    select 1 from public.wordbook_entries
+    where user_id = current_setting('test.user_id')::uuid
+      and language_code = 'fr' and lemma = 'rpcword' and deleted_at is null
+  ) then
+    raise exception 'replace_word_occurrences stopped refreshing after the grant revoke';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------
 

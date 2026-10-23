@@ -351,6 +351,38 @@ export async function clearProjectionQuota(config, userId) {
 }
 
 /**
+ * Clears only the per-minute page counters, keeping the complete-pass rows.
+ *
+ * The resume test must not delete `projection_sync_passes`: doing so would hide
+ * whether the client really resumed the charged snapshot and would make the
+ * "same snapshot, one pass" assertions vacuous.
+ */
+export async function clearProjectionPageQuota(config, userId) {
+  await psql(
+    config,
+    `delete from public.projection_usage where user_id = ${sqlLiteral(userId)}::uuid;`,
+  )
+}
+
+/** Reads the pass row the server stores for one user/snapshot/language. */
+export async function projectionPassState(config, userId, snapshot, language) {
+  return psqlJson(
+    config,
+    `
+    select jsonb_build_object(
+      'count', count(*),
+      'complete', bool_or(complete),
+      'snapshot', min(snapshot)
+    )
+    from public.projection_sync_passes
+    where user_id = ${sqlLiteral(userId)}::uuid
+      and snapshot = ${sqlLiteral(snapshot)}::timestamptz
+      and language_code = ${sqlLiteral(language)};
+    `,
+  )
+}
+
+/**
  * Measures one progress round trip on an already-rebuilt app worker.
  *
  * The client queues `progress` behind any in-flight rebuild, so its wall time

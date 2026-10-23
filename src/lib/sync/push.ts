@@ -573,6 +573,14 @@ export async function loadDirtyCandidates(
         resolved.push(dirty)
         continue
       }
+      if (document.hasContent === false) {
+        // This device never held the text (a metadata-only row). An empty local
+        // set says nothing about the document's occurrences; pushing it would
+        // wipe rows computed by a device that did open the document. A genuinely
+        // emptied authored document has hasContent !== false and still pushes.
+        resolved.push(dirty)
+        continue
+      }
       occurrenceDocumentIds.push(dirty.key)
       continue
     }
