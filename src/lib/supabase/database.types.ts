@@ -386,6 +386,7 @@ export type Database = {
           p_language_code: string
           p_after_lemma: string | null
           p_snapshot: string | null
+          p_updated_since: string | null
           p_limit: number | null
         }
         Returns: {

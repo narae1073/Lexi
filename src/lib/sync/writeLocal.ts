@@ -4,6 +4,7 @@ import type { DocumentTombstone } from '../storage/purged'
 import {
   STORES,
   SYNC_META_KEY,
+  isReservedDocumentMetaId,
   normalizeLocalSyncMeta,
   openLocalDatabase,
   type StoreName,
@@ -357,9 +358,10 @@ export async function writeLocal(
           result.tombstones += 1
         }
 
-        // The tombstone wins over any document row.
+        // The tombstone wins over any document row. Reserved bookkeeping
+        // records are never a document, even if a hostile row names one.
         documentsStore.delete(tombstone.documentId)
-        if (tombstone.documentId !== SYNC_META_KEY) {
+        if (!isReservedDocumentMetaId(tombstone.documentId)) {
           metaStore.delete(tombstone.documentId)
         }
         whenReady(() => {

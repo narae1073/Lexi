@@ -4,9 +4,9 @@ import {
   STORES,
   clearDirtyIfRevision,
   idbGetAll,
+  isReservedDocumentMetaId,
   readDirtyKeys,
   readLocalRevision,
-  SYNC_META_KEY,
 } from '../storage/localDb'
 import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds, LEGACY_PURGE_AT, type DocumentTombstone } from '../storage/purged'
@@ -219,8 +219,8 @@ async function planLocalWrite(
   }>(STORES.documentMeta).catch(
     () => [] as { documentId: string; lemmaVersion: number; occurrencesUpdatedAt?: string }[],
   )
-  // The reserved sync-meta record is device bookkeeping, not a document row
-  const metaRows = metaRowsAll.filter((m) => m.documentId !== SYNC_META_KEY)
+  // Reserved device bookkeeping (sync meta, projection state) is not a document row
+  const metaRows = metaRowsAll.filter((m) => !isReservedDocumentMetaId(m.documentId))
   const recomputed = new Set(
     metaRows.filter((m) => m.lemmaVersion === LEMMA_VERSION).map((m) => m.documentId),
   )
@@ -262,8 +262,8 @@ async function planLocalWrite(
   }>(STORES.documentMeta).catch(
     () => [] as { documentId: string; occurrencesUpdatedAt?: string }[],
   )
-  // The reserved sync-meta record never carries a document's stamp
-  const latestMeta = latestMetaAll.filter((m) => m.documentId !== SYNC_META_KEY)
+  // Reserved device bookkeeping never carries a document's stamp
+  const latestMeta = latestMetaAll.filter((m) => !isReservedDocumentMetaId(m.documentId))
   const changedDuringSync = new Set(
     latestMeta
       .filter(

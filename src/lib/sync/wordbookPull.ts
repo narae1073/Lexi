@@ -11,7 +11,21 @@ export type ProjectionRow = Database['public']['Tables']['wordbook_entries']['Ro
  */
 export const PROJECTION_PAGE_MAX = 1000
 
-function clampPageLimit(limit: number): number {
+/**
+ * The number of rows the server will actually return for a requested limit.
+ *
+ * Callers must test for the end of a language against **this** value, never
+ * against the raw requested limit:
+ *
+ *   const limit = projectionPageLimit(budget)
+ *   const rows = await pullProjectionPage(..., limit)
+ *   const done = rows.length < limit
+ *
+ * Requesting more than {@link PROJECTION_PAGE_MAX} is clamped by both this
+ * helper and the server; comparing against the raw request would mistake a
+ * clamped full page for the end.
+ */
+export function projectionPageLimit(limit: number): number {
   if (!Number.isFinite(limit)) return PROJECTION_PAGE_MAX
   const whole = Math.trunc(limit)
   if (whole < 1) return 1
@@ -19,20 +33,26 @@ function clampPageLimit(limit: number): number {
 }
 
 /**
- * Rejects a page the keyset cannot safely advance over.
+ * Rejects a page the caller must not apply or resume from.
  *
- * The cursor is the last lemma of the page in `(language_code, lemma)` order.
- * An out-of-order, duplicated, foreign-language, or other-account page would
- * make that cursor skip or replay rows, so it is an error — never a page the
- * caller persists — rather than something to silently sort.
+ * Row order is the server's job: the database orders by `(language_code,
+ * lemma)` with its own collation, which a JS code-unit comparison cannot
+ * reproduce (for example `äpfel < école < École < étoile` in a French
+ * collation). Re-checking order here would reject valid pages, so only the
+ * properties that are order-independent are enforced:
+ *
+ *   - every row belongs to the requesting account;
+ *   - every row is the requested language;
+ *   - a lemma appears at most once in a language page (a cursor would
+ *     otherwise be ambiguous).
  */
 function assertPage(
   rows: ProjectionRow[],
   userId: string,
   languageCode: string,
 ): void {
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]
+  const seen = new Set<string>()
+  for (const row of rows) {
     if (row.user_id !== userId) {
       throw new Error('projection page contained another account row')
     }
@@ -41,35 +61,38 @@ function assertPage(
         `projection page contained language ${row.language_code}, expected ${languageCode}`,
       )
     }
-    if (index === 0) continue
-    const previous = rows[index - 1]
-    const ordered =
-      previous.language_code < row.language_code ||
-      (previous.language_code === row.language_code && previous.lemma < row.lemma)
-    if (!ordered) {
-      throw new Error('projection page is not in (language_code, lemma) order')
+    if (seen.has(row.lemma)) {
+      throw new Error(`projection page repeated lemma ${row.lemma}`)
     }
+    seen.add(row.lemma)
   }
 }
 
 /**
  * Reads one page of a language's wordbook projection.
  *
- * - `snapshot` set: full projection page. Only live entries (`deleted_at is
- *   null`) whose `server_updated_at` is at or before the snapshot are returned.
- *   The caller takes the snapshot from `sync_snapshot()` before the first page
- *   and persists it together with the cursor.
- * - `snapshot` null: incremental page. Soft-deleted entries are included so
- *   the caller can remove local phantoms.
+ * Modes (exactly one bound per call):
+ *
+ * - Full projection: pass `snapshot` from `sync_snapshot()`. Only live entries
+ *   (`deleted_at is null`) with `server_updated_at <= snapshot` are returned.
+ *   Persist the snapshot together with the cursor before the first page, and
+ *   resume with the same snapshot until the language is complete.
+ * - Incremental projection: pass `updatedSince` (the last incremental
+ *   watermark). Soft-deleted rows are included and only rows with
+ *   `server_updated_at > updatedSince` are returned, so deletions and
+ *   revivals propagate without scanning the language.
+ * - Both null: unbounded enumeration. Only for a manual rebuild.
+ *
+ * Passing both bounds is an error on the server (SQLSTATE 22023).
  *
  * `afterLemma` is the last lemma of the previous page (null for the first);
- * `limit` is clamped to {@link PROJECTION_PAGE_MAX}. The server binds the page
- * to the caller's account, orders it by `(language_code, lemma)`, and enforces
- * the same ceiling.
+ * `limit` is clamped by {@link projectionPageLimit}, which the caller must use
+ * for its end-of-language test. The server binds the page to the caller's
+ * account and enforces the same ceiling.
  *
  * Ordering for the caller: store the page's rows first, then persist the new
- * cursor (and the snapshot it came from). Persisting the cursor before the
- * rows are applied is the one way a correct page can still lose data.
+ * cursor (and the bound it came from). Persisting the cursor before the rows
+ * are applied is the one way a correct page can still lose data.
  */
 export async function pullProjectionPage(
   client: SupabaseClient<Database>,
@@ -78,12 +101,14 @@ export async function pullProjectionPage(
   snapshot: string | null,
   afterLemma: string | null,
   limit: number,
+  updatedSince: string | null = null,
 ): Promise<ProjectionRow[]> {
   const { data, error } = await client.rpc('get_wordbook_projection_page', {
     p_language_code: language,
     p_after_lemma: afterLemma,
     p_snapshot: snapshot,
-    p_limit: clampPageLimit(limit),
+    p_updated_since: updatedSince,
+    p_limit: projectionPageLimit(limit),
   })
   if (error) throw error
 

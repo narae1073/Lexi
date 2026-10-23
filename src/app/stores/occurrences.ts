@@ -2,13 +2,13 @@ import { create } from 'zustand'
 
 import {
   STORES,
-  SYNC_META_KEY,
   idbDelete,
   idbDeleteByIndex,
   idbGet,
   idbGetAll,
   idbGetAllByIndex,
   idbPut,
+  isReservedDocumentMetaId,
   replaceOccurrences,
 } from '../../lib/storage/localDb'
 import { sameOccurrenceRecords } from '../../lib/sync/occurrenceNoop'
@@ -247,11 +247,11 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     const meta = await idbGetAll<{ documentId: string; lemmaVersion: number; segmenter?: string }>(
       STORES.documentMeta,
     ).catch(() => [])
-    // The reserved sync-meta record is device bookkeeping, not a document's
-    // computation record — it must never count as a known document
+    // Reserved device bookkeeping (sync meta, projection state) is not a
+    // document's computation record — it must never count as a known document
     const known = new Map(
       meta
-        .filter((m) => m.documentId !== SYNC_META_KEY)
+        .filter((m) => !isReservedDocumentMetaId(m.documentId))
         .map((m) => [m.documentId, m] as const),
     )
     /**

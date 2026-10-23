@@ -17,12 +17,29 @@ const DB_NAME = 'lexi'
 export const DB_VERSION = 6
 
 /**
- * `documentId` of the reserved `LocalSyncMeta` record in `STORES.documentMeta`.
+ * Prefix of every reserved `documentMeta` id.
  *
  * A reserved id instead of a new store/new version: documentMeta is local-only
  * (never sent to the server), so it is the right home for device bookkeeping.
+ * Ids with this prefix are bookkeeping records, never a document's computation
+ * row; every scan that interprets documentMeta rows as documents must skip
+ * them (see {@link isReservedDocumentMetaId}).
  */
-export const SYNC_META_KEY = '__lexi_sync_meta__'
+export const RESERVED_DOCUMENT_META_PREFIX = '__lexi_'
+
+/** `documentId` of the reserved `LocalSyncMeta` record in `STORES.documentMeta`. */
+export const SYNC_META_KEY = `${RESERVED_DOCUMENT_META_PREFIX}sync_meta__`
+
+/**
+ * True for a device-local bookkeeping record (sync meta, projection state).
+ *
+ * Scans that map `documentMeta` rows to documents must filter these out: the
+ * reserved records carry no `lemmaVersion`/`occurrencesUpdatedAt` and must
+ * never be mistaken for a document called `__lexi_…`.
+ */
+export function isReservedDocumentMetaId(documentId: unknown): boolean {
+  return typeof documentId === 'string' && documentId.startsWith(RESERVED_DOCUMENT_META_PREFIX)
+}
 
 export const STORES = {
   documents: 'documents',

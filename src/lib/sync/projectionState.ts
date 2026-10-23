@@ -1,4 +1,10 @@
-import { STORES, idbGet, idbPut } from '../storage/localDb'
+import {
+  RESERVED_DOCUMENT_META_PREFIX,
+  STORES,
+  idbGet,
+  idbPut,
+  openLocalDatabase,
+} from '../storage/localDb'
 
 /**
  * Per-account, per-language wordbook projection resume state.
@@ -15,6 +21,10 @@ import { STORES, idbGet, idbPut } from '../storage/localDb'
  *     the new snapshot could be skipped.
  *   - A cursor may only move after the page it names has been stored locally.
  *     The pull helper documents the same ordering.
+ *   - Per-language progress uses {@link updateProjectionState}, which reads and
+ *     writes the record in one IndexedDB transaction. A read-modify-write in
+ *     two transactions (readProjectionState then writeProjectionState) can
+ *     drop another language's cursor and must not be used for progress.
  *   - Anything unreadable is read as "incomplete" rather than resumed. A full
  *     re-pull is idempotent; resuming from a half-written cursor is not.
  */
@@ -34,7 +44,7 @@ export type ProjectionStateMap = Record<string, ProjectionState>
  * `documentId` prefix of the reserved per-account record. The rest is the
  * account id so two accounts on one device never share a cursor.
  */
-export const PROJECTION_STATE_KEY_PREFIX = '__lexi_projection_state__:'
+export const PROJECTION_STATE_KEY_PREFIX = `${RESERVED_DOCUMENT_META_PREFIX}projection_state__:`
 
 /** Record format version of the reserved `documentMeta` entry. */
 export const PROJECTION_STATE_VERSION = 1
@@ -103,14 +113,7 @@ function normalizeMap(state: Record<string, ProjectionState>): ProjectionStateMa
   return normalized
 }
 
-/**
- * Reads every language's projection state for one account.
- *
- * A missing or unreadable record yields `{}`; callers treat every language as
- * incomplete, which is exactly the R2 upgrade path.
- */
-export async function readProjectionState(userId: string): Promise<ProjectionStateMap> {
-  const stored = await idbGet<unknown>(STORES.documentMeta, projectionStateKey(userId))
+function parseStoredState(stored: unknown, userId: string): ProjectionStateMap {
   if (!isRecord(stored) || stored.documentId !== projectionStateKey(userId)) return {}
   if (stored.version !== PROJECTION_STATE_VERSION) return {}
   if (!isRecord(stored.state)) return {}
@@ -124,12 +127,27 @@ export async function readProjectionState(userId: string): Promise<ProjectionSta
 }
 
 /**
+ * Reads every language's projection state for one account.
+ *
+ * A missing or unreadable record yields `{}`; callers treat every language as
+ * incomplete, which is exactly the R2 upgrade path.
+ */
+export async function readProjectionState(userId: string): Promise<ProjectionStateMap> {
+  return parseStoredState(
+    await idbGet<unknown>(STORES.documentMeta, projectionStateKey(userId)),
+    userId,
+  )
+}
+
+/**
  * Replaces one account's projection state map.
  *
+ * Use this for an explicit reset or a one-shot import of a whole map. For
+ * normal per-language progress use {@link updateProjectionState}: replacing
+ * the map from a stale read drops any language another writer advanced.
+ *
  * `documentMeta` is a device-local store, so this write does not bump the sync
- * revision, create a dirty key, or signal a local user write. Callers pass the
- * whole map: snapshot, cursor, and completeness are persisted atomically with
- * respect to the other languages.
+ * revision, create a dirty key, or signal a local user write.
  */
 export async function writeProjectionState(
   userId: string,
@@ -139,6 +157,64 @@ export async function writeProjectionState(
     documentId: projectionStateKey(userId),
     version: PROJECTION_STATE_VERSION,
     state: normalizeMap(state),
+  })
+}
+
+/**
+ * Reads, updates, and writes one language's state in a single IndexedDB
+ * transaction.
+ *
+ * This is the only safe way to advance a cursor or mark a language complete
+ * when several languages may be downloading: the other languages' entries are
+ * read and written back inside the same readwrite transaction, so IndexedDB's
+ * transaction serialization prevents a lost update. `update` must be
+ * synchronous — an `await` inside it would end the transaction.
+ *
+ * Returns the normalized next state for the language.
+ */
+export async function updateProjectionState(
+  userId: string,
+  languageCode: string,
+  update: (current: ProjectionState) => ProjectionState,
+): Promise<ProjectionState> {
+  const key = projectionStateKey(userId)
+  const db = await openLocalDatabase()
+
+  return new Promise<ProjectionState>((resolve, reject) => {
+    const transaction = db.transaction(STORES.documentMeta, 'readwrite')
+    const store = transaction.objectStore(STORES.documentMeta)
+    const getReq = store.get(key)
+    let next: ProjectionState | undefined
+    let failure: unknown
+
+    getReq.onsuccess = () => {
+      try {
+        const state = parseStoredState(getReq.result, userId)
+        const current = normalizeForLanguage(state[languageCode], languageCode)
+        next = normalizeForLanguage(update(current), languageCode)
+        state[languageCode] = next
+        store.put({
+          documentId: key,
+          version: PROJECTION_STATE_VERSION,
+          state,
+        })
+      } catch (error) {
+        failure = error
+        transaction.abort()
+      }
+    }
+    getReq.onerror = () => {}
+
+    transaction.oncomplete = () => {
+      if (next === undefined) {
+        reject(new Error('projection state transaction completed without an update'))
+        return
+      }
+      resolve(next)
+    }
+    transaction.onerror = () => {}
+    transaction.onabort = () =>
+      reject(failure ?? transaction.error ?? new Error('projection state update was aborted'))
   })
 }
 
