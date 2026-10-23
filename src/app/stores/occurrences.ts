@@ -5,11 +5,13 @@ import {
   SYNC_META_KEY,
   idbDelete,
   idbDeleteByIndex,
+  idbGet,
   idbGetAll,
   idbGetAllByIndex,
   idbPut,
   replaceOccurrences,
 } from '../../lib/storage/localDb'
+import { sameOccurrenceRecords } from '../../lib/sync/occurrenceNoop'
 import { isCapitalisedPosition, tokenize } from '../../features/reader/tokenizer'
 import {
   ensureJapaneseTokenizer,
@@ -81,6 +83,39 @@ type OccurrencesState = {
 /** 서버의 word_occurrences 제약과 같은 상한 — 넘는 행은 동기화가 거부한다 */
 const MAX_WORD_LENGTH = 200
 const MAX_SENTENCE_LENGTH = 5_000
+
+/** documentMeta 행 — 이 기기가 어느 규칙으로 이 문서를 계산했는지 */
+type DocumentMetaRow = {
+  documentId: string
+  lemmaVersion: number
+  segmenter?: string
+  /** 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다 */
+  occurrencesUpdatedAt?: string
+}
+
+/**
+ * 계산 결과가 그대로일 때 남기는 기억.
+ *
+ * 규칙 버전·분절기는 갱신하되 `occurrencesUpdatedAt` 은 **건드리지 않는다.** 그 시각은
+ * '이 기기에서 등장 기록이 바뀌었다' 는 뜻이라, 다시 쓰지 않은 계산에 새 시각을 찍으면
+ * 동기화가 같은 내용을 또 보낸다. 이미 있는 시각은 그대로 둔다.
+ *
+ * 규칙 버전을 남기는 이유: 출력이 같았다고 기억을 건너뛰면 옛 버전으로 계산된 문서가
+ * 영원히 '낡은 것' 으로 남아 앱을 열 때마다 다시 계산된다.
+ */
+async function rememberUnchangedComputation(
+  documentId: string,
+  segmenter: 'lindera' | 'intl',
+): Promise<void> {
+  const meta = await idbGet<DocumentMetaRow>(STORES.documentMeta, documentId).catch(() => undefined)
+  if (meta?.lemmaVersion === LEMMA_VERSION && meta.segmenter === segmenter) return
+  await idbPut(STORES.documentMeta, {
+    ...meta,
+    documentId,
+    lemmaVersion: LEMMA_VERSION,
+    segmenter,
+  }).catch(() => {})
+}
 
 /** 단어장 정렬용: 문서 내 등장 순서를 유지한다 */
 function sortByPosition(a: WordOccurrence, b: WordOccurrence) {
@@ -315,6 +350,25 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     const records = [...byLemma.values()]
       .map((record) => ({ ...record, recordedAt }))
       .sort(sortByPosition)
+
+    /**
+     * 지난 계산이 그대로면 쓰지 않는다.
+     *
+     * 행을 다시 넣는 일은 사용자에게 보이는 변화가 없는데도 저장소를 지웠다 쓰고,
+     * 동기화는 그 문서를 '바뀐 것' 으로 서버까지 보낸다. 문서가 많을수록 이 헛일이
+     * 커진다. 제목만 바뀐 경우도 등장 기록의 내용은 같다 (occurrenceNoop.ts).
+     */
+    const existing = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      doc.id,
+    )
+    if (sameOccurrenceRecords(existing, records)) {
+      await rememberUnchangedComputation(doc.id, segmenter)
+      set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
+      return
+    }
+
     await replaceOccurrences(doc.id, records)
 
     /**

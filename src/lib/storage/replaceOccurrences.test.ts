@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { STORES, idbGetAllByIndex, replaceOccurrences } from '../../lib/storage/localDb'
+import { STORES, idbGetAllByIndex, readLocalRevision, replaceOccurrences } from '../../lib/storage/localDb'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 
 const record = (lemma: string, extra: Partial<WordOccurrence> = {}): WordOccurrence => ({
@@ -79,5 +79,25 @@ describe('문서의 등장 기록을 통째로 교체한다', () => {
     await replaceOccurrences('doc-1', [])
     const rows = await idbGetAllByIndex<WordOccurrence>(STORES.wordOccurrences, 'languageCode', 'fr')
     expect(rows.map((r) => r.lemma)).toEqual(['autre'])
+  })
+
+  /**
+   * 저장 계층 자체는 no-op 이 아니다.
+   *
+   * 같은 내용으로 다시 부르면 행을 지웠다 넣고 revision·pending·dirty 를 올린다.
+   * '바뀌지 않았으면 쓰지 않는다' 는 판단은 호출자(recordDocument) 몫이므로,
+   * 여기서 대신하지 않는다는 것을 못박아 둔다.
+   */
+  it('같은 내용으로 다시 써도 변경으로 센다 — no-op 판단은 호출자 몫이다', async () => {
+    await replaceOccurrences('doc-1', [record('chat')])
+    const before = await readLocalRevision()
+    await replaceOccurrences('doc-1', [record('chat')])
+    expect(await readLocalRevision()).toBe(before + 1)
+    const rows = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      'doc-1',
+    )
+    expect(rows.map((r) => r.lemma)).toEqual(['chat'])
   })
 })
