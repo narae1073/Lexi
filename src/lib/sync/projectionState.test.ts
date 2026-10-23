@@ -352,10 +352,15 @@ describe('reserved documentMeta records', () => {
     const server = memoryServer()
     await syncOnce({ userId: USER_ID, languages: ['fr'], db: server.client })
 
-    expect(await idbGet(STORES.documentMeta, projectionStateKey(USER_ID))).toBeDefined()
-    expect((await readProjectionState(USER_ID)).fr.cursor).toEqual({
-      languageCode: 'fr',
-      lemma: 'chat',
-    })
+    const stored = await idbGet<{ documentId: string }>(
+      STORES.documentMeta,
+      projectionStateKey(USER_ID),
+    )
+    expect(stored).toBeDefined()
+    expect(isReservedDocumentMetaId(stored?.documentId)).toBe(true)
+    // Task 8 owns this record: a sync may complete the language (empty
+    // projection) and clear the cursor. What must survive is the account's
+    // entry and its snapshot, never a rewrite as a document row.
+    expect((await readProjectionState(USER_ID)).fr.snapshot).toBeDefined()
   })
 })

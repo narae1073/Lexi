@@ -574,6 +574,9 @@ async function doRun(set: Setter) {
         languages,
         since,
         push: clockGuard.push,
+        // A manual refresh starts the projection over from a new snapshot and
+        // clears the language first, so a soft-deleted row cannot survive.
+        resetProjection: fullResyncWasRequested,
       })
       if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
         report.warnings = [...report.warnings, 'clock-rollback']
@@ -674,8 +677,11 @@ async function doRun(set: Setter) {
       }))
 
       // The full pull is what the manual request was for. A push-only failure
-      // still means it completed; a failed pull must be retried from scratch.
-      fullResyncCompleted = !report.failures.some((failure) => failure.table === 'pull')
+      // still means it completed; a failed pull or a projection paused by the
+      // soft byte budget must be retried from where it stopped.
+      fullResyncCompleted =
+        !report.failures.some((failure) => failure.table === 'pull') &&
+        report.projectionPaused.length === 0
 
       // Tell other tabs only after this tab persisted both the watermarks and the
       // visible state. A listener can then re-read the same shared record.

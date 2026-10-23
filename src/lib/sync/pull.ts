@@ -9,12 +9,37 @@ import type {
   OccurrenceRow,
   WordStateRow,
 } from './mapping'
-import type { PullResult, PullWatermarks } from './types'
+import {
+  emptyProjectionState,
+  projectionStateFor,
+  readProjectionState,
+  type ProjectionState,
+  type ProjectionStateMap,
+} from './projectionState'
+import { PROJECTION_PAGE_MAX, projectionPageLimit, pullProjectionPage } from './wordbookPull'
+import type { ProjectionRow } from './wordbookPull'
+import type { PullResult, ProjectionPull, PullWatermarks } from './types'
 
 export const SNAPSHOT_OVERLAP_MS = 5 * 60_000
 
+/**
+ * Soft cap for one cycle's wordbook projection download.
+ *
+ * A projection larger than this is not an error: the rows read so far are
+ * stored with their cursor, the language is reported as paused, and the next
+ * cycle resumes. The cap only bounds one cycle's memory and time.
+ */
+export const PROJECTION_BYTE_BUDGET = 64 * 1024 * 1024
+
+/**
+ * Soft cap for one document's content/occurrence payload (Task 9).
+ *
+ * Exported here because both budgets belong to the same pull protocol; the
+ * document payload path is the only other place that reads by bytes.
+ */
+export const DOCUMENT_PAYLOAD_BYTE_BUDGET = 10 * 1024 * 1024
+
 const PAGE_SIZE = 1000
-const MAX_ROWS = 200_000
 
 type SyncTable =
   | 'user_languages'
@@ -95,12 +120,6 @@ export async function fetchAll<T>(
       throw new Error(`${table} 의 ${order} 값이 없어 다음 페이지를 읽을 수 없습니다`)
     }
     last = next
-
-    if (rows.length > MAX_ROWS) {
-      throw new Error(
-        `${table} 이 ${MAX_ROWS}행을 넘어 동기화를 멈췄습니다 — 데이터를 나눠 주세요`,
-      )
-    }
   }
   return rows
 }
@@ -141,14 +160,183 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks
 }
 
+/** Approximate serialized size of one projection row, for the soft budget. */
+export function projectionRowBytes(row: ProjectionRow): number {
+  const json = JSON.stringify(row)
+  if (typeof Blob !== 'undefined') return new Blob([json]).size
+  return json.length * 2
+}
+
+export type PullOptions = {
+  /**
+   * Languages this device enrolled. Server languages are unioned in, so a new
+   * device that has not adopted its language list yet still downloads the
+   * projection in the first cycle.
+   */
+  languages?: readonly string[]
+  /** Pre-read projection state; `pull` reads it itself when omitted. */
+  projectionState?: ProjectionStateMap
+  /** Force a fresh full projection (manual resync). */
+  resetProjection?: boolean
+  /** Override the soft projection byte budget (tests only). */
+  projectionByteBudget?: number
+}
+
+type ProjectionPass = {
+  language: string
+  full: boolean
+  /** Snapshot for a full pass, or the incremental watermark for a complete one. */
+  bound: string
+  /** Resume point inside this pass; null starts at the first lemma. */
+  cursor: string | null
+  previous: ProjectionState
+  done: boolean
+}
+
+/**
+ * Reads the wordbook projection for every target language.
+ *
+ * Full passes are bounded by one snapshot and exclude soft deletions. Complete
+ * languages use the bounded incremental form (`server_updated_at > watermark`),
+ * which includes soft deletions so a removal propagates. Passes advance in
+ * rounds — one page per language — so one huge language cannot starve the
+ * others before the byte budget pauses the cycle.
+ *
+ * The caller must store the rows before persisting `next`; advancing a cursor
+ * over rows that were not written is the one way a correct page can lose data.
+ */
+async function pullProjection(
+  db: SupabaseClient<Database>,
+  userId: string,
+  snapshot: string,
+  languages: readonly string[],
+  state: ProjectionStateMap,
+  reset: boolean,
+  budget: number,
+): Promise<{ pull: ProjectionPull; rows: ProjectionRow[] }> {
+  const targets = [...new Set(languages.filter((code) => typeof code === 'string' && code !== ''))]
+  const rows: ProjectionRow[] = []
+  const paused: string[] = []
+  const fullLanguages: string[] = []
+
+  const passes: ProjectionPass[] = []
+  for (const language of targets) {
+    const previous = reset ? emptyProjectionState() : projectionStateFor(state, language)
+    // A complete language pulls incrementally from its stored watermark. An
+    // incomplete one resumes its full snapshot (or starts a new one).
+    const full = !previous.complete || previous.snapshot === null
+    const bound = previous.snapshot ?? snapshot
+    if (full) fullLanguages.push(language)
+    passes.push({
+      language,
+      full,
+      bound,
+      cursor: previous.cursor?.lemma ?? null,
+      previous,
+      done: false,
+    })
+  }
+
+  let bytes = 0
+  let index = 0
+  while (passes.some((pass) => !pass.done)) {
+    const pass = passes[index % passes.length]
+    index += 1
+    if (pass.done) continue
+
+    const limit = projectionPageLimit(PROJECTION_PAGE_MAX)
+    const page = pass.full
+      ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
+      : await pullProjectionPage(
+          db,
+          userId,
+          pass.language,
+          null,
+          pass.cursor,
+          limit,
+          pass.bound,
+        )
+
+    const pageBytes = page.reduce((sum, row) => sum + projectionRowBytes(row), 0)
+    rows.push(...page)
+    bytes += pageBytes
+
+    if (page.length < limit) {
+      pass.done = true
+      continue
+    }
+
+    pass.cursor = page[page.length - 1].lemma
+    if (bytes >= budget) {
+      // Store what was read; the remaining passes resume from their cursors.
+      for (const pending of passes) {
+        if (!pending.done) paused.push(pending.language)
+      }
+      break
+    }
+  }
+
+  const next: Record<string, ProjectionState> = {}
+  const complete: Partial<Record<string, boolean>> = {}
+  for (const pass of passes) {
+    const state: ProjectionState = pass.done
+      ? {
+          complete: true,
+          // An incremental pass advances its watermark to this cycle's server
+          // snapshot. Rows changed after it are re-read by the normal overlap.
+          snapshot: pass.full ? pass.bound : snapshot,
+          cursor: null,
+          hydratedAt: pass.full ? new Date().toISOString() : pass.previous.hydratedAt,
+        }
+      : {
+          complete: pass.previous.complete,
+          snapshot: pass.bound,
+          cursor:
+            pass.cursor === null
+              ? null
+              : { languageCode: pass.language, lemma: pass.cursor },
+          hydratedAt: pass.previous.hydratedAt,
+        }
+    next[pass.language] = state
+    complete[pass.language] = state.complete
+  }
+
+  return {
+    rows,
+    pull: {
+      languages: targets,
+      full: fullLanguages,
+      next,
+      complete,
+      paused,
+      snapshot,
+    },
+  }
+}
+
+/**
+ * Reads one server snapshot into local-shaped rows.
+ *
+ * The initial (no pull snapshot) path deliberately reads no `word_states` and
+ * no occurrences: a new device hydrates both from the wordbook projection, so
+ * downloading 200k source rows only to derive the same wordbook is waste. An
+ * R2 device keeps its local rows and gets the projection alongside them.
+ *
+ * Incremental occurrence reads are limited to documents whose occurrence
+ * version actually moved. A document only opened elsewhere has a newer
+ * `server_updated_at` but an unchanged `occurrences_updated_at`, so it must not
+ * download its occurrence rows.
+ */
 export async function pull(
   userId: string,
   db: SupabaseClient<Database>,
   since: PullWatermarks = {},
+  options: PullOptions = {},
 ): Promise<PullResult> {
   const { data: snapshot, error: snapshotError } = await db.rpc('sync_snapshot')
   if (snapshotError) throw snapshotError
 
+  const initial = since.snapshot === undefined
   const lower = since.snapshot
     ? new Date(Date.parse(since.snapshot) - SNAPSHOT_OVERLAP_MS).toISOString()
     : undefined
@@ -158,24 +346,38 @@ export async function pull(
     sinceColumn: 'server_updated_at',
   }
 
-  const [languageRows, documents, tombstones, folders, wordStates, totals] = await Promise.all([
+  const [languageRows, documentRows, tombstones, folders, wordStates, totals] = await Promise.all([
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
     fetchAll<DocumentRow>(db, 'documents', userId, 'id', '*', timestampOptions),
     fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id', '*', timestampOptions),
     fetchAll<FolderRow>(db, 'folders', userId, 'id', '*', timestampOptions),
-    fetchAll<WordStateRow>(db, 'word_states', userId, 'id', '*', timestampOptions),
+    // A first sync hydrates states from the projection instead.
+    initial
+      ? Promise.resolve([] as WordStateRow[])
+      : fetchAll<WordStateRow>(db, 'word_states', userId, 'id', '*', timestampOptions),
     Promise.all([
       countRows(db, 'documents', userId, snapshot),
       countRows(db, 'word_states', userId, snapshot),
     ]).then(([documentCount, wordCount]) => ({ documents: documentCount, wordStates: wordCount })),
   ])
 
+  const documents = documentRows.map(documentFromRow)
+
   let occurrences: OccurrenceRow[] = []
-  if (since.snapshot === undefined) {
-    occurrences = await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id')
-  } else {
-    const changedDocumentIds = documents.map((row) => row.id)
-    for (const part of chunk(changedDocumentIds, 50)) {
+  let occurrenceDocumentIds: string[] = []
+  if (!initial) {
+    // Legacy rows without occurrence versions are fetched: an unknown version
+    // is not evidence that the rows are unchanged.
+    occurrenceDocumentIds = documentRows
+      .filter((row) => {
+        const updated = row.occurrences_updated_at
+        if (updated === undefined || updated === null) return true
+        if (lower === undefined) return true
+        const at = Date.parse(updated)
+        return Number.isNaN(at) || at > Date.parse(lower)
+      })
+      .map((row) => row.id)
+    for (const part of chunk(occurrenceDocumentIds, 50)) {
       occurrences.push(
         ...(await fetchAll<OccurrenceRow>(db, 'word_occurrences', userId, 'id', '*', {
           documentIds: part,
@@ -184,13 +386,33 @@ export async function pull(
     }
   }
 
+  const projectionState = options.resetProjection
+    ? {}
+    : options.projectionState ?? (await readProjectionState(userId))
+  const targetLanguages = [
+    ...(options.languages ?? []),
+    ...languageRows.map((row) => row.language_code),
+  ]
+  const projection = await pullProjection(
+    db,
+    userId,
+    snapshot,
+    targetLanguages,
+    projectionState,
+    options.resetProjection === true,
+    options.projectionByteBudget ?? PROJECTION_BYTE_BUDGET,
+  )
+
   return {
     languages: languageRows.map((row) => row.language_code),
-    documents: documents.map(documentFromRow),
+    documents,
     tombstones: tombstones.map(documentTombstoneFromRow),
     folders: folders.map(folderFromRow),
     wordStates: wordStates.map(wordStateFromRow),
     occurrences,
+    occurrenceDocumentIds,
+    wordbookEntries: projection.rows,
+    projection: projection.pull,
     totals,
     watermarks: { snapshot },
   }

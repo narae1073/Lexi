@@ -3,6 +3,8 @@ import type { StoreName } from '../storage/localDb'
 import type { DocumentTombstone } from '../storage/purged'
 import type { WordStateRecord } from './merge'
 import type { OccurrenceRow } from './mapping'
+import type { ProjectionState } from './projectionState'
+import type { ProjectionRow } from './wordbookPull'
 import type { WriteLocalResult } from './writeLocal'
 
 export type PullWatermarks = { snapshot?: string }
@@ -89,6 +91,32 @@ export type StoredSyncState = {
   lastSyncedAt?: string
 }
 
+/**
+ * What one cycle's projection pull read.
+ *
+ * The projection has its own snapshot and per-language cursor; it never shares
+ * the document pull watermark. `next` is applied to the reserved device-local
+ * state **after** the rows it describes are stored (see `syncOnce`), which is
+ * what makes a crash resume from a cursor that still names stored rows.
+ */
+export type ProjectionPull = {
+  /** Languages whose projection was requested this cycle. */
+  languages: string[]
+  /** Languages pulled from a new full snapshot this cycle (empty on resume). */
+  full: string[]
+  /** Per-language state to persist after the rows are stored. */
+  next: Record<string, ProjectionState>
+  /** Per-language completeness after this cycle. */
+  complete: Partial<Record<string, boolean>>
+  /**
+   * Languages that hit the soft byte budget. Their rows and cursor are stored;
+   * the next cycle resumes from the cursor instead of restarting or throwing.
+   */
+  paused: string[]
+  /** Server snapshot this cycle's projection passes were bounded by. */
+  snapshot: string
+}
+
 export type PullResult = {
   languages: string[]
   documents: Document[]
@@ -96,6 +124,15 @@ export type PullResult = {
   folders: Folder[]
   wordStates: WordStateRecord[]
   occurrences: OccurrenceRow[]
+  /**
+   * Document ids whose occurrence rows were read in full this cycle. An empty
+   * list means the initial projection path read no occurrences: the merge must
+   * keep the local rows instead of treating them as removed.
+   */
+  occurrenceDocumentIds: string[]
+  /** Wordbook projection rows read this cycle, possibly spanning languages. */
+  wordbookEntries: ProjectionRow[]
+  projection: ProjectionPull
   totals: { documents: number; wordStates: number }
   watermarks: { snapshot: string }
 }
@@ -106,6 +143,16 @@ export type SyncReport = {
   pulled: number
   documents: number
   languages: string[]
+  /** Languages whose wordbook projection was requested this cycle. */
+  projectionLanguages: string[]
+  /** Wordbook projection completeness per language after this cycle. */
+  projectionComplete: Partial<Record<string, boolean>>
+  /**
+   * Languages paused by the soft 64 MB projection budget. Their cursor is
+   * stored, so the next cycle resumes them; the UI can show a continue prompt
+   * instead of an error (Task 10 owns the prompt copy).
+   */
+  projectionPaused: string[]
   /** The next pull watermark. */
   watermarks: PullWatermarks
   /** The next per-table push watermarks; failed tables keep their old value. */

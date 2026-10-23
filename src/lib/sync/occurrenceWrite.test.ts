@@ -88,10 +88,24 @@ const remoteOccurrence = (
   ...over,
 })
 
+/**
+ * R3's first sync reads no occurrences; the wordbook projection replaces that
+ * pull. These cases exercise the incremental occurrence path, so they start
+ * from a snapshot before every fixture row.
+ */
+const BEFORE = { snapshot: '2026-09-01T00:00:00.000Z' }
+
 const sync = (
   server: Server,
   options: { since?: PullWatermarks; pushedAt?: string } = {},
-) => syncOnce({ userId: USER, languages: ['fr'], db: server.client, ...options })
+) =>
+  syncOnce({
+    userId: USER,
+    languages: ['fr'],
+    db: server.client,
+    since: BEFORE,
+    ...options,
+  })
 
 const LOCAL_STORES: StoreName[] = [
   STORES.documents,

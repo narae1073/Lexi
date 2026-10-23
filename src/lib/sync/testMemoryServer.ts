@@ -10,6 +10,7 @@ export function memoryServer(
     folders: [],
     word_states: [],
     word_occurrences: [],
+    wordbook_entries: [],
   }
   const upsertCalls: Record<string, number> = {}
   const orders: Record<string, string> = {}
@@ -21,12 +22,29 @@ export function memoryServer(
   const upsertRejects = new Map<string, (row: Record<string, unknown>) => boolean>()
   const rpcRejects = new Map<string, (args: Record<string, unknown>) => boolean>()
 
+  /** Server-order comparison (timestamps numerically, everything else like SQL text). */
+  const compare = (a: unknown, b: unknown): number => {
+    if (typeof a === 'number' && typeof b === 'number') return a - b
+    if (
+      typeof a === 'string' &&
+      typeof b === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T/.test(a) &&
+      /^\d{4}-\d{2}-\d{2}T/.test(b)
+    ) {
+      const aTime = Date.parse(a)
+      const bTime = Date.parse(b)
+      if (!Number.isNaN(aTime) && !Number.isNaN(bTime)) return aTime - bTime
+    }
+    return String(a ?? '').localeCompare(String(b ?? ''))
+  }
+
   const keyOf = (table: string, row: Record<string, unknown>): string => {
     if (table === 'word_states') return `${row.user_id}|${row.language_code}|${row.lemma}`
     if (table === 'documents') return String(row.id)
     if (table === 'document_tombstones') return `${row.user_id}|${row.document_id}`
     if (table === 'folders') return String(row.id)
     if (table === 'user_languages') return `${row.user_id}|${row.language_code}`
+    if (table === 'wordbook_entries') return `${row.user_id}|${row.language_code}|${row.lemma}`
     return String(row.id ?? `${row.user_id}|${row.lemma}|${row.surface}`)
   }
 
@@ -40,20 +58,7 @@ export function memoryServer(
       let countMode = false
       let deleting = false
 
-      const compareValues = (a: unknown, b: unknown): number => {
-        if (typeof a === 'number' && typeof b === 'number') return a - b
-        if (
-          typeof a === 'string' &&
-          typeof b === 'string' &&
-          /^\d{4}-\d{2}-\d{2}T/.test(a) &&
-          /^\d{4}-\d{2}-\d{2}T/.test(b)
-        ) {
-          const aTime = Date.parse(a)
-          const bTime = Date.parse(b)
-          if (!Number.isNaN(aTime) && !Number.isNaN(bTime)) return aTime - bTime
-        }
-        return String(a ?? '').localeCompare(String(b ?? ''))
-      }
+      const compareValues = compare
 
       const matches = (row: Record<string, unknown>): boolean => {
         for (const [key, value] of Object.entries(filters)) {
@@ -120,7 +125,20 @@ export function memoryServer(
           if (reject && rows.some((row) => reject(row))) {
             return { data: null, error: { message: `${table} row rejected` } }
           }
-          for (const row of rows) {
+          for (const raw of rows) {
+            // Server-owned watermark columns are absent from client payloads.
+            // Fill them like the real triggers do so incremental reads work.
+            const row = { ...raw }
+            if (
+              (table === 'documents' ||
+                table === 'folders' ||
+                table === 'word_states' ||
+                table === 'document_tombstones' ||
+                table === 'wordbook_entries') &&
+              row.server_updated_at === undefined
+            ) {
+              row.server_updated_at = snapshot
+            }
             const key = keyOf(table, row)
             const at = tables[table].findIndex((existing) => keyOf(table, existing) === key)
             if (at >= 0) tables[table][at] = { ...tables[table][at], ...row }
@@ -168,6 +186,39 @@ export function memoryServer(
     rpc: async (name: string, args: Record<string, unknown> = {}) => {
       rpcCalls[name] = (rpcCalls[name] ?? 0) + 1
       if (name === 'sync_snapshot') return { data: snapshot, error: null }
+      if (name === 'get_wordbook_projection_page') {
+        const language = String(args.p_language_code)
+        const after = args.p_after_lemma as string | null
+        const upper = args.p_snapshot as string | null
+        const updatedSince = args.p_updated_since as string | null
+        if (upper !== null && updatedSince !== null) {
+          return {
+            data: null,
+            error: {
+              message:
+                'pass p_snapshot for a full page or p_updated_since for an incremental page, not both',
+            },
+          }
+        }
+        const limit = Math.min(
+          Math.max(Math.trunc(Number(args.p_limit ?? 1000)) || 1000, 1),
+          1000,
+        )
+        const page = tables.wordbook_entries
+          .filter(
+            (row) =>
+              row.language_code === language &&
+              (after === null || compare(row.lemma, after) > 0) &&
+              (upper === null ||
+                (compare(row.server_updated_at, upper) <= 0 && !row.deleted_at)) &&
+              (updatedSince === null ||
+                compare(row.server_updated_at, updatedSince) > 0),
+          )
+          .sort((a, b) => compare(a.lemma, b.lemma))
+          .slice(0, limit)
+          .map((row) => ({ ...row }))
+        return { data: page, error: null }
+      }
       if (name !== 'replace_word_occurrences') {
         return { data: null, error: { message: `unknown rpc ${name}` } }
       }

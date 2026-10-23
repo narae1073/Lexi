@@ -2,12 +2,24 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 import {
   STORES,
+  SYNC_META_KEY,
   clearDirtyIfRevision,
+  idbCount,
+  idbGet,
   idbGetAll,
   isReservedDocumentMetaId,
+  normalizeLocalSyncMeta,
+  openLocalDatabase,
   readDirtyKeys,
   readLocalRevision,
+  wordStateDirtyKey,
 } from '../storage/localDb'
+import {
+  clearWordbookEntries,
+  mergeWordbookEntries,
+  putWordbookEntries,
+  type WordbookEntryInput,
+} from '../storage/wordbookEntries'
 import { mergeOccurrences } from './mergeOccurrences'
 import { purgedDocumentIds, LEGACY_PURGE_AT, type DocumentTombstone } from '../storage/purged'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
@@ -32,6 +44,7 @@ import {
   writeLocal,
 } from './writeLocal'
 import { pull } from './pull'
+import { readProjectionState, updateProjectionState } from './projectionState'
 import {
   loadDirtyCandidates,
   push as pushRows,
@@ -39,6 +52,7 @@ import {
   wordStatePushKey,
 } from './push'
 import { clearPushOnClockRollback } from './syncState'
+import type { ProjectionRow } from './wordbookPull'
 import type {
   PullResult,
   PullWatermarks,
@@ -138,6 +152,224 @@ export async function readLocal(): Promise<{
 
 type LocalSnapshot = Awaited<ReturnType<typeof readLocal>>
 
+// The server default; duplicated instead of importing an app-store constant
+// into the sync layer.
+const PROJECTION_STAR_COLOR_DEFAULT = '#eab308'
+
+/** One server projection row in the shape the local read model stores. */
+export function projectionRowToEntry(row: ProjectionRow): WordbookEntryInput {
+  return {
+    languageCode: row.language_code,
+    lemma: row.lemma,
+    surfaces: row.surfaces ?? [],
+    contexts: (row.contexts ?? []) as WordbookEntryInput['contexts'],
+    occurrenceCount: row.occurrence_count ?? 0,
+    documentCount: row.document_count ?? 0,
+    status: row.status ?? null,
+    isFavorite: row.is_favorite ?? false,
+    starAngle: row.star_angle ?? 0,
+    starColor: row.star_color ?? PROJECTION_STAR_COLOR_DEFAULT,
+    seenCount: row.seen_count ?? 1,
+    firstSeenAt: row.first_seen_at ?? null,
+    lastSeenAt: row.last_seen_at ?? null,
+    favoriteUpdatedAt: row.favorite_updated_at ?? null,
+    knownPresses: row.known_presses ?? 0,
+    unsurePresses: row.unsure_presses ?? 0,
+    unknownPresses: row.unknown_presses ?? 0,
+    note: row.note ?? null,
+    noteUpdatedAt: row.note_updated_at ?? null,
+    serverUpdatedAt: row.server_updated_at ?? null,
+    deletedAt: row.deleted_at ?? null,
+  }
+}
+
+/**
+ * A projection row's state fields as a word state.
+ *
+ * The projection is the server's canonical copy, so its nullable timestamps
+ * fall back to the row watermark rather than inventing a later "seen" time.
+ */
+export function projectionRowToWordState(row: ProjectionRow): WordStateRecord {
+  const stamp =
+    row.server_updated_at ?? row.last_seen_at ?? row.first_seen_at ?? new Date(0).toISOString()
+  return normalizeWordState({
+    languageCode: row.language_code,
+    lemma: row.lemma,
+    status: row.status ?? undefined,
+    seenCount: row.seen_count ?? 1,
+    firstSeenAt: row.first_seen_at ?? stamp,
+    lastSeenAt: row.last_seen_at ?? stamp,
+    favorite: row.is_favorite ?? false,
+    favoriteUpdatedAt: row.favorite_updated_at ?? undefined,
+    starAngle: row.star_angle ?? 0,
+    starColor: row.star_color ?? PROJECTION_STAR_COLOR_DEFAULT,
+    knownPresses: row.known_presses ?? 0,
+    unsurePresses: row.unsure_presses ?? 0,
+    unknownPresses: row.unknown_presses ?? 0,
+    note: row.note ?? undefined,
+    noteUpdatedAt: row.note_updated_at ?? undefined,
+  })
+}
+
+/**
+ * A local-only projection entry built from an unpushed word state.
+ *
+ * Used after a manual full resync clears a language: a dirty key has no
+ * canonical projection row yet, so the row is re-seeded from the local state
+ * instead of disappearing until the edit is pushed and the next incremental
+ * projection returns it. Counts and contexts are derived data and stay empty
+ * for this cycle.
+ */
+function entryFromWordState(state: WordStateRecord): WordbookEntryInput {
+  return {
+    languageCode: state.languageCode,
+    lemma: state.lemma,
+    surfaces: [state.lemma],
+    contexts: [],
+    occurrenceCount: 0,
+    documentCount: 0,
+    status: state.status ?? null,
+    isFavorite: state.favorite,
+    starAngle: state.starAngle,
+    starColor: state.starColor,
+    seenCount: state.seenCount,
+    firstSeenAt: state.firstSeenAt,
+    lastSeenAt: state.lastSeenAt,
+    favoriteUpdatedAt: state.favoriteUpdatedAt,
+    knownPresses: state.knownPresses,
+    unsurePresses: state.unsurePresses,
+    unknownPresses: state.unknownPresses,
+    note: state.note ?? null,
+    noteUpdatedAt: state.noteUpdatedAt ?? null,
+    serverUpdatedAt: null,
+  }
+}
+
+/**
+ * Rows applied per projection transaction. Keeps the dirty-journal lock short
+ * and hydration memory bounded while staying far below the 1 MB page budget.
+ */
+const PROJECTION_APPLY_BATCH = 500
+
+function chunkRows<T>(rows: readonly T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size))
+  }
+  return chunks
+}
+
+/** The later of two ISO timestamps; an unreadable value loses. */
+function laterTimestamp(current: string | undefined, candidate: string): string {
+  if (current === undefined) return candidate
+  const currentAt = Date.parse(current)
+  const candidateAt = Date.parse(candidate)
+  if (Number.isNaN(currentAt)) return candidate
+  if (Number.isNaN(candidateAt)) return current
+  return candidateAt > currentAt ? candidate : current
+}
+
+type ProjectionHydration = {
+  /** Rows this device did not have before (mirrors `pullOnly`). */
+  created: number
+  /** Rows written, including a field-level update of an existing state. */
+  written: number
+}
+
+/**
+ * Writes hydrated word states for one projection batch, silently.
+ *
+ * Runs in one transaction over the reserved sync meta and `wordStates` so the
+ * dirty journal is read and the rows are written without a window in which a
+ * local edit can be overwritten. The write is raw (`store.put`), never a user
+ * write: no revision bump, no pending count, no dirty key, no signal.
+ *
+ * `skipped` is the dirty set the projection merge saw; the journal is checked
+ * again here because an edit can land between the merge and this transaction.
+ */
+function hydrateWordStates(
+  rows: readonly ProjectionRow[],
+  skipped: ReadonlyArray<{ languageCode: string; lemma: string }>,
+): Promise<ProjectionHydration> {
+  const skippedKeys = new Set(
+    skipped.map((key) => wordStateDirtyKey(key.languageCode, key.lemma)),
+  )
+
+  return openLocalDatabase().then(
+    (db) =>
+      new Promise<ProjectionHydration>((resolve, reject) => {
+        const transaction = db.transaction(
+          [STORES.documentMeta, STORES.wordStates],
+          'readwrite',
+        )
+        const metaStore = transaction.objectStore(STORES.documentMeta)
+        const stateStore = transaction.objectStore(STORES.wordStates)
+        const metaRequest = metaStore.get(SYNC_META_KEY)
+
+        let created = 0
+        let written = 0
+        let planned = false
+        let failure: unknown
+
+        metaRequest.onsuccess = () => {
+          try {
+            const meta = normalizeLocalSyncMeta(metaRequest.result)
+            const dirty = meta?.dirty[STORES.wordStates] ?? {}
+            for (const row of rows) {
+              // A soft-deleted projection row removes the wordbook entry; it is
+              // not evidence for a new word state on this device.
+              if (row.deleted_at !== null && row.deleted_at !== undefined) continue
+              const key = wordStateDirtyKey(row.language_code, row.lemma)
+              if (skippedKeys.has(key) || dirty[key] !== undefined) continue
+
+              // Field-level merge, not last-row-wins: a star or note edited on
+              // this device must survive a projection row that is older for
+              // that one field. The read and the write stay in this transaction.
+              const server = projectionRowToWordState(row)
+              const getRequest = stateStore.get([row.language_code, row.lemma])
+              getRequest.onsuccess = () => {
+                try {
+                  const existing = getRequest.result as StoredWordState | undefined
+                  const next =
+                    existing === undefined
+                      ? server
+                      : mergeWordStates([normalizeWordState(existing)], [server]).merged[0]
+                  if (existing === undefined) created += 1
+                  stateStore.put(next)
+                  written += 1
+                } catch (error) {
+                  failure = error
+                  transaction.abort()
+                }
+              }
+              // A failed request aborts the transaction on its own.
+              getRequest.onerror = () => {}
+            }
+            planned = true
+          } catch (error) {
+            failure = error
+            transaction.abort()
+          }
+        }
+        // A failed request aborts the transaction on its own — onabort rejects.
+        metaRequest.onerror = () => {}
+
+        transaction.oncomplete = () => {
+          if (!planned) {
+            reject(new Error('word-state hydration transaction completed without a plan'))
+            return
+          }
+          resolve({ created, written })
+        }
+        transaction.onerror = () => {}
+        transaction.onabort = () =>
+          reject(
+            failure ?? transaction.error ?? new Error('word-state hydration was aborted'),
+          )
+      }),
+  )
+}
+
 type SyncPlan = {
   words: ReturnType<typeof mergeWordStates>
   languages: string[]
@@ -145,7 +377,6 @@ type SyncPlan = {
   tombstones: DocumentTombstone[]
   tombstoneIds: Set<string>
   remoteDocs: Document[]
-  remoteDocumentIds: Set<string>
   metaRows: Array<{
     documentId: string
     lemmaVersion: number
@@ -226,14 +457,18 @@ async function planLocalWrite(
   )
 
   /**
-   * 서버가 준 문서는 등장 기록도 **통째로** 교체한다 — 전체 동기화는 서버의
-   * 모든 문서가, 증분 동기화는 이번에 받은 문서가 대상이다. 그러지 않으면 서버에서
-   * 사라진 옛 키가 로컬에 남는다. 로컬에서 다시 계산한 문서는 로컬이 이긴다 —
-   * 서버의 옛 표기 기록을 받지 않는다.
+   * 서버가 준 문서는 등장 기록도 **통째로** 교체한다 — 증분 동기화는 이번에
+   * 등장 기록을 실제로 읽은 문서가 대상이다. 그러지 않으면 서버에서 사라진 옛
+   * 키가 로컬에 남는다. 로컬에서 다시 계산한 문서는 로컬이 이긴다 — 서버의 옛
+   * 표기 기록을 받지 않는다.
+   *
+   * 첫 동기화는 등장 기록을 아예 읽지 않는다 (단어장은 projection 이 나른다).
+   * 그때 `occurrenceDocumentIds` 가 비어 있으므로 로컬 등장 기록을 지우지
+   * 않는다 — R2 기기의 단어장이 projection 을 받는 동안에도 그대로 보여야 한다.
    */
-  const remoteDocumentIds = new Set(remote.documents.map((row) => row.id))
+  const fetchedOccurrenceIds = new Set(remote.occurrenceDocumentIds)
   const replaceDocuments = new Set(
-    [...remoteDocumentIds].filter((id) => !recomputed.has(id)),
+    [...fetchedOccurrenceIds].filter((id) => !recomputed.has(id)),
   )
 
   const occurrences = mergeOccurrences(
@@ -295,7 +530,6 @@ async function planLocalWrite(
     tombstones,
     tombstoneIds,
     remoteDocs,
-    remoteDocumentIds,
     metaRows,
     mergedDocuments,
     mergedWords,
@@ -320,6 +554,8 @@ export async function syncOnce({
   since,
   push: pushWatermarks = {},
   pushedAt,
+  resetProjection = false,
+  projectionByteBudget,
 }: {
   userId: string
   /** 이 기기에서 배운 언어 */
@@ -331,13 +567,30 @@ export async function syncOnce({
   push?: PushWatermarks
   /** @deprecated R1 single watermark; translated to every table for old callers. */
   pushedAt?: string
+  /**
+   * The user asked for a full resync. The projection is re-downloaded from a
+   * fresh snapshot instead of resuming, and the language is cleared first so a
+   * soft-deleted row cannot survive as a phantom.
+   */
+  resetProjection?: boolean
+  /** Override the soft projection byte budget (tests only). */
+  projectionByteBudget?: number
 }): Promise<SyncReport> {
   // This snapshot of server and local data is the plan for one sync attempt.
   const syncStartedAt = new Date().toISOString()
   // Captured before readLocal: a write between these two reads must still be
   // detected as a change, not silently folded into the snapshot.
   const revisionBefore = await readLocalRevision()
-  const [remote, firstLocal] = await Promise.all([pull(userId, db, since), readLocal()])
+  const projectionState = await readProjectionState(userId)
+  const [remote, firstLocal] = await Promise.all([
+    pull(userId, db, since, {
+      languages: localLanguages,
+      projectionState,
+      resetProjection,
+      projectionByteBudget,
+    }),
+    readLocal(),
+  ])
 
   let local = firstLocal
   let plan = await planLocalWrite(remote, local, localLanguages, syncStartedAt)
@@ -361,7 +614,6 @@ export async function syncOnce({
     tombstones,
     tombstoneIds,
     remoteDocs,
-    remoteDocumentIds,
     metaRows,
     mergedDocuments,
     mergedWords,
@@ -369,8 +621,6 @@ export async function syncOnce({
     occurrenceDocumentIds,
     changedDuringSync,
   } = plan
-
-  const incremental = since?.snapshot !== undefined
 
   const localWrites = await writeLocal(
     mergedDocuments,
@@ -380,6 +630,72 @@ export async function syncOnce({
     tombstones,
     { occurrenceDocumentIds, expectedRevision },
   )
+
+  /**
+   * Store the projection rows, then advance each language's cursor.
+   *
+   * The order is the whole resumability guarantee: a cursor may only name rows
+   * that are already in IndexedDB. Every page is applied through the atomic
+   * dirty-key merge, and its state fields are hydrated in a silent transaction
+   * that re-checks the journal.
+   */
+  const projectionRowsByLanguage = new Map<string, ProjectionRow[]>()
+  for (const row of remote.wordbookEntries) {
+    const rows = projectionRowsByLanguage.get(row.language_code) ?? []
+    rows.push(row)
+    projectionRowsByLanguage.set(row.language_code, rows)
+  }
+
+  if (resetProjection) {
+    const dirtyWordKeys = new Set(
+      (await readDirtyKeys())
+        .filter((dirty) => dirty.store === STORES.wordStates)
+        .map((dirty) => dirty.key),
+    )
+    for (const language of remote.projection.full) {
+      // Mark the language incomplete before clearing it. If this cycle dies
+      // between the clear and the cursor write, the next cycle must start a
+      // full pull rather than resume an incremental watermark over an empty
+      // local language.
+      await updateProjectionState(userId, language, () => ({
+        complete: false,
+        snapshot: null,
+        cursor: null,
+        hydratedAt: null,
+      }))
+      const seeds: WordbookEntryInput[] = []
+      const prefix = `${language}\u0000`
+      for (const key of dirtyWordKeys) {
+        if (!key.startsWith(prefix)) continue
+        const lemma = key.slice(prefix.length)
+        const stored = await idbGet<StoredWordState>(STORES.wordStates, [language, lemma])
+        if (stored !== undefined) seeds.push(entryFromWordState(normalizeWordState(stored)))
+      }
+      // Full pages contain live rows only, so a manual resync must clear first
+      // or a soft-deleted row survives as a phantom. Dirty keys are seeded back
+      // from their local state because the merge skips them.
+      await clearWordbookEntries(language)
+      if (seeds.length > 0) await putWordbookEntries(seeds)
+    }
+  }
+
+  let writtenWordStates = 0
+  let pulledWordStates = 0
+  for (const language of remote.projection.languages) {
+    const languageRows = projectionRowsByLanguage.get(language) ?? []
+    for (const batch of chunkRows(languageRows, PROJECTION_APPLY_BATCH)) {
+      const merged = await mergeWordbookEntries(batch.map(projectionRowToEntry))
+      const hydration = await hydrateWordStates(batch, merged.skipped)
+      writtenWordStates += hydration.written
+      pulledWordStates += hydration.created
+    }
+    const nextState = remote.projection.next[language]
+    if (nextState !== undefined) {
+      // Never read the map and call `writeProjectionState`: another language's
+      // cursor may advance while this one is being persisted.
+      await updateProjectionState(userId, language, () => nextState)
+    }
+  }
 
   /**
    * Per-table watermarks: a row is a candidate when it changed after its own
@@ -470,10 +786,12 @@ export async function syncOnce({
           )
           .map((m) => m.documentId),
   )
+  // Only documents whose occurrence rows were actually read can be compared;
+  // an unread document is not evidence that its local rows are stale.
   const changedFetched = changedOccurrenceDocuments(
     occurrences,
     remote.occurrences,
-    incremental ? remoteDocumentIds : undefined,
+    new Set(remote.occurrenceDocumentIds),
   )
   const occurrencePush = [...new Set([...changedFetched, ...dirtyOccurrenceDocs])].filter(
     (id) => !tombstoneIds.has(id) && !changedDuringSync.has(id),
@@ -585,6 +903,16 @@ export async function syncOnce({
   }
   if (occurrenceResult.succeeded.has('occurrences')) nextPush.occurrences = syncStartedAt
 
+  /**
+   * Hydrated states are the server's own rows, not local edits. Initialize the
+   * word-state push watermark to the projection snapshot so a new device does
+   * not send 100k rows it just downloaded. Dirty local keys are still pushed by
+   * the journal regardless of this timestamp.
+   */
+  if (writtenWordStates > 0) {
+    nextPush.wordStates = laterTimestamp(nextPush.wordStates, remote.projection.snapshot)
+  }
+
   const failedWordKeys = new Set(
     failures
       .filter((failure) => failure.table === 'wordStates' && failure.key !== undefined)
@@ -596,9 +924,14 @@ export async function syncOnce({
     pushed: [...wordCandidates.values()].filter(
       (word) => word.status !== undefined && !failedWordKeys.has(wordStatePushKey(word)),
     ).length,
-    pulled: words.pullOnly.length,
+    // Hydrated projection entries are words this device received, even though
+    // they did not travel through the `word_states` pull.
+    pulled: words.pullOnly.length + pulledWordStates,
     documents: mergedDocuments.length,
     languages,
+    projectionLanguages: remote.projection.languages,
+    projectionComplete: remote.projection.complete,
+    projectionPaused: remote.projection.paused,
     watermarks: remote.watermarks,
     pushWatermarks: nextPush,
     serverWords: remote.totals.wordStates,
@@ -609,8 +942,11 @@ export async function syncOnce({
      * 받기 전 숫자를 그대로 쓰면, 새 기기가 단어 2500개를 받은 직후에도
      * '서버 2500 / 이 기기 0' 이라고 말한다 — 실제로는 방금 다 받았다. 숫자가
      * 상황을 설명하지 않으면 숫자를 믿는 사람이 아무것도 모른다.
+     *
+     * Counted from the store after projection hydration too: a device that
+     * received its whole wordbook as projection rows must not report 0.
      */
-    localWords: mergedWords.length,
+    localWords: await idbCount(STORES.wordStates),
     occurrencePush: occurrenceDocumentIdsToPush,
     failures,
     warnings,
