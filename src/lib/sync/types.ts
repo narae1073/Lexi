@@ -104,13 +104,21 @@ export type ProjectionPull = {
   languages: string[]
   /** Languages pulled from a new full snapshot this cycle (empty on resume). */
   full: string[]
+  /**
+   * Languages that start a **fresh** full pass this cycle: their stored state
+   * had no usable snapshot (new language, corrupted state, or a manual reset).
+   * Only these are cleared before their rows are applied; a resumed full pass
+   * must never clear what its earlier pages already stored.
+   */
+  reset: string[]
   /** Per-language state to persist after the rows are stored. */
   next: Record<string, ProjectionState>
   /** Per-language completeness after this cycle. */
   complete: Partial<Record<string, boolean>>
   /**
-   * Languages that hit the soft byte budget. Their rows and cursor are stored;
-   * the next cycle resumes from the cursor instead of restarting or throwing.
+   * Full passes that hit the soft byte budget. Their rows and cursor are
+   * stored; the next cycle resumes from the cursor instead of restarting or
+   * throwing. Incremental passes are watermark-bounded and never paused.
    */
   paused: string[]
   /** Server snapshot this cycle's projection passes were bounded by. */
@@ -145,12 +153,19 @@ export type SyncReport = {
   languages: string[]
   /** Languages whose wordbook projection was requested this cycle. */
   projectionLanguages: string[]
-  /** Wordbook projection completeness per language after this cycle. */
+  /**
+   * Base wordbook completeness per language: true once a full pass finished,
+   * so the language is offline-complete at its stored snapshot. This is **not**
+   * "this cycle's pass finished" — `projectionPaused` carries the per-cycle
+   * pass state. Task 10 must treat `projectionPaused` as the progress signal
+   * and must not infer an unfinished pass from `projectionComplete`.
+   */
   projectionComplete: Partial<Record<string, boolean>>
   /**
-   * Languages paused by the soft 64 MB projection budget. Their cursor is
-   * stored, so the next cycle resumes them; the UI can show a continue prompt
-   * instead of an error (Task 10 owns the prompt copy).
+   * Full projection passes paused by the soft 64 MB byte budget. Their cursor
+   * is stored, so the next cycle resumes them; the UI can show a continue
+   * prompt instead of an error (Task 10 owns the prompt copy). Incremental
+   * passes are never paused.
    */
   projectionPaused: string[]
   /** The next pull watermark. */

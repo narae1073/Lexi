@@ -136,6 +136,57 @@ describe('silent word-state hydration from the projection', () => {
     expect(await idbGetAll<Record<string, unknown>>(STORES.wordStates)).toHaveLength(2)
   })
 
+  it('does not raise the word-state watermark over a failed push', async () => {
+    const server = memoryServer(1000, SNAPSHOT)
+    // A projection row makes hydration happen in this cycle.
+    server.add('wordbook_entries', projectionRow())
+    // A clean local row selected only by its timestamp: it has no dirty key,
+    // so raising the watermark past it would strand it forever.
+    await idbPut(
+      STORES.wordStates,
+      {
+        languageCode: 'fr',
+        lemma: 'chien',
+        status: 'unsure',
+        seenCount: 1,
+        firstSeenAt: SNAPSHOT,
+        lastSeenAt: SNAPSHOT,
+        favorite: false,
+        starAngle: 0,
+        starColor: '#eab308',
+        knownPresses: 0,
+        unsurePresses: 0,
+        unknownPresses: 0,
+      },
+      { silent: true },
+    )
+    server.rejectUpsert('word_states', () => true)
+
+    const first = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      push: { wordStates: OLDER_SNAPSHOT },
+    })
+
+    expect(first.failures.some((failure) => failure.table === 'wordStates')).toBe(true)
+    // Hydration happened, but the failed table keeps its watermark.
+    expect(first.pushWatermarks.wordStates).toBe(OLDER_SNAPSHOT)
+    expect((await readLocalSyncMeta())?.dirty.wordStates).toBeUndefined()
+
+    server.rejectUpsert('word_states', null)
+    await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      since: first.watermarks,
+      push: first.pushWatermarks,
+    })
+
+    // The timestamp-selected row is retried and reaches the server.
+    expect(server.rows('word_states').some((row) => row.lemma === 'chien')).toBe(true)
+  })
+
   it('still lets a local edit after hydration be pushed', async () => {
     const server = memoryServer(1000, SNAPSHOT)
     server.add('wordbook_entries', projectionRow())

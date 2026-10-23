@@ -646,13 +646,23 @@ export async function syncOnce({
     projectionRowsByLanguage.set(row.language_code, rows)
   }
 
-  if (resetProjection) {
+  /**
+   * A fresh full pass replaces the language, so clear it before applying the
+   * first rows. This is the only place a projection entry is removed without
+   * the server naming it: full pages contain live rows only, so a row that was
+   * soft-deleted before the snapshot would otherwise survive as a phantom.
+   *
+   * The clear is tied to the *pass*, not the cycle: a paused pass resumes from
+   * its cursor and keeps the rows its earlier pages stored. A manual reset
+   * therefore converges even when it spans several cycles.
+   */
+  if (remote.projection.reset.length > 0) {
     const dirtyWordKeys = new Set(
       (await readDirtyKeys())
         .filter((dirty) => dirty.store === STORES.wordStates)
         .map((dirty) => dirty.key),
     )
-    for (const language of remote.projection.full) {
+    for (const language of remote.projection.reset) {
       // Mark the language incomplete before clearing it. If this cycle dies
       // between the clear and the cursor write, the next cycle must start a
       // full pull rather than resume an incremental watermark over an empty
@@ -671,10 +681,10 @@ export async function syncOnce({
         const stored = await idbGet<StoredWordState>(STORES.wordStates, [language, lemma])
         if (stored !== undefined) seeds.push(entryFromWordState(normalizeWordState(stored)))
       }
-      // Full pages contain live rows only, so a manual resync must clear first
-      // or a soft-deleted row survives as a phantom. Dirty keys are seeded back
-      // from their local state because the merge skips them.
       await clearWordbookEntries(language)
+      // Full pages are server-canonical, but the merge skips keys with an
+      // unpushed local edit. Re-seed those from the local state so an upgrade
+      // or manual reset does not make the edit disappear for a cycle.
       if (seeds.length > 0) await putWordbookEntries(seeds)
     }
   }
@@ -908,8 +918,12 @@ export async function syncOnce({
    * word-state push watermark to the projection snapshot so a new device does
    * not send 100k rows it just downloaded. Dirty local keys are still pushed by
    * the journal regardless of this timestamp.
+   *
+   * Only advance when the word-state push succeeded: a failed table keeps its
+   * old watermark so timestamp-selected rows are retried. Raising it here would
+   * strand a failed word that has no dirty-journal entry forever.
    */
-  if (writtenWordStates > 0) {
+  if (writtenWordStates > 0 && tableResult.succeeded.has('wordStates')) {
     nextPush.wordStates = laterTimestamp(nextPush.wordStates, remote.projection.snapshot)
   }
 

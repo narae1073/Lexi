@@ -677,11 +677,16 @@ async function doRun(set: Setter) {
       }))
 
       // The full pull is what the manual request was for. A push-only failure
-      // still means it completed; a failed pull or a projection paused by the
-      // soft byte budget must be retried from where it stopped.
-      fullResyncCompleted =
-        !report.failures.some((failure) => failure.table === 'pull') &&
-        report.projectionPaused.length === 0
+      // still means it completed; a failed pull must be retried from scratch.
+      //
+      // A paused projection does **not** keep the request owed: the reset has
+      // already been recorded in the per-language projection state, and the
+      // ordinary cursor resumption finishes it. Re-requesting here would make
+      // the next cycle reset again (clear the wordbook, restart at lemma 0) and
+      // a projection larger than the byte budget would never converge.
+      fullResyncCompleted = !report.failures.some(
+        (failure) => failure.table === 'pull',
+      )
 
       // Tell other tabs only after this tab persisted both the watermarks and the
       // visible state. A listener can then re-read the same shared record.

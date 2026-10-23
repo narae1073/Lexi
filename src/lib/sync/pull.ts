@@ -185,6 +185,8 @@ export type PullOptions = {
 type ProjectionPass = {
   language: string
   full: boolean
+  /** A fresh full pass: the language must be cleared before its rows apply. */
+  fresh: boolean
   /** Snapshot for a full pass, or the incremental watermark for a complete one. */
   bound: string
   /** Resume point inside this pass; null starts at the first lemma. */
@@ -202,6 +204,18 @@ type ProjectionPass = {
  * rounds — one page per language — so one huge language cannot starve the
  * others before the byte budget pauses the cycle.
  *
+ * Resetting is a property of a pass, not of a cycle. A manual reset discards
+ * the stored state only when there is no full pass already in progress; an
+ * incomplete language with a snapshot resumes its cursor, and `reset` names
+ * only passes that truly start from lemma 0 and therefore must be cleared.
+ * That is what makes a paused manual reset converge instead of re-downloading
+ * from the first lemma forever.
+ *
+ * Incremental passes are watermark-bounded and never paused: a cursor plus a
+ * watermark can skip rows that changed *behind* the cursor while a pass was
+ * paused, so the pass always starts at the stored watermark and applies rows
+ * idempotently.
+ *
  * The caller must store the rows before persisting `next`; advancing a cursor
  * over rows that were not written is the one way a correct page can lose data.
  */
@@ -218,20 +232,32 @@ async function pullProjection(
   const rows: ProjectionRow[] = []
   const paused: string[] = []
   const fullLanguages: string[] = []
+  const resetLanguages: string[] = []
 
   const passes: ProjectionPass[] = []
   for (const language of targets) {
-    const previous = reset ? emptyProjectionState() : projectionStateFor(state, language)
+    const stored = projectionStateFor(state, language)
+    // A reset only starts a new pass. An incomplete language that already has
+    // a snapshot is a reset (or ordinary full pull) in progress; restarting it
+    // would download from lemma 0 again and re-clear the local wordbook.
+    const wantReset =
+      reset && !(stored.complete === false && stored.snapshot !== null)
+    const previous = wantReset ? emptyProjectionState() : stored
     // A complete language pulls incrementally from its stored watermark. An
     // incomplete one resumes its full snapshot (or starts a new one).
     const full = !previous.complete || previous.snapshot === null
+    const fresh = full && previous.snapshot === null
     const bound = previous.snapshot ?? snapshot
     if (full) fullLanguages.push(language)
+    if (fresh) resetLanguages.push(language)
     passes.push({
       language,
       full,
+      fresh,
       bound,
-      cursor: previous.cursor?.lemma ?? null,
+      // An incremental pass always starts at its watermark: a stored cursor
+      // could be past rows that changed behind it while the pass was paused.
+      cursor: full ? (previous.cursor?.lemma ?? null) : null,
       previous,
       done: false,
     })
@@ -247,30 +273,24 @@ async function pullProjection(
     const limit = projectionPageLimit(PROJECTION_PAGE_MAX)
     const page = pass.full
       ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
-      : await pullProjectionPage(
-          db,
-          userId,
-          pass.language,
-          null,
-          pass.cursor,
-          limit,
-          pass.bound,
-        )
+      : await pullProjectionPage(db, userId, pass.language, null, null, limit, pass.bound)
 
     const pageBytes = page.reduce((sum, row) => sum + projectionRowBytes(row), 0)
     rows.push(...page)
-    bytes += pageBytes
+    // Only full passes are byte-budgeted. The check runs after the page is
+    // counted, including a final short page: the soft cap may be crossed by the
+    // page that finishes a language, and the next language is then deferred.
+    if (pass.full) bytes += pageBytes
 
-    if (page.length < limit) {
-      pass.done = true
-      continue
-    }
+    if (page.length < limit) pass.done = true
+    else pass.cursor = page[page.length - 1].lemma
 
-    pass.cursor = page[page.length - 1].lemma
-    if (bytes >= budget) {
-      // Store what was read; the remaining passes resume from their cursors.
+    if (bytes >= budget && passes.some((pending) => !pending.done && pending.full)) {
+      // Store what was read; the unfinished full passes resume from their
+      // cursors. Incremental passes are not paused — they are watermark-bounded
+      // and finish in this cycle (or on the next ordinary pull).
       for (const pending of passes) {
-        if (!pending.done) paused.push(pending.language)
+        if (!pending.done && pending.full) paused.push(pending.language)
       }
       break
     }
@@ -289,7 +309,9 @@ async function pullProjection(
           hydratedAt: pass.full ? new Date().toISOString() : pass.previous.hydratedAt,
         }
       : {
-          complete: pass.previous.complete,
+          // A fresh pass is not complete at any stored watermark. Only a
+          // resumed pass may still describe an already-complete language.
+          complete: pass.fresh ? false : pass.previous.complete,
           snapshot: pass.bound,
           cursor:
             pass.cursor === null
@@ -306,6 +328,7 @@ async function pullProjection(
     pull: {
       languages: targets,
       full: fullLanguages,
+      reset: resetLanguages,
       next,
       complete,
       paused,
@@ -386,9 +409,10 @@ export async function pull(
     }
   }
 
-  const projectionState = options.resetProjection
-    ? {}
-    : options.projectionState ?? (await readProjectionState(userId))
+  // Reset is decided per language inside `pullProjection`: a reset only starts
+  // a new pass when no full pass is already in progress. Discarding the stored
+  // map here would restart a paused reset from lemma 0 on every cycle.
+  const projectionState = options.projectionState ?? (await readProjectionState(userId))
   const targetLanguages = [
     ...(options.languages ?? []),
     ...languageRows.map((row) => row.language_code),
