@@ -79,7 +79,8 @@ begin
   if v_user_id is null
      or p_snapshot is null
      or p_language_code is null
-     or p_language_code = '' then
+     or p_language_code = ''
+     or p_language_code !~ '^[a-z]{2}(-[A-Za-z]{2})?$' then
     return false;
   end if;
 
@@ -356,6 +357,11 @@ declare
   v_has_pass boolean := false;
   v_replay boolean := false;
   v_next_cursor text;
+  v_language_count int;
+  -- A real account enrolls a handful of languages. This well-above-real cap
+  -- keeps a charged snapshot from becoming an unbounded namespace for
+  -- invented (but structurally valid) language rows.
+  v_max_languages constant int := 50;
   v_today timestamptz := date_trunc('day', clock_timestamp() at time zone 'utc')
     at time zone 'utc';
 begin
@@ -366,6 +372,12 @@ begin
   end if;
   if p_language_code is null or p_language_code = '' then
     return;
+  end if;
+  -- Same shape as the user_languages check. The projection is per-language;
+  -- an arbitrary long language string would only create pass-state rows.
+  if p_language_code !~ '^[a-z]{2}(-[A-Za-z]{2})?$' then
+    raise exception 'invalid projection language code'
+      using errcode = 'PT400';
   end if;
 
   if p_snapshot is not null and p_updated_since is not null then
@@ -424,7 +436,7 @@ begin
           v_retry_seconds := greatest(
             1,
             ceil(extract(epoch from (
-              v_today + interval '1 day' - (clock_timestamp() at time zone 'utc')
+              v_today + interval '1 day' - clock_timestamp()
             )))::int
           );
           raise exception 'projection complete-sync quota exceeded'
@@ -461,11 +473,23 @@ begin
           using errcode = 'PT409',
                 detail = 'reason=start';
       end if;
+
+      -- A charged snapshot may span its enrolled languages, but it must not be
+      -- a namespace for unlimited pass rows. This also bounds a caller that
+      -- invents valid-looking but unenrolled languages.
+      select count(*) into v_language_count
+      from public.projection_sync_passes
+      where user_id = v_user_id and snapshot = p_snapshot;
+      if v_language_count >= v_max_languages then
+        raise exception 'too many languages for one projection pass'
+          using errcode = 'PT400';
+      end if;
+
       if not public.consume_projection_sync(p_snapshot, p_language_code) then
         v_retry_seconds := greatest(
           1,
           ceil(extract(epoch from (
-            v_today + interval '1 day' - (clock_timestamp() at time zone 'utc')
+            v_today + interval '1 day' - clock_timestamp()
           )))::int
         );
         raise exception 'projection complete-sync quota exceeded'

@@ -52,6 +52,15 @@
  * A non-loopback URL is refused unless `--allow-remote` is passed explicitly.
  * Remote runs also need `--database-url` (and a psql client); the local default
  * uses the `supabase_db_<project>` Docker container.
+ *
+ * Remote targets have no local docker-stats CPU. `sources.cpu` is marked
+ * `required: false`, `ok: false` and `database-cpu` is `unknown`; the snapshot
+ * is not marked incomplete for that optional source. Optional failures are
+ * always visible in `sources` and fail (unknown) only their dependent alerts.
+ *
+ * A smoke load run is never used for the refresh/no-op gates: it is labelled
+ * `loadRun.smoke=true`, `nonGating=true`, `used=false`, and the dependent
+ * alerts are unknown.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -83,6 +92,7 @@ Read-only R3 metrics snapshot. Defaults to the local Supabase stack.
   --out FILE           also write the JSON snapshot to FILE
   --self-test          emit a synthetic healthy snapshot without touching any database
   --self-test-incomplete  emit a snapshot with failed sources + a stale load result
+  --self-test-smoke    emit a snapshot where only a fresh smoke load exists (non-gating)
   --help               print this help
 
 Read-only guarantee
@@ -114,7 +124,8 @@ function parseArgs(argv) {
       key === 'help' ||
       key === 'allow-remote' ||
       key === 'self-test' ||
-      key === 'self-test-incomplete'
+      key === 'self-test-incomplete' ||
+      key === 'self-test-smoke'
     ) {
       flags[key] = true
       continue
@@ -285,7 +296,21 @@ function queryJson(target, sql, label) {
 }
 
 function failed(value) {
-  return value === null || value === undefined || typeof value.__error === 'string'
+  return (
+    value === null ||
+    value === undefined ||
+    Object.prototype.hasOwnProperty.call(value, '__error')
+  )
+}
+
+/** An explicit failure sentinel, so a null result can never look like success. */
+function failedResult(value) {
+  return {
+    __error:
+      value !== null && value !== undefined && typeof value.__error === 'string'
+        ? value.__error
+        : 'query returned no result',
+  }
 }
 
 function readContainerCpu(container) {
@@ -458,15 +483,15 @@ export function collectRaw(target, resultDir = DEFAULT_RESULT_DIR) {
 
   return {
     capturedAt: new Date().toISOString(),
-    refresh: failed(refresh) ? { __error: refresh?.__error } : refresh,
-    statements: failed(statements) ? { __error: statements?.__error } : statements,
-    rowsTouched: failed(rowsTouched) ? { __error: rowsTouched?.__error } : rowsTouched,
-    deadlocks: failed(deadlocks) ? { __error: deadlocks?.__error } : deadlocks,
-    storage: failed(storage) ? { __error: storage?.__error } : storage,
-    usage: failed(usage) ? { __error: usage?.__error } : usage,
-    syncPasses: failed(syncPasses) ? { __error: syncPasses?.__error } : syncPasses,
-    users: failed(users) ? { __error: users?.__error } : users,
-    connections: failed(connections) ? { __error: connections?.__error } : connections,
+    refresh: failed(refresh) ? failedResult(refresh) : refresh,
+    statements: failed(statements) ? failedResult(statements) : statements,
+    rowsTouched: failed(rowsTouched) ? failedResult(rowsTouched) : rowsTouched,
+    deadlocks: failed(deadlocks) ? failedResult(deadlocks) : deadlocks,
+    storage: failed(storage) ? failedResult(storage) : storage,
+    usage: failed(usage) ? failedResult(usage) : usage,
+    syncPasses: failed(syncPasses) ? failedResult(syncPasses) : syncPasses,
+    users: failed(users) ? failedResult(users) : users,
+    connections: failed(connections) ? failedResult(connections) : connections,
     cpuPercent: target.local ? readContainerCpu(target.dbContainer) : null,
     load: latestLoadResult(resultDir),
   }
@@ -524,7 +549,12 @@ function refreshPercentiles(raw, loadUsable) {
 function sectionStatus(raw, name) {
   const value = raw[name]
   if (value === null || value === undefined) return { ok: false, error: `${name} missing` }
-  if (typeof value.__error === 'string') return { ok: false, error: value.__error }
+  if (Object.prototype.hasOwnProperty.call(value, '__error')) {
+    return {
+      ok: false,
+      error: typeof value.__error === 'string' ? value.__error : 'query returned no result',
+    }
+  }
   return { ok: true, error: null }
 }
 
@@ -562,22 +592,31 @@ export function buildSnapshot(raw, target) {
   const loadAgeHours = Number.isFinite(loadAt) ? (Date.now() - loadAt) / 3_600_000 : null
   const loadStale = load === null || loadAgeHours === null || loadAgeHours > 24
   const loadSummary = load?.effective?.summary
+  const loadSmoke = load?.smoke === true
   const loadUsable =
     load !== null &&
+    !loadSmoke &&
     !loadStale &&
     typeof loadSummary?.p50 === 'number' &&
     Number.isFinite(loadSummary.p50)
+  const loadError =
+    load === null
+      ? 'no r3-load result'
+      : loadSmoke
+        ? 'smoke r3-load run is not a performance gate; ignored for refresh and no-op checks'
+        : loadStale
+          ? 'stale r3-load result (>24h); ignored for percentiles and no-op checks'
+          : !loadUsable
+            ? 'r3-load result has no percentile summary'
+            : null
   const loadSource = addSource('loadResult', {
     required: false,
     ok: loadUsable,
-    error:
-      load === null
-        ? 'no r3-load result'
-        : loadStale
-          ? 'stale r3-load result (>24h); ignored for percentiles and no-op checks'
-          : 'r3-load result has no percentile summary',
+    error: loadError,
   })
   loadSource.stale = load === null ? false : loadStale
+  loadSource.smoke = loadSmoke
+  loadSource.nonGating = loadSmoke
   loadSource.used = loadUsable
   loadSource.path = load?.path ?? null
   loadSource.ageHours = loadAgeHours === null ? null : rounded(loadAgeHours)
@@ -622,8 +661,13 @@ export function buildSnapshot(raw, target) {
   const projectionRows = nonNegative(storage.projectionRows)
   const documents = nonNegative(storage.documents)
 
-  const incomplete = Object.values(sources).some((source) => !source.ok)
-  const incompleteCount = Object.values(sources).filter((source) => !source.ok).length
+  // Required sources decide `incomplete`. Optional sources (CPU on a remote
+  // target, the local load artifact) still surface in `sources` and make their
+  // dependent alerts unknown, but do not label the whole snapshot incomplete.
+  const incomplete = Object.values(sources).some((source) => source.required && !source.ok)
+  const incompleteCount = Object.values(sources).filter(
+    (source) => source.required && !source.ok,
+  ).length
 
   const alerts = []
   const addAlert = (name, dependsOn, compute, message) => {
@@ -656,7 +700,7 @@ export function buildSnapshot(raw, target) {
     'sources-complete',
     [],
     () => ({ ok: !incomplete, value: incompleteCount, threshold: 0 }),
-    'every metrics source responded (optional failures also make the snapshot incomplete)',
+    'every required metrics source responded',
   )
   addAlert(
     'refresh-p95',
@@ -787,6 +831,8 @@ export function buildSnapshot(raw, target) {
       path: load?.path ?? null,
       ageHours: loadAgeHours === null ? null : rounded(loadAgeHours),
       stale: load !== null ? loadStale : false,
+      smoke: loadSmoke,
+      nonGating: loadSmoke,
       used: loadUsable,
     },
     noopSuppression: {
@@ -924,6 +970,9 @@ function syntheticIncompleteRaw() {
     ...syntheticRaw(),
     refresh: { __error: 'permission denied for table pg_stat_statements' },
     storage: { __error: 'relation "public.wordbook_entries" does not exist' },
+    // Simulate collectRaw's old null mapping: an own __error property with an
+    // undefined value must still be a failure.
+    deadlocks: { __error: undefined },
     cpuPercent: null,
     load: {
       path: 'self-test-stale-load',
@@ -938,6 +987,21 @@ function syntheticIncompleteRaw() {
         deadlocks: 0,
         writes: { projectionWrites: 0, documentsWrites: 0 },
       },
+    },
+  }
+}
+
+function syntheticSmokeRaw() {
+  const raw = syntheticRaw()
+  return {
+    ...raw,
+    // No pg_stat_statements samples, so only the smoke artifact could possibly
+    // be mistaken for a refresh measurement.
+    refresh: { calls: 0, meanMs: 0, stddevMs: 0, maxMs: 0 },
+    load: {
+      ...raw.load,
+      path: 'self-test-smoke-load',
+      smoke: true,
     },
   }
 }
@@ -967,6 +1031,12 @@ function main(argv) {
 
   if (flags['self-test-incomplete']) {
     const snapshot = buildSnapshot(syntheticIncompleteRaw(), selfTestTarget())
+    process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`)
+    return 0
+  }
+
+  if (flags['self-test-smoke']) {
+    const snapshot = buildSnapshot(syntheticSmokeRaw(), selfTestTarget())
     process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`)
     return 0
   }

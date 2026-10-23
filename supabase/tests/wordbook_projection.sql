@@ -449,7 +449,9 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- RLS: authenticated users see their own rows only; anon sees nothing.
+-- RPC-only read contract: authenticated users have no direct table access.
+-- The page RPC returns their own rows and never another tenant's; anon sees
+-- nothing.
 -- ---------------------------------------------------------------------------
 
 set role authenticated;
@@ -458,17 +460,31 @@ select set_config('request.jwt.claim.sub', :'user_id', false);
 do $$
 declare
   v_user_id uuid := current_setting('test.user_id')::uuid;
+  v_lemmas text[];
 begin
-  if exists (
-    select 1 from public.wordbook_entries where user_id <> v_user_id
-  ) then
-    raise exception 'authenticated caller can see another tenant''s projection rows';
+  -- Direct SELECT is revoked: the page RPC is the only read path.
+  begin
+    perform 1 from public.wordbook_entries limit 1;
+    raise exception 'authenticated caller can still select projection rows directly';
+  exception when insufficient_privilege then
+    null;
+  end;
+
+  -- The page RPC returns this user's rows, including the backfilled entries.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page(
+    'fr', null, clock_timestamp(), null, 100
+  );
+  if not ('chat' = any(v_lemmas)) or not ('chien' = any(v_lemmas)) then
+    raise exception 'the page RPC did not return the caller''s backfilled rows: %', v_lemmas;
   end if;
-  if not exists (
-    select 1 from public.wordbook_entries
-    where user_id = v_user_id and language_code = 'fr' and lemma = 'chat'
+  if exists (
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, clock_timestamp(), null, 100
+    )
+    where user_id <> v_user_id
   ) then
-    raise exception 'authenticated caller cannot see their own projection rows';
+    raise exception 'the page RPC returned another tenant''s projection rows';
   end if;
 
   begin

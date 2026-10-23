@@ -451,6 +451,88 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- 3b. Language validation: strict shape plus a per-snapshot cap
+-- ---------------------------------------------------------------------------
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '7 hours';
+  v_ok_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '8 hours';
+begin
+  -- A malformed language cannot create pass state or consume a daily unit.
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('not_a_language', null, v_snapshot, null, 2);
+    raise exception 'a malformed language was accepted';
+  exception
+    when sqlstate 'PT400' then null;
+  end;
+
+  -- A valid but unenrolled language is allowed for onboarding (the server has
+  -- no user_languages row yet); the cap, not enrollment, bounds the namespace.
+  perform 1
+  from public.get_wordbook_projection_page('zz', null, v_ok_snapshot, null, 2);
+end $$;
+
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+-- Seed exactly the per-snapshot cap (50) of valid language rows for one
+-- charged snapshot.
+insert into public.projection_sync_passes (user_id, snapshot, language_code, started_at)
+select
+  :'user_id'::uuid,
+  current_setting('test.snapshot')::timestamptz + interval '9 hours',
+  chr(97 + (g % 26)) || chr(97 + ((g / 26) % 26)),
+  clock_timestamp()
+from generate_series(0, 49) as g;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '9 hours';
+begin
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('zz', null, v_snapshot, null, 2);
+    raise exception 'a 51st language under one snapshot was accepted';
+  exception
+    when sqlstate 'PT400' then null;
+  end;
+end $$;
+
+reset role;
+
+do $$
+declare
+  v_count int;
+begin
+  select count(*) into v_count
+  from public.projection_sync_passes
+  where user_id = current_setting('test.user_id')::uuid
+    and snapshot = current_setting('test.snapshot')::timestamptz + interval '9 hours';
+  if v_count <> 50 then
+    raise exception 'the language cap left % pass rows, expected 50', v_count;
+  end if;
+
+  if exists (
+    select 1 from public.projection_sync_passes
+    where user_id = current_setting('test.user_id')::uuid
+      and language_code = 'zz'
+      and snapshot = current_setting('test.snapshot')::timestamptz + interval '9 hours'
+  ) then
+    raise exception 'the rejected 51st language still created pass state';
+  end if;
+end $$;
+
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+-- ---------------------------------------------------------------------------
 -- 4. Daily budget: two snapshots, resumes/languages are free, a third is 429
 -- ---------------------------------------------------------------------------
 
@@ -633,6 +715,55 @@ begin
   end if;
 end $$;
 
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+-- ---------------------------------------------------------------------------
+-- 5b. The daily retry window is a UTC interval, independent of session TZ
+-- ---------------------------------------------------------------------------
+
+insert into public.projection_sync_passes (user_id, snapshot, language_code, started_at)
+values
+  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '10 hours', 'fr', clock_timestamp()),
+  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '11 hours', 'fr', clock_timestamp());
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+set timezone = 'Asia/Seoul';
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '12 hours';
+  v_detail text;
+  v_retry int;
+  v_expected numeric;
+begin
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+    raise exception 'a third daily snapshot was allowed';
+  exception
+    when sqlstate 'PT429' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+  end;
+
+  if v_detail is null or v_detail not like 'bucket=sync;retry_after_seconds=%' then
+    raise exception 'daily denial detail is %', v_detail;
+  end if;
+  v_retry := split_part(v_detail, 'retry_after_seconds=', 2)::int;
+
+  -- The denial must report the interval to the next UTC midnight, not a local
+  -- midnight or a collapsed 1 second.
+  v_expected := extract(epoch from (
+    date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
+    + interval '1 day' - clock_timestamp()
+  ));
+  if v_retry <= 0 or abs(v_retry - v_expected) > 5 then
+    raise exception 'retry_after_seconds is %, expected about % in Asia/Seoul', v_retry, v_expected;
+  end if;
+end $$;
+
+reset timezone;
+reset role;
 select pg_temp.reset_projection(:'user_id'::uuid);
 
 -- ---------------------------------------------------------------------------
