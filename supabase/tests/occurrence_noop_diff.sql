@@ -30,6 +30,7 @@ returning id as other_document_id \gset
 
 select set_config('test.document_id', :'document_id', false);
 select set_config('test.other_document_id', :'other_document_id', false);
+select set_config('test.user_id', :'user_id', false);
 
 -- Act as the document owner from here on.
 set role authenticated;
@@ -290,6 +291,122 @@ begin
     raise exception 'cross-tenant call wrote occurrences_hash';
   end if;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Same-document pushes are serialized
+--
+-- Two independent psql sessions (dblink) push different payloads for the same
+-- document. Session A holds an open transaction after its RPC, so session B must
+-- block on the document row lock before it reads the hash or writes any
+-- occurrence row. A commits; B then re-reads the committed hash and replaces the
+-- row set instead of leaving A's rows behind. Without the lock B would write
+-- first and only block on the final documents update, leaving a superset of
+-- rows whose hash matches B alone.
+--
+-- The poll is synchronization, not a sleep-based proof: the test asserts B is
+-- in a lock wait while A is uncommitted, then asserts the exact final row set.
+-- ---------------------------------------------------------------------------
+
+select case when exists (select 1 from pg_extension where extname = 'dblink') then 1 else 0 end as had_dblink \gset
+create extension if not exists dblink with schema extensions;
+
+do $$
+declare
+  v_document_id uuid := current_setting('test.document_id')::uuid;
+  v_user_id uuid := current_setting('test.user_id')::uuid;
+  v_payload_a jsonb := '[
+    {"language_code":"fr","lemma":"chat","surface":"chat","char_start":0,"char_end":4,"sentence":"Le chat dort.","occurrences_count":1}
+  ]'::jsonb;
+  v_payload_b jsonb := '[
+    {"language_code":"fr","lemma":"chien","surface":"chien","char_start":0,"char_end":5,"sentence":"Le chien dort.","occurrences_count":1}
+  ]'::jsonb;
+  v_wait int := 0;
+begin
+  perform dblink_connect(
+    'task1_a',
+    'host=supabase_db_translator port=5432 dbname=postgres user=postgres password=postgres application_name=task1_a'
+  );
+  perform dblink_connect(
+    'task1_b',
+    'host=supabase_db_translator port=5432 dbname=postgres user=postgres password=postgres application_name=task1_b'
+  );
+
+  perform dblink_exec('task1_a', 'set role authenticated');
+  perform dblink_exec('task1_b', 'set role authenticated');
+  perform * from dblink(
+    'task1_a',
+    format('select set_config(%L, %L, false)', 'request.jwt.claim.sub', v_user_id::text)
+  ) as t(v text);
+  perform * from dblink(
+    'task1_b',
+    format('select set_config(%L, %L, false)', 'request.jwt.claim.sub', v_user_id::text)
+  ) as t(v text);
+
+  -- A's transaction stays open, holding the document row lock.
+  perform dblink_exec('task1_a', 'begin');
+  perform * from dblink(
+    'task1_a',
+    format('select public.replace_word_occurrences(%L::uuid, %L::jsonb)', v_document_id, v_payload_a)
+  ) as t(v text);
+
+  perform dblink_send_query(
+    'task1_b',
+    format('select public.replace_word_occurrences(%L::uuid, %L::jsonb)', v_document_id, v_payload_b)
+  );
+
+  while v_wait < 200 loop
+    if exists (
+      select 1
+      from pg_stat_activity
+      where application_name = 'task1_b'
+        and state = 'active'
+        and wait_event_type = 'Lock'
+    ) then
+      exit;
+    end if;
+    perform pg_sleep(0.05);
+    v_wait := v_wait + 1;
+  end loop;
+
+  if v_wait >= 200 then
+    raise exception 'second session did not block on the locked document';
+  end if;
+
+  perform dblink_exec('task1_a', 'commit');
+
+  v_wait := 0;
+  while dblink_is_busy('task1_b') = 1 loop
+    if v_wait >= 200 then
+      raise exception 'second session did not finish after the lock was released';
+    end if;
+    perform pg_sleep(0.05);
+    v_wait := v_wait + 1;
+  end loop;
+
+  -- Raises if the remote RPC failed.
+  perform * from dblink_get_result('task1_b') as t(v text);
+  perform * from dblink_get_result('task1_b') as t(v text);
+
+  perform dblink_disconnect('task1_a');
+  perform dblink_disconnect('task1_b');
+
+  if (select array_agg(lemma order by lemma) from public.word_occurrences
+      where document_id = v_document_id)
+     is distinct from array['chien'] then
+    raise exception 'serialized replacement left a mixed row set: %',
+      (select array_agg(lemma order by lemma) from public.word_occurrences
+       where document_id = v_document_id);
+  end if;
+  if (select occurrences_hash from public.documents where id = v_document_id)
+     is distinct from public.word_occurrence_hash(v_payload_b) then
+    raise exception 'serialized replacement stored the wrong hash';
+  end if;
+end $$;
+
+\if :had_dblink
+\else
+drop extension if exists dblink;
+\endif
 
 -- ---------------------------------------------------------------------------
 -- Cleanup

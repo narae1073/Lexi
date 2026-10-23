@@ -106,6 +106,15 @@ grant execute on function public.word_occurrence_hash(jsonb) to authenticated;
 -- Signature and security invoker stay the same, so existing clients keep
 -- working and RLS still applies. The ownership check doubles as the hash read:
 -- a document the caller cannot see is reported as not found, exactly as before.
+--
+-- The document row is locked before the hash is read. Without that lock, two
+-- concurrent pushes of different payloads can interleave: the loser's rows are
+-- inserted after the winner's delete snapshot, then the loser blocks on the
+-- winner's documents update. The result is a superset of rows with one payload's
+-- hash stored, and a later push of that payload short-circuits on the matching
+-- hash and never repairs the extra rows. Locking serializes same-document
+-- replacement; the waiting transaction re-reads the committed hash under READ
+-- COMMITTED and diffs against the actual committed row set.
 -- ---------------------------------------------------------------------------
 
 create or replace function public.replace_word_occurrences(
@@ -127,11 +136,14 @@ begin
     raise exception 'not authenticated';
   end if;
 
+  -- Lock before reading the hash or touching occurrences. The same row lock
+  -- also covers the documents hash update at the end of this function.
   select d.occurrences_hash
   into v_existing_hash
   from public.documents d
   where d.id = p_document_id
-    and d.user_id = v_user_id;
+    and d.user_id = v_user_id
+  for update;
 
   if not found then
     raise exception 'document not found' using errcode = 'P0002';
