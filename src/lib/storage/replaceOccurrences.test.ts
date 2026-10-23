@@ -82,13 +82,14 @@ describe('문서의 등장 기록을 통째로 교체한다', () => {
   })
 
   /**
-   * 저장 계층 자체는 no-op 이 아니다.
+   * The storage layer is not a no-op by itself.
    *
-   * 같은 내용으로 다시 부르면 행을 지웠다 넣고 revision·pending·dirty 를 올린다.
-   * '바뀌지 않았으면 쓰지 않는다' 는 판단은 호출자(recordDocument) 몫이므로,
-   * 여기서 대신하지 않는다는 것을 못박아 둔다.
+   * Replacing with identical content still deletes and re-inserts the rows and
+   * bumps the revision, pending count and dirty key. Deciding "nothing changed,
+   * so do not write" belongs to the caller (`recordDocument`), so this layer
+   * must not make that decision on its own.
    */
-  it('같은 내용으로 다시 써도 변경으로 센다 — no-op 판단은 호출자 몫이다', async () => {
+  it('counts an identical replace as a change — no-op detection belongs to the caller', async () => {
     await replaceOccurrences('doc-1', [record('chat')])
     const before = await readLocalRevision()
     await replaceOccurrences('doc-1', [record('chat')])

@@ -1,19 +1,21 @@
 import type { WordOccurrence } from '../../app/stores/occurrences'
 
 /**
- * 두 등장 기록 목록이 **내용상** 같은지.
+ * Whether two occurrence lists carry the same **content**.
  *
- * 문서를 다시 열 때마다 기록을 그대로 다시 쓰면, 사용자에게 보일 변화가 없는데도
- * IndexedDB 행이 모두 지워졌다 새로 들어가고 동기화는 그 문서를 '바뀐 것' 으로
- * 보낸다. 문서가 많을수록 이 헛일이 커진다.
+ * Rewriting rows every time a document is reopened makes IndexedDB delete and
+ * re-insert everything even though nothing the user can see changed, and sync
+ * then sends the document as if it were edited. The larger the library, the
+ * more of that wasted work adds up.
  *
- * 그래서 저장 여부는 **의미 있는 내용**으로만 정한다:
- * - 문서·언어·lemma·표기·횟수·문자 위치·예문은 내용이다.
- * - `recordedAt` 은 마지막 계산 시각, `documentTitle` 은 표시용 사본이라
- *   제목만 바뀐 것을 등장 기록의 변경으로 보지 않는다.
+ * So the decision to write is based only on meaningful content:
+ * - document, language, lemma, surfaces, count, character range and sentence
+ *   are content;
+ * - `recordedAt` is just the last computation time and `documentTitle` is a
+ *   display copy, so a renamed document is not an occurrence change.
  *
- * 두 목록의 순서는 저장 순서에 따라 달라질 수 있으므로
- * `(documentId, languageCode, lemma)` 로 정렬한 뒤 비교한다.
+ * Storage order can differ between writes, so both lists are sorted by
+ * `(documentId, languageCode, lemma)` before comparing.
  */
 export function sameOccurrenceRecords(
   existing: readonly WordOccurrence[],
@@ -51,7 +53,7 @@ function sameRecord(a: WordOccurrence, b: WordOccurrence): boolean {
   )
 }
 
-/** 표기 목록은 집합이다 — 들어온 순서는 뜻이 없다 */
+/** Surfaces are a set — the order they were collected in carries no meaning. */
 function sameSurfaces(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false
   const left = [...a].sort()

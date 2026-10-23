@@ -84,24 +84,26 @@ type OccurrencesState = {
 const MAX_WORD_LENGTH = 200
 const MAX_SENTENCE_LENGTH = 5_000
 
-/** documentMeta 행 — 이 기기가 어느 규칙으로 이 문서를 계산했는지 */
+/** One `documentMeta` row — which rules this device used for the document. */
 type DocumentMetaRow = {
   documentId: string
   lemmaVersion: number
   segmenter?: string
-  /** 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다 */
+  /** When the occurrence rows were last written — sync uses it to pick this document */
   occurrencesUpdatedAt?: string
 }
 
 /**
- * 계산 결과가 그대로일 때 남기는 기억.
+ * Remembers a computation whose output did not change.
  *
- * 규칙 버전·분절기는 갱신하되 `occurrencesUpdatedAt` 은 **건드리지 않는다.** 그 시각은
- * '이 기기에서 등장 기록이 바뀌었다' 는 뜻이라, 다시 쓰지 않은 계산에 새 시각을 찍으면
- * 동기화가 같은 내용을 또 보낸다. 이미 있는 시각은 그대로 둔다.
+ * It refreshes `lemmaVersion`/`segmenter` but **never touches
+ * `occurrencesUpdatedAt`**. That timestamp means "this device changed the
+ * occurrence rows"; stamping it on a computation that wrote nothing would make
+ * sync send the same content again. An existing timestamp is kept as is.
  *
- * 규칙 버전을 남기는 이유: 출력이 같았다고 기억을 건너뛰면 옛 버전으로 계산된 문서가
- * 영원히 '낡은 것' 으로 남아 앱을 열 때마다 다시 계산된다.
+ * The rule version must still be recorded: if identical output meant skipping
+ * this bookkeeping, a document computed under an old rule would stay "stale"
+ * forever and be recomputed on every app start.
  */
 async function rememberUnchangedComputation(
   documentId: string,
@@ -285,78 +287,78 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
     const { segments, sentences, lemmaByStart, segmenter } = await segmentForRecord(doc)
     const words = segments.filter((s) => s.type === 'word')
-    if (words.length === 0) {
-      // 단어가 없는 문서도 '확인했다' 고 기억한다 — 안 하면 목록을 열 때마다
-      // 영영 낫지 않은 문서를 다시 훑는다. 본문은 늘지 않으므로 다시 볼 이유가 없다.
-      await idbPut(STORES.documentMeta, {
-        documentId: doc.id,
-        lemmaVersion: LEMMA_VERSION,
-        segmenter,
-        // 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다
-        occurrencesUpdatedAt: new Date().toISOString(),
-      }).catch(() => {})
-      set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
-      return
-    }
-
-    // 문서 안에서 실제로 쓰인 표기만 보고 lemma 를 정한다 (US/us 분리 등)
-    const lemmaOf = resolveLemmasFromWords(
-      words.map((w) => ({
-        text: w.text,
-        // 문장의 첫 단어여도 문서 중간에 다시 나오면 구분 단서가 된다
-        sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
-      })),
-      doc.languageCode,
-    )
-
-    /** recordedAt 은 아래에서 한꺼번에 붙인다 */
-    type Draft = Omit<WordOccurrence, 'recordedAt'>
-    const byLemma = new Map<string, Draft>()
-    for (const word of words) {
-      /**
-       * 서버는 lemma·surface 를 200자까지만 받는다. 붙여넣은 URL·해시처럼
-       * 공백 없이 긴 글자는 토크나이저가 한 단어로 보므로 여기서 먼저 건너뛴다.
-       * 문서 전체를 버리지 않는다 — 나머지 단어는 그대로 기록한다.
-       */
-      if (word.text.length > MAX_WORD_LENGTH) continue
-
-      // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
-      const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
-      // 표기뿐 아니라 해석된 lemma 도 서버 상한을 지켜야 한다
-      if (lemma.length > MAX_WORD_LENGTH) continue
-      const existing = byLemma.get(lemma)
-      if (existing) {
-        existing.count += 1
-        if (!existing.surfaces.includes(word.text)) existing.surfaces.push(word.text)
-        continue
-      }
-      byLemma.set(lemma, {
-        documentId: doc.id,
-        languageCode: doc.languageCode,
-        lemma,
-        surfaces: [word.text],
-        count: 1,
-        charStart: word.start,
-        charEnd: word.end,
-        // 서버는 문장을 5,000자까지만 받는다 — 긴 문장도 예문의 앞부분은 남긴다
-        sentence: (sentences[word.sentenceIndex]?.text ?? '')
-          .trim()
-          .slice(0, MAX_SENTENCE_LENGTH),
-        documentTitle: doc.title,
-      })
-    }
-
-    const recordedAt = Date.now()
-    const records = [...byLemma.values()]
-      .map((record) => ({ ...record, recordedAt }))
-      .sort(sortByPosition)
 
     /**
-     * 지난 계산이 그대로면 쓰지 않는다.
+     * Records for one computation. A wordless document yields an empty list, and
+     * the comparison below decides whether anything needs writing. That way an
+     * unchanged wordless document writes nothing: no row rewrite, no new
+     * `occurrencesUpdatedAt`, and therefore no sync push. A document that has
+     * genuinely become wordless still has old rows, so the comparison fails and
+     * the normal path clears them — which tells the server once.
      *
-     * 행을 다시 넣는 일은 사용자에게 보이는 변화가 없는데도 저장소를 지웠다 쓰고,
-     * 동기화는 그 문서를 '바뀐 것' 으로 서버까지 보낸다. 문서가 많을수록 이 헛일이
-     * 커진다. 제목만 바뀐 경우도 등장 기록의 내용은 같다 (occurrenceNoop.ts).
+     * `recordedAt` is attached once, after every row has been collected.
+     */
+    const records: WordOccurrence[] = []
+    if (words.length > 0) {
+      // 문서 안에서 실제로 쓰인 표기만 보고 lemma 를 정한다 (US/us 분리 등)
+      const lemmaOf = resolveLemmasFromWords(
+        words.map((w) => ({
+          text: w.text,
+          // 문장의 첫 단어여도 문서 중간에 다시 나오면 구분 단서가 된다
+          sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
+        })),
+        doc.languageCode,
+      )
+
+      /** recordedAt 은 아래에서 한꺼번에 붙인다 */
+      type Draft = Omit<WordOccurrence, 'recordedAt'>
+      const byLemma = new Map<string, Draft>()
+      for (const word of words) {
+        /**
+         * 서버는 lemma·surface 를 200자까지만 받는다. 붙여넣은 URL·해시처럼
+         * 공백 없이 긴 글자는 토크나이저가 한 단어로 보므로 여기서 먼저 건너뛴다.
+         * 문서 전체를 버리지 않는다 — 나머지 단어는 그대로 기록한다.
+         */
+        if (word.text.length > MAX_WORD_LENGTH) continue
+
+        // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
+        const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
+        // 표기뿐 아니라 해석된 lemma 도 서버 상한을 지켜야 한다
+        if (lemma.length > MAX_WORD_LENGTH) continue
+        const existing = byLemma.get(lemma)
+        if (existing) {
+          existing.count += 1
+          if (!existing.surfaces.includes(word.text)) existing.surfaces.push(word.text)
+          continue
+        }
+        byLemma.set(lemma, {
+          documentId: doc.id,
+          languageCode: doc.languageCode,
+          lemma,
+          surfaces: [word.text],
+          count: 1,
+          charStart: word.start,
+          charEnd: word.end,
+          // 서버는 문장을 5,000자까지만 받는다 — 긴 문장도 예문의 앞부분은 남긴다
+          sentence: (sentences[word.sentenceIndex]?.text ?? '')
+            .trim()
+            .slice(0, MAX_SENTENCE_LENGTH),
+          documentTitle: doc.title,
+        })
+      }
+
+      const recordedAt = Date.now()
+      for (const record of byLemma.values()) records.push({ ...record, recordedAt })
+      records.sort(sortByPosition)
+    }
+
+    /**
+     * Skip the write when the last computation is still the truth.
+     *
+     * Replacing rows looks like invisible work to the user, but it clears and
+     * rewrites storage and makes sync treat the document as changed all the way
+     * to the server. The cost grows with the number of documents. A title-only
+     * rename is not an occurrence-content change either (occurrenceNoop.ts).
      */
     const existing = await idbGetAllByIndex<WordOccurrence>(
       STORES.wordOccurrences,

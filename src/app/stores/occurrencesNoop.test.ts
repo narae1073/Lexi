@@ -3,14 +3,26 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { useOccurrencesStore, type WordOccurrence } from './occurrences'
 import { sameOccurrenceRecords } from '../../lib/sync/occurrenceNoop'
+import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import {
   STORES,
+  idbGet,
   idbGetAllByIndex,
   idbPut,
-  readLocalRevision,
   readLocalSyncMeta,
 } from '../../lib/storage/localDb'
 import type { Document } from '../../types'
+
+/** Per-document bookkeeping row (`documentMeta`), not the reserved sync-meta record. */
+type DocumentMetaRow = {
+  documentId: string
+  lemmaVersion: number
+  segmenter?: string
+  occurrencesUpdatedAt?: string
+}
+
+/** A fixed stamp written before a reload — it must survive an unchanged recomputation. */
+const STAMP = '2026-01-02T00:00:00.000Z'
 
 const doc = (over: Partial<Document> = {}): Document => ({
   id: 'doc-1',
@@ -22,16 +34,43 @@ const doc = (over: Partial<Document> = {}): Document => ({
   ...over,
 })
 
+const record = (documentId: string, over: Partial<WordOccurrence> = {}): WordOccurrence => ({
+  documentId,
+  languageCode: 'fr',
+  lemma: 'chat',
+  surfaces: ['chat'],
+  count: 1,
+  recordedAt: 1,
+  charStart: 0,
+  charEnd: 4,
+  sentence: 'Le chat dort.',
+  documentTitle: 'Doc',
+  ...over,
+})
+
 const occurrencesOf = (documentId: string) =>
   idbGetAllByIndex<WordOccurrence>(STORES.wordOccurrences, 'documentId', documentId)
 
-/** 기록 시각은 비교에서 뺀다 — 다시 쓰면 값이 달라지는지는 따로 본다 */
+const metaOf = (documentId: string) =>
+  idbGet<DocumentMetaRow>(STORES.documentMeta, documentId)
+
+/** Record a cell so a rewrite is detectable — replacing rows drops these values. */
 const withoutRecordedAt = (rows: WordOccurrence[]) =>
   rows.map((row) => ({ ...row, recordedAt: 0 }))
 
-/** 다시 쓰면 사라지는 표시 — `replaceOccurrences` 는 행을 모두 지우고 새로 넣는다 */
+/** A rewrite drops this marker — `replaceOccurrences` deletes every row first. */
 const markRows = async (rows: WordOccurrence[]) => {
   for (const row of rows) await idbPut(STORES.wordOccurrences, { ...row, recordedAt: 1 })
+}
+
+/** Everything sync would use to decide this device has unpushed work. */
+const syncBookkeeping = async () => {
+  const meta = await readLocalSyncMeta()
+  return {
+    revision: meta?.revision ?? 0,
+    pendingByStore: meta?.pendingByStore ?? {},
+    dirty: meta?.dirty ?? {},
+  }
 }
 
 beforeEach(() => {
@@ -39,7 +78,7 @@ beforeEach(() => {
 })
 
 describe('occurrence recomputation is no-op-free', () => {
-  it('does not replace rows when the recomputed document is unchanged', async () => {
+  it('leaves rows and the per-document stamp untouched when the document is unchanged', async () => {
     const unchanged = doc()
     await useOccurrencesStore.getState().recordDocument(unchanged)
 
@@ -47,47 +86,107 @@ describe('occurrence recomputation is no-op-free', () => {
     expect(first.length).toBeGreaterThan(0)
     await markRows(first)
     const before = await occurrencesOf('doc-1')
-    const revisionBefore = await readLocalRevision()
-    const metaBefore = await readLocalSyncMeta()
 
-    // 새로고침: 기억은 비었지만 IndexedDB 에는 지난 계산이 그대로 있다
+    // An earlier computation left a stamp; a reload must not move it.
+    const stored = await metaOf('doc-1')
+    expect(stored?.lemmaVersion).toBe(LEMMA_VERSION)
+    await idbPut(STORES.documentMeta, { ...stored, occurrencesUpdatedAt: STAMP })
+    const metaBefore = await metaOf('doc-1')
+    const bookkeepingBefore = await syncBookkeeping()
+
+    // Reload: the in-memory memory is empty, IndexedDB still has the last computation.
     useOccurrencesStore.setState({ recorded: {} })
     await useOccurrencesStore.getState().recordDocument(unchanged)
 
     const after = await occurrencesOf('doc-1')
     expect(withoutRecordedAt(after)).toEqual(withoutRecordedAt(before))
-    // no-op 이면 기록 시각도 새로 찍지 않는다
-    expect(after.map((row) => row.recordedAt)).toEqual(before.map(() => 1))
-    // 행을 다시 쓰지 않았으므로 동기화가 볼 변경도 없다
-    expect(await readLocalRevision()).toBe(revisionBefore)
-    const metaAfter = await readLocalSyncMeta()
-    expect(metaAfter?.pendingByStore).toEqual(metaBefore?.pendingByStore)
-    expect(metaAfter?.dirty).toEqual(metaBefore?.dirty)
+    expect(after.map((row) => row.recordedAt)).toEqual(before.map((row) => row.recordedAt))
+    expect(await metaOf('doc-1')).toEqual(metaBefore)
+    expect(await syncBookkeeping()).toEqual(bookkeepingBefore)
   })
 
-  it('does not rewrite rows when only the document title changed', async () => {
-    const original = doc({ id: 'doc-2' })
-    await useOccurrencesStore.getState().recordDocument(original)
+  it('keeps the previous occurrencesUpdatedAt when the rule version is old but the output is identical', async () => {
+    const unchanged = doc({ id: 'doc-2' })
+    await useOccurrencesStore.getState().recordDocument(unchanged)
 
     const first = await occurrencesOf('doc-2')
-    expect(first.length).toBeGreaterThan(0)
     await markRows(first)
     const before = await occurrencesOf('doc-2')
-    const revisionBefore = await readLocalRevision()
+
+    // Computed under an older rule; the stamp records a previous real write.
+    await idbPut(STORES.documentMeta, {
+      documentId: 'doc-2',
+      lemmaVersion: LEMMA_VERSION - 1,
+      occurrencesUpdatedAt: STAMP,
+    })
+    const bookkeepingBefore = await syncBookkeeping()
 
     useOccurrencesStore.setState({ recorded: {} })
-    await useOccurrencesStore.getState().recordDocument({ ...original, title: 'Renamed' })
+    await useOccurrencesStore.getState().recordDocument(unchanged)
 
     const after = await occurrencesOf('doc-2')
     expect(withoutRecordedAt(after)).toEqual(withoutRecordedAt(before))
-    expect(after.map((row) => row.recordedAt)).toEqual(before.map(() => 1))
-    expect(await readLocalRevision()).toBe(revisionBefore)
+    expect(after.map((row) => row.recordedAt)).toEqual(before.map((row) => row.recordedAt))
+
+    // The rule version is refreshed, but the old stamp stays: no rewrite, no push.
+    const meta = await metaOf('doc-2')
+    expect(meta?.lemmaVersion).toBe(LEMMA_VERSION)
+    expect(meta?.occurrencesUpdatedAt).toBe(STAMP)
+    expect(await syncBookkeeping()).toEqual(bookkeepingBefore)
+  })
+
+  it('writes nothing for an unchanged wordless document', async () => {
+    const wordless = doc({ id: 'doc-3', rawText: '123 456' })
+    await useOccurrencesStore.getState().recordDocument(wordless)
+
+    expect(await occurrencesOf('doc-3')).toEqual([])
+    const metaAfterFirst = await metaOf('doc-3')
+    // Nothing was computed, so there is nothing to push.
+    expect(metaAfterFirst?.occurrencesUpdatedAt).toBeUndefined()
+    const bookkeepingBefore = await syncBookkeeping()
+
+    useOccurrencesStore.setState({ recorded: {} })
+    await useOccurrencesStore.getState().recordDocument(wordless)
+
+    expect(await occurrencesOf('doc-3')).toEqual([])
+    expect(await metaOf('doc-3')).toEqual(metaAfterFirst)
+    expect(await syncBookkeeping()).toEqual(bookkeepingBefore)
+  })
+
+  it('clears old rows once when a document becomes wordless', async () => {
+    await idbPut(STORES.wordOccurrences, record('doc-4'))
+    await idbPut(STORES.documentMeta, {
+      documentId: 'doc-4',
+      lemmaVersion: LEMMA_VERSION,
+      segmenter: 'intl',
+      occurrencesUpdatedAt: STAMP,
+    })
+    const bookkeepingBefore = await syncBookkeeping()
+
+    const wordless = doc({ id: 'doc-4', rawText: '123 456' })
+    await useOccurrencesStore.getState().recordDocument(wordless)
+
+    // The genuine transition goes through the normal write path so the server
+    // can be told once.
+    expect(await occurrencesOf('doc-4')).toEqual([])
+    const afterClear = await syncBookkeeping()
+    expect(afterClear.revision).toBeGreaterThan(bookkeepingBefore.revision)
+    expect(afterClear.dirty.wordOccurrences?.['doc-4']).toBe(afterClear.revision)
+    expect(afterClear.pendingByStore.wordOccurrences ?? 0).toBeGreaterThanOrEqual(1)
+    const stampAfterClear = (await metaOf('doc-4'))?.occurrencesUpdatedAt
+    expect(stampAfterClear).toBeDefined()
+    expect(stampAfterClear).not.toBe(STAMP)
+
+    // The next open finds empty rows and must not clear (or push) again.
+    useOccurrencesStore.setState({ recorded: {} })
+    await useOccurrencesStore.getState().recordDocument(wordless)
+    expect(await syncBookkeeping()).toEqual(afterClear)
   })
 
   it('still replaces rows when the document content actually changed', async () => {
-    const original = doc({ id: 'doc-3' })
+    const original = doc({ id: 'doc-5' })
     await useOccurrencesStore.getState().recordDocument(original)
-    const before = await occurrencesOf('doc-3')
+    const before = await occurrencesOf('doc-5')
 
     useOccurrencesStore.setState({ recorded: {} })
     await useOccurrencesStore.getState().recordDocument({
@@ -95,14 +194,32 @@ describe('occurrence recomputation is no-op-free', () => {
       rawText: 'Le chien dort.',
     })
 
-    const after = await occurrencesOf('doc-3')
+    const after = await occurrencesOf('doc-5')
     expect(after.map((row) => row.lemma).sort()).not.toEqual(before.map((row) => row.lemma).sort())
     expect(after.map((row) => row.lemma)).toContain('chien')
+  })
+
+  it('does not rewrite rows when only the document title changed', async () => {
+    const original = doc({ id: 'doc-6' })
+    await useOccurrencesStore.getState().recordDocument(original)
+
+    const first = await occurrencesOf('doc-6')
+    await markRows(first)
+    const before = await occurrencesOf('doc-6')
+    const bookkeepingBefore = await syncBookkeeping()
+
+    useOccurrencesStore.setState({ recorded: {} })
+    await useOccurrencesStore.getState().recordDocument({ ...original, title: 'Renamed' })
+
+    const after = await occurrencesOf('doc-6')
+    expect(withoutRecordedAt(after)).toEqual(withoutRecordedAt(before))
+    expect(after.map((row) => row.recordedAt)).toEqual(before.map((row) => row.recordedAt))
+    expect(await syncBookkeeping()).toEqual(bookkeepingBefore)
   })
 })
 
 describe('sameOccurrenceRecords', () => {
-  const record = (over: Partial<WordOccurrence> = {}): WordOccurrence => ({
+  const occurrence = (over: Partial<WordOccurrence> = {}): WordOccurrence => ({
     documentId: 'doc-1',
     languageCode: 'fr',
     lemma: 'chat',
@@ -117,42 +234,45 @@ describe('sameOccurrenceRecords', () => {
   })
 
   it('treats rows in a different order as the same content', () => {
-    const a = [record({ lemma: 'dort', charStart: 8, charEnd: 12 }), record()]
-    const b = [record(), record({ lemma: 'dort', charStart: 8, charEnd: 12 })]
+    const a = [occurrence({ lemma: 'dort', charStart: 8, charEnd: 12 }), occurrence()]
+    const b = [occurrence(), occurrence({ lemma: 'dort', charStart: 8, charEnd: 12 })]
     expect(sameOccurrenceRecords(a, b)).toBe(true)
   })
 
   it('ignores recordedAt and documentTitle', () => {
     expect(
       sameOccurrenceRecords(
-        [record({ recordedAt: 1, documentTitle: 'Old' })],
-        [record({ recordedAt: 99, documentTitle: 'New' })],
+        [occurrence({ recordedAt: 1, documentTitle: 'Old' })],
+        [occurrence({ recordedAt: 99, documentTitle: 'New' })],
       ),
     ).toBe(true)
   })
 
   it('ignores surface order', () => {
     expect(
-      sameOccurrenceRecords([record({ surfaces: ['chat', 'chats'] })], [record({ surfaces: ['chats', 'chat'] })]),
+      sameOccurrenceRecords(
+        [occurrence({ surfaces: ['chat', 'chats'] })],
+        [occurrence({ surfaces: ['chats', 'chat'] })],
+      ),
     ).toBe(true)
   })
 
   it('detects a changed count, range or sentence', () => {
-    expect(sameOccurrenceRecords([record()], [record({ count: 2 })])).toBe(false)
-    expect(sameOccurrenceRecords([record()], [record({ charEnd: 5 })])).toBe(false)
-    expect(sameOccurrenceRecords([record()], [record({ sentence: 'Other.' })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ count: 2 })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ charEnd: 5 })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ sentence: 'Other.' })])).toBe(false)
   })
 
   it('detects a different document, language, lemma or surface', () => {
-    expect(sameOccurrenceRecords([record()], [record({ documentId: 'doc-2' })])).toBe(false)
-    expect(sameOccurrenceRecords([record()], [record({ languageCode: 'de' })])).toBe(false)
-    expect(sameOccurrenceRecords([record()], [record({ lemma: 'chien' })])).toBe(false)
-    expect(sameOccurrenceRecords([record()], [record({ surfaces: ['chats'] })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ documentId: 'doc-2' })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ languageCode: 'de' })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ lemma: 'chien' })])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [occurrence({ surfaces: ['chats'] })])).toBe(false)
   })
 
   it('detects a missing or extra row', () => {
-    expect(sameOccurrenceRecords([record()], [])).toBe(false)
-    expect(sameOccurrenceRecords([], [record()])).toBe(false)
+    expect(sameOccurrenceRecords([occurrence()], [])).toBe(false)
+    expect(sameOccurrenceRecords([], [occurrence()])).toBe(false)
     expect(sameOccurrenceRecords([], [])).toBe(true)
   })
 })
