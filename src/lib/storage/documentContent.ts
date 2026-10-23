@@ -10,6 +10,11 @@
  * clearing one never bumps the local sync revision, never adds a pending count
  * or dirty key, and never emits a local-write signal (the store is not part of
  * `SYNCED_STORES`). Losing it only means the next open fetches again.
+ *
+ * **Task 9 obligation — last-write-wins:** this store replaces whatever is
+ * there. A fetch that started before a newer text arrived must not be applied
+ * after it, or the newer text is reverted; Task 9 compares `contentUpdatedAt`
+ * (or serializes fetches per document) before storing.
  */
 
 import { STORES, idbDelete, idbGet, idbPut } from './localDb'
@@ -37,7 +42,9 @@ export function readDocumentContent(documentId: string): Promise<DocumentContent
  * Stores a freshly fetched document text, replacing any older copy.
  *
  * Callers pass the version stamps that came with the text: they are what a
- * later open compares to decide whether the copy is still current.
+ * later open compares to decide whether the copy is still current. The write is
+ * last-write-wins — see the module note on Task 9's obligation to avoid
+ * applying an older fetch after a newer one.
  */
 export async function putDocumentContent(
   documentId: string,

@@ -206,6 +206,16 @@ function bumpedSyncMeta(
 }
 
 /**
+ * Dirty-key encoding for a word state: `languageCode\0lemma`.
+ *
+ * Exported so the projection merge guards exactly the key the local word-state
+ * writes journal — a second encoding would silently stop protecting edits.
+ */
+export function wordStateDirtyKey(languageCode: string, lemma: string): string {
+  return `${languageCode}\u0000${lemma}`
+}
+
+/**
  * Dirty-key encoding per synced store (plan "Clock-safe dirty keys"):
  * documents/folders/tombstones → row id; wordStates → `languageCode\0lemma`;
  * wordOccurrences → document id (the push unit is a document).
@@ -223,7 +233,7 @@ function dirtyKeyForValue(store: StoreName, value: unknown): string | undefined 
   }
   if (store === STORES.wordStates) {
     return typeof row.languageCode === 'string' && typeof row.lemma === 'string'
-      ? `${row.languageCode}\u0000${row.lemma}`
+      ? wordStateDirtyKey(row.languageCode, row.lemma)
       : undefined
   }
   return undefined
@@ -233,7 +243,7 @@ function dirtyKeyForValue(store: StoreName, value: unknown): string | undefined 
 function dirtyKeyForKey(store: StoreName, key: IDBValidKey): string | undefined {
   if (store === STORES.wordStates) {
     if (Array.isArray(key) && typeof key[0] === 'string' && typeof key[1] === 'string') {
-      return `${key[0]}\u0000${key[1]}`
+      return wordStateDirtyKey(key[0], key[1])
     }
     return typeof key === 'string' ? key : undefined
   }
@@ -398,7 +408,21 @@ function openDb(): Promise<IDBDatabase> {
   }
   if (dbPromise) return dbPromise
 
-  dbPromise = new Promise((resolve, reject) => {
+  // Lets the request callbacks clear the cache slot only when this attempt
+  // still owns it — a retry may already have installed a newer promise.
+  const pending: { promise: Promise<IDBDatabase> | null } = { promise: null }
+
+  const promise = new Promise<IDBDatabase>((resolve, reject) => {
+    /**
+     * Set when `blocked` already rejected this attempt. The request stays
+     * queued in the browser and finishes only once the blocking tab closes;
+     * that late connection belongs to nobody, so it is closed on success.
+     */
+    let abandoned = false
+    const forget = () => {
+      if (dbPromise === pending.promise) dbPromise = null
+    }
+
     const req = indexedDB.open(DB_NAME, DB_VERSION)
 
     req.onupgradeneeded = () => {
@@ -452,11 +476,49 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(STORES.documentContent, { keyPath: 'documentId' })
       }
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      if (abandoned) {
+        // The caller was already told the open failed. This connection only
+        // finished because the blocking tab closed; close it so it cannot
+        // block a later delete/upgrade.
+        db.close()
+        return
+      }
+      /**
+       * Another tab upgrading the schema must not wait on this connection —
+       * an R2 tab that ignores the event is exactly what blocks a v7 upgrade.
+       * Close and forget it so the next open reconnects at the new version.
+       */
+      db.onversionchange = () => {
+        db.close()
+        forget()
+      }
+      resolve(db)
+    }
+    req.onerror = () => {
+      forget()
+      reject(req.error ?? new Error('로컬 데이터베이스를 열지 못했습니다'))
+    }
+    /**
+     * Without this handler the open request stays pending for as long as the
+     * older tab lives and the app shows nothing. Reject with the same kind of
+     * user-actionable message `deleteLocalDatabase` uses for a blocked delete.
+     */
+    req.onblocked = () => {
+      abandoned = true
+      forget()
+      reject(
+        new Error(
+          '다른 탭이 이전 버전의 로컬 데이터를 쓰고 있어 새 버전으로 열지 못했습니다. 다른 탭을 닫고 새로고침해 주세요.',
+        ),
+      )
+    }
   })
 
-  return dbPromise
+  pending.promise = promise
+  dbPromise = promise
+  return promise
 }
 
 /**

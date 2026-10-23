@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DB_VERSION,
@@ -10,13 +10,21 @@ import {
   idbCount,
   idbGet,
   idbGetAllByIndex,
+  idbPut,
   onLocalWrite,
   openLocalDatabase,
   readLocalSyncMeta,
+  wordStateDirtyKey,
 } from './localDb'
 import type { StoreName } from './localDb'
 import { clearDocumentContent, putDocumentContent, readDocumentContent } from './documentContent'
-import { deleteWordbookEntry, putWordbookEntries, readWordbookEntries } from './wordbookEntries'
+import {
+  clearWordbookEntries,
+  deleteWordbookEntry,
+  mergeWordbookEntries,
+  putWordbookEntries,
+  readWordbookEntries,
+} from './wordbookEntries'
 import type { WordbookEntryInput } from './wordbookEntries'
 
 const DB_NAME = 'lexi'
@@ -117,6 +125,42 @@ describe('IndexedDB v7 upgrade', () => {
     const db = await openLocalDatabase()
     expect(db.version).toBe(7)
   })
+
+  it('rejects instead of hanging when an older tab keeps the database open', async () => {
+    // An R2 tab has no versionchange handler, so it stays connected and blocks
+    // the upgrade — exactly what a real user with the previous frontend open
+    // in another tab sees.
+    const held = await openRaw(V6_VERSION)
+
+    await expect(openLocalDatabase()).rejects.toThrow('다른 탭')
+
+    // The rejected attempt did not poison the cache: after the old tab closes,
+    // the next open retries and completes the upgrade.
+    held.close()
+    const db = await openLocalDatabase()
+    expect(db.version).toBe(DB_VERSION)
+    await expect(idbCount(STORES.documents)).resolves.toBe(0)
+  })
+
+  it('closes its connection when another tab needs to upgrade', async () => {
+    const db = await openLocalDatabase()
+    expect(db.onversionchange).toBeTypeOf('function')
+
+    // If the cached connection ignored versionchange this open would fire
+    // `blocked` and never finish.
+    const request = indexedDB.open(DB_NAME, DB_VERSION + 1)
+    const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onupgradeneeded = () => {}
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+      request.onblocked = () => reject(new Error('the v7 connection did not close'))
+    })
+
+    expect(upgraded.version).toBe(DB_VERSION + 1)
+    upgraded.close()
+    // Leave a clean v7 database for the next test.
+    await deleteLocalDatabase()
+  })
 })
 
 describe('local wordbook projection store', () => {
@@ -192,6 +236,154 @@ describe('local wordbook projection store', () => {
 
   it('rejects a row that cannot be keyed', async () => {
     await expect(putWordbookEntries([entry({ lemma: '' })])).rejects.toThrow('lemma')
+  })
+
+  it('applies mixed live and soft-deleted rows in one page', async () => {
+    await putWordbookEntries([
+      entry(),
+      entry({ lemma: 'walk', note: 'old' }),
+      entry({ lemma: 'jump' }),
+    ])
+
+    const result = await putWordbookEntries([
+      entry({ lemma: 'walk', note: 'new' }),
+      entry({ lemma: 'jump', deletedAt: '2026-10-23T00:00:00.000Z' }),
+      entry({ lemma: 'swim' }),
+    ])
+
+    expect(result).toBe(2)
+    expect((await readWordbookEntries('en')).map((row) => row.lemma).sort()).toEqual([
+      'run',
+      'swim',
+      'walk',
+    ])
+    expect((await readWordbookEntries('en')).find((row) => row.lemma === 'walk')).toMatchObject({
+      note: 'new',
+    })
+  })
+
+  it('clears one language and leaves the others', async () => {
+    await putWordbookEntries([
+      entry(),
+      entry({ lemma: 'walk' }),
+      entry({ languageCode: 'fr', lemma: 'run' }),
+      entry({ languageCode: 'de', lemma: 'laufen' }),
+    ])
+
+    await clearWordbookEntries('en')
+
+    await expect(readWordbookEntries('en')).resolves.toEqual([])
+    expect((await readWordbookEntries('fr')).map((row) => row.lemma)).toEqual(['run'])
+    expect((await readWordbookEntries('de')).map((row) => row.lemma)).toEqual(['laufen'])
+  })
+
+  it('aborts the whole page when a row cannot be cloned', async () => {
+    // A function is not structured-cloneable: the put throws synchronously
+    // after the first row was already written. Without an abort the first row
+    // would commit and the rest of the page would be silently lost.
+    const bad = entry({ lemma: 'walk' })
+    ;(bad.contexts[0] as unknown as { sentence: unknown }).sentence = () => 'nope'
+
+    await expect(putWordbookEntries([entry(), bad])).rejects.toThrow()
+    await expect(readWordbookEntries('en')).resolves.toEqual([])
+  })
+})
+
+/**
+ * Projection pulls (Task 8) must never revert a local word-state edit that has
+ * not been pushed yet. The dirty journal and the page are read/written in one
+ * transaction, so the check cannot be separated from the write.
+ */
+describe('wordbook projection merge with dirty local states', () => {
+  beforeEach(async () => {
+    await deleteLocalDatabase()
+  })
+
+  it('keeps a dirty local word state over the row in the page', async () => {
+    await putWordbookEntries([entry({ note: 'local', occurrenceCount: 1 })])
+    await idbPut(STORES.wordStates, { languageCode: 'en', lemma: 'run', status: 'known' })
+
+    const result = await mergeWordbookEntries([
+      entry({ note: 'server', occurrenceCount: 42 }),
+      entry({ lemma: 'walk' }),
+    ])
+
+    expect(result).toEqual({
+      written: 1,
+      deleted: 0,
+      skipped: [{ languageCode: 'en', lemma: 'run' }],
+    })
+    const rows = await readWordbookEntries('en')
+    expect(rows.find((row) => row.lemma === 'run')).toMatchObject({
+      note: 'local',
+      occurrenceCount: 1,
+    })
+    expect(rows.some((row) => row.lemma === 'walk')).toBe(true)
+  })
+
+  it('checks the dirty journal and writes the page in one transaction', async () => {
+    const db = await openLocalDatabase()
+    const transactionSpy = vi.spyOn(db, 'transaction')
+    try {
+      await mergeWordbookEntries([entry()])
+
+      // One transaction covering both stores is the guarantee: a local edit
+      // either commits before it (merge sees the dirty key) or after it (the
+      // edit wins). A separate readDirtyKeys() call would leave a window.
+      expect(transactionSpy).toHaveBeenCalledTimes(1)
+      expect(transactionSpy.mock.calls[0][0]).toEqual([
+        STORES.documentMeta,
+        STORES.wordbookEntries,
+      ])
+      expect(transactionSpy.mock.calls[0][1]).toBe('readwrite')
+    } finally {
+      // mockRestore also clears the recorded calls, so assert before it.
+      transactionSpy.mockRestore()
+    }
+  })
+
+  it('lets an overlapping local edit win over the page', async () => {
+    await putWordbookEntries([entry({ note: 'local' })])
+    // Both operations start from the same resolved connection; the local write
+    // is created first, so its transaction holds the documentMeta scope before
+    // the merge reads the journal.
+    await openLocalDatabase()
+    const localWrite = idbPut(STORES.wordStates, {
+      languageCode: 'en',
+      lemma: 'run',
+      status: 'known',
+    })
+    const merge = mergeWordbookEntries([entry({ note: 'server', occurrenceCount: 42 })])
+
+    const [result] = await Promise.all([merge, localWrite])
+
+    expect(result.skipped).toEqual([{ languageCode: 'en', lemma: 'run' }])
+    expect((await readWordbookEntries('en'))[0]).toMatchObject({ note: 'local' })
+    const meta = await readLocalSyncMeta()
+    expect(meta?.dirty.wordStates?.[wordStateDirtyKey('en', 'run')]).toBeDefined()
+  })
+
+  it('still removes a soft-deleted word that has a dirty state', async () => {
+    await putWordbookEntries([entry()])
+    await idbPut(STORES.wordStates, { languageCode: 'en', lemma: 'run', status: 'known' })
+
+    // The word no longer occurs in any document, so the projection row is gone
+    // regardless of the local edit. The word state itself stays untouched.
+    const result = await mergeWordbookEntries([
+      entry({ deletedAt: '2026-10-23T00:00:00.000Z' }),
+    ])
+
+    expect(result).toEqual({ written: 0, deleted: 1, skipped: [] })
+    await expect(readWordbookEntries('en')).resolves.toEqual([])
+    expect(await idbCount(STORES.wordStates)).toBe(1)
+  })
+
+  it('rejects the merge and stores nothing when a row cannot be cloned', async () => {
+    const bad = entry({ lemma: 'walk' })
+    ;(bad.contexts[0] as unknown as { sentence: unknown }).sentence = () => 'nope'
+
+    await expect(mergeWordbookEntries([entry(), bad])).rejects.toThrow()
+    await expect(readWordbookEntries('en')).resolves.toEqual([])
   })
 })
 
