@@ -6,7 +6,7 @@ No production migration, deployment, or production data change was performed.
 - Plan: `/home/achi/.opencode/plan/2026-10-23-r3-scale-data-usage.md`
 - Branch: `r3-scale-data-usage`
 - Pre-verification HEAD: `044a642` (`fix(sync): validate projection pass codes and harden R3 metrics gates`)
-- Release verification commit: `9cd065b` (this document and the R3 e2e gates)
+- R3 e2e gates commit: `9cd065b` (`test(r3): add projection and large-account release gates`)
 
 The only Supabase target used below was the local stack at
 `http://127.0.0.1:54321` (project `translator`). `.env.local` pointed the build
@@ -149,9 +149,8 @@ tests) passes.
 | `34-quiz` (1) | context translation timeout | same missing local translate provider |
 
 No assertion or threshold was weakened to hide these. They are not exercised by
-tasks 1–13 and were reproduced with `.env.local` removed for spec 36; the two
-quiz-loop failures found during the first full run (36/38) **were fixed** in
-this change (a fresh `[]` selector snapshot in `QuizView`).
+tasks 1–13. The two quiz-loop failures found during the first full run (36/38)
+**were fixed** in this change (a fresh `[]` selector snapshot in `QuizView`).
 
 ## Release checklist
 
