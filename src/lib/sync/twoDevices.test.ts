@@ -72,10 +72,24 @@ async function clearLocalWords() {
   }
 }
 
+/**
+ * These cases exercise word-state and occurrence pulls, which R3 does not run
+ * on a first sync (the wordbook projection hydrates a new device instead).
+ * Starting from an earlier snapshot keeps the incremental path under test.
+ */
+const BEFORE = { snapshot: '2026-09-01T00:00:00.000Z' }
+
 const sync = (
   server: Server,
   options: { since?: PullWatermarks; pushedAt?: string } = {},
-) => syncOnce({ userId: 'user-1', languages: ['fr'], db: server.client, ...options })
+) =>
+  syncOnce({
+    userId: 'user-1',
+    languages: ['fr'],
+    db: server.client,
+    since: BEFORE,
+    ...options,
+  })
 
 beforeEach(async () => {
   useWordStatesStore.setState({ byKey: {}, loaded: {} })

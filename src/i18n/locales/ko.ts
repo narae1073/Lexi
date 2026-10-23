@@ -51,6 +51,7 @@ export const ko: Dictionary = {
   list: {
     marked: '{percent}% 표시',
     markedLabel: '표시한 단어 비율',
+    wordbookPreparing: '단어장 준비 중… (언어 {total}개 중 {ready}개 준비됨)',
     language: '언어',
     allLanguages: '모든 언어',
     emptyForLanguage: '{language} 문서가 없습니다.',
@@ -103,6 +104,9 @@ export const ko: Dictionary = {
     titleLabel: '문서 제목',
     titleHint: '클릭해 제목을 바꿉니다',
     toWordbook: '이 문서의 단어',
+    loading: '본문을 받는 중…',
+    loadFailed: '문서 본문을 받지 못했습니다. 연결을 확인하고 다시 시도해 주세요.',
+    retry: '다시 시도',
   },
 
   status: {
@@ -151,6 +155,7 @@ export const ko: Dictionary = {
     pickLanguage: '퀴즈로 풀 언어를 고르세요.',
     countLabel: '개수',
     none: '아직 낼 단어가 없습니다 — 먼저 몇 단어를 헷갈림·모름으로 표시하세요.',
+    preparing: '단어장을 준비하는 중… 첫 동기화가 끝나면 퀴즈 단어가 나타납니다.',
     start: '시작',
     progress: '{done} / {total}',
     know: '앎',
@@ -268,6 +273,18 @@ export const ko: Dictionary = {
     starColorFilter: '별 색으로 즐겨찾기 좁히기',
     starFilterEmpty: '켠 색의 즐겨찾기가 없습니다. 색을 다시 눌러 끄세요.',
     noContext: '기록된 문맥이 없습니다.',
+    preparing: '단어장을 준비하는 중…',
+    preparingHint: '첫 동기화가 끝나면 단어가 나타납니다. 그동안에도 문서를 읽을 수 있습니다.',
+    preparingProgress: '언어 {total}개 중 {ready}개 준비됨',
+    paused: '단어장 내려받기를 잠시 멈췄습니다',
+    pausedHint: '64MB 한도에 걸려 내려받기를 멈췄습니다. 준비되면 이어서 받으세요.',
+    pausedContinue: '이어서 받기',
+    quotaPaused: '서버 한도로 단어장 내려받기를 잠시 멈췄습니다',
+    quotaPausedHint:
+      '서버가 계정마다 정한 단어장 내려받기 횟수를 넘었습니다. 약 {minutes}분 뒤 자동으로 이어집니다.',
+    statePaused: '단어장 내려받기 상태를 다시 맞춥니다',
+    statePausedHint:
+      '서버가 저장된 위치에서 이어받을 수 없습니다. 처음부터 자동으로 다시 받습니다.',
     group: {
       unmarked: '미표시',
       known: '아는 단어',
@@ -294,6 +311,8 @@ export const ko: Dictionary = {
     offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
     hide: '접기',
     baseForm: '기본형',
+    downloadPrompt:
+      '{language} 사전({size})을 내려받을까요? 한 번 받으면 이 기기에 저장되어 오프라인에서도 동작합니다.',
   },
 
   note: {
@@ -353,6 +372,18 @@ export const ko: Dictionary = {
     storageRequest: '브라우저에 데이터 보관 요청',
     storageUsage: '로컬 데이터: {used} / {quota}',
     storageUnavailable: '이 브라우저는 저장 공간 상태를 알려주지 않습니다.',
+    storageResponseCache:
+      '오프라인 번역·사전 캐시: 최대 {size}. 넘으면 오래된 것부터 지웁니다.',
+    dictionaryTitle: '사전',
+    dictionaryHint:
+      '일본어({jaSize})·중국어({zhSize}) 사전은 허락할 때만 받습니다. 받은 사전은 이 기기에 저장되어 오프라인에서도 동작합니다.',
+    dictionaryAutoDownload: '묻지 않고 사전 받기',
+    dictionaryAutoDownloadHint:
+      '끄면 받기 전에 항상 확인합니다. 데이터 절약 모드나 느린 연결에서는 켜 두어도 확인합니다.',
+    dictionaryDownload: '내려받기 ({size})',
+    dictionaryDownloaded: '받음 — 오프라인에서 동작',
+    dictionaryDeclined: '내려받기를 취소했습니다 — 사전을 받지 않았습니다.',
+    dictionaryFailed: '사전을 내려받지 못했습니다. 연결을 확인하고 다시 시도하세요.',
     close: '닫기',
   },
 

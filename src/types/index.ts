@@ -38,7 +38,38 @@ export type Document = {
   id: string
   title: string
   languageCode: LanguageCode
+  /**
+   * The text held on this device. It is empty for a metadata-only document —
+   * the text is fetched on first open and kept in the `documentContent` store.
+   */
   rawText: string
+  /**
+   * Character count from the server's `char_count`. It lets the list show a
+   * length and sort by "longest" without the body. Old local rows may lack it.
+   */
+  charCount?: number
+  /**
+   * Whether this row actually holds the text. `false` means `rawText` is empty
+   * and the body has not been fetched. `undefined` is an old local row, which
+   * always held its text.
+   */
+  hasContent?: boolean
+  /**
+   * Server time of the last text edit. Opening compares it with the local copy
+   * to decide whether the copy is still current (opening never changes it).
+   */
+  contentUpdatedAt?: string | null
+  /**
+   * Server time of the last occurrence-row change. It moves independently of
+   * the text; a change here is no reason to fetch the text again.
+   */
+  occurrencesUpdatedAt?: string | null
+  /**
+   * Last open — not the same thing as `updated_at`. Opening is not a content
+   * edit, so it never touches `updated_at`; the server's `touch_document`
+   * stamps this value only. Falls back to `updatedAt` when absent.
+   */
+  lastOpenedAt?: string | null
   createdAt: string
   updatedAt: string
   /**
@@ -51,8 +82,8 @@ export type Document = {
   /**
    * 문서가 놓인 폴더. 없으면 폴더에 없다.
    *
-   * 폴더로 옮기는 일은 문서를 고치는 일이 아니다 — updated_at 은 '마지막으로 본
-   * 시각'이라 목록 날짜·정렬의 근거라서 건드리지 않는다. 옮긴 시각은
+   * 폴더로 옮기는 일은 문서를 고치는 일이 아니다 — updated_at 은 '내용을 고친
+   * 시각'이라서 건드리지 않는다. 옮긴 시각은
    * folderUpdatedAt 이 따로 찍는다 (문서 휴지통·별의 기록과 같은 모양이다).
    */
   folderId?: string | null

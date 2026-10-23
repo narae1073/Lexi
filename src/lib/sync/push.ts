@@ -12,6 +12,7 @@ import {
 import type { DocumentTombstone } from '../storage/purged'
 import type { Database } from '../supabase/database.types'
 import {
+  documentMetadataToRow,
   documentTombstoneToRow,
   documentToRow,
   folderToRow,
@@ -299,15 +300,47 @@ export async function push({
     outcome,
   )
 
+  /**
+   * Documents split by whether this device holds their text.
+   *
+   * A metadata-only row must never carry `raw_text`: an empty string would erase
+   * the server's text for a document that was only renamed, moved, or trashed on
+   * a device that never opened it. The metadata batch therefore omits the
+   * column entirely and updates the row that already exists.
+   */
+  const documentsWithContent = documents.filter((doc) => doc.hasContent !== false)
+  const metadataOnlyDocuments = documents.filter((doc) => doc.hasContent === false)
+
   await pushPlan(
     {
       table: 'documents',
-      rows: documents,
+      rows: documentsWithContent,
       keyOf: (doc) => doc.id,
       chunkSize: DOCUMENT_CHUNK,
       send: (part) =>
         db.from('documents').upsert(
           part.map((doc) => documentToRow(userId, doc)),
+          { onConflict: 'id' },
+        ),
+    },
+    dirtyFor('documents'),
+    outcome,
+  )
+
+  await pushPlan(
+    {
+      table: 'documents',
+      rows: metadataOnlyDocuments,
+      keyOf: (doc) => doc.id,
+      chunkSize: DOCUMENT_CHUNK,
+      send: (part) =>
+        db.from('documents').upsert(
+          // The generated Insert type makes raw_text mandatory (a full row). A
+          // metadata-only upsert deliberately omits it; PostgREST updates only
+          // the keys it receives, so the existing text is left untouched.
+          part.map(
+            (doc) => documentMetadataToRow(userId, doc),
+          ) as Database['public']['Tables']['documents']['Insert'][],
           { onConflict: 'id' },
         ),
     },
@@ -537,6 +570,14 @@ export async function loadDirtyCandidates(
       if (document === undefined) {
         // Without a local document there is no evidence it is live, and an
         // empty replace would delete rows another device may still need.
+        resolved.push(dirty)
+        continue
+      }
+      if (document.hasContent === false) {
+        // This device never held the text (a metadata-only row). An empty local
+        // set says nothing about the document's occurrences; pushing it would
+        // wipe rows computed by a device that did open the document. A genuinely
+        // emptied authored document has hasContent !== false and still pushes.
         resolved.push(dirty)
         continue
       }

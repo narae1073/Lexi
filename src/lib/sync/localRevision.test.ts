@@ -180,21 +180,22 @@ describe('local revision, pending counts, and epoch', () => {
     expect(second.pendingByStore).toEqual({})
   })
 
-  it('stores the meta in documentMeta without changing the DB version', async () => {
+  it('stores the meta in documentMeta without upgrading the database', async () => {
     await ensureLocalSyncMeta()
 
-    expect(DB_VERSION).toBe(6)
+    expect(DB_VERSION).toBe(7)
     const stored = await idbGet<LocalSyncMeta>(STORES.documentMeta, SYNC_META_KEY)
     expect(stored?.epoch).toBeDefined()
 
-    // The database on disk is still version 6 — no upgrade, no new store, so
-    // the previous frontend can keep opening a database this build has touched
+    // Bookkeeping still travels inside the existing store: writing the meta
+    // does not trigger a schema upgrade. The database stays at the v7 the
+    // stores declare (a one-way frontend release — v6 can no longer open it).
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('lexi')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
-    expect(db.version).toBe(6)
+    expect(db.version).toBe(DB_VERSION)
     db.close()
   })
 })

@@ -3,11 +3,28 @@ import { create } from 'zustand'
 import { STORES, idbGet, idbGetAllByIndex, idbPut } from '../../lib/storage/localDb'
 import type { LanguageCode, WordState, WordStatus } from '../../types'
 import { randomStarAngle, randomStarColor } from '../../features/reader/favoriteStar'
+import { notifyLocalProjectionChange } from '../../features/wordbook/localProjection'
 import { STAR_COLOR_DEFAULT } from './settings'
 
 /** IndexedDB 복합 키와 맞추기 위한 스토어 키 */
 export function wordKey(languageCode: LanguageCode, lemma: string): string {
   return `${languageCode}::${lemma}`
+}
+
+/**
+ * Local-only wordbook: a state edit patches exactly one projection row.
+ *
+ * The event carries the new state, so the producer never has to re-read a
+ * 200k-row projection to find the row it already knows about. Account mode has
+ * no local producer subscribed, so this is a no-op there.
+ */
+function announceState(state: WordState & { favoriteUpdatedAt?: string }): void {
+  notifyLocalProjectionChange({
+    type: 'state',
+    languageCode: state.languageCode,
+    lemma: state.lemma,
+    state,
+  })
 }
 
 type WordStatesStore = {
@@ -129,6 +146,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+    announceState(next)
 
     if (previous?.status === status) return
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
@@ -162,6 +180,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     next[field] = (previous?.[field] ?? 0) + 1
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+    announceState(next)
 
     // 상태가 그대로여도 저장한다 — 횟수가 늘었기 때문이다
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
@@ -180,6 +199,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const { status: _removed, ...kept } = previous
     const next = { ...kept, lastSeenAt: timestamp }
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+    announceState(next)
 
     // 저장된 행에서 상태만 뺀다 — 별·읽은 기록·별 시각은 그대로 둔다.
     // lastSeenAt 을 새로 찍어야 동기화에서 이 '없앰' 이 이긴다.
@@ -231,6 +251,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
 
     // 별을 누른 것은 진도다 — 다음 동기화에 실어 보낸다
+    announceState({ ...next, favoriteUpdatedAt: timestamp })
     void idbPut(STORES.wordStates, {
       ...next,
       surface,
@@ -251,6 +272,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next: WordState = { ...previous, starColor: color }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+    announceState({ ...next, favoriteUpdatedAt: timestamp })
 
     void idbPut(STORES.wordStates, {
       ...next,
@@ -289,6 +311,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     }
 
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
+    announceState(next)
 
     void idbPut(STORES.wordStates, {
       ...next,

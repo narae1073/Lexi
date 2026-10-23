@@ -96,6 +96,12 @@ const report = (languages: string[] = []): SyncReport => ({
   pulled: 0,
   documents: 0,
   languages,
+  projectionLanguages: [],
+  projectionComplete: {},
+  projectionPaused: [],
+  projectionPausedReason: null,
+  projectionQuotaBucket: null,
+  projectionQuotaRetryAfterSeconds: null,
   watermarks: {},
   pushWatermarks: {},
   serverWords: 0,
@@ -1061,6 +1067,48 @@ describe('local database epoch and full resync', () => {
     vi.mocked(syncOnce).mockClear()
     await useSyncStore.getState().syncQuietly()
     expect(syncOnce).toHaveBeenNthCalledWith(1, expect.objectContaining({ since: nextPull }))
+  })
+
+  /**
+   * A projection larger than the soft budget finishes over several cycles.
+   * Re-requesting the resync would reset it again (clear the wordbook, start
+   * at lemma 0) and it would never converge; the reset is already recorded in
+   * the per-language projection state, so the ordinary cursor resumes it.
+   */
+  it('clears the resync request when the projection pauses, so the next cycle resumes', async () => {
+    signedIn()
+    const currentEpoch = (await ensureLocalSyncMeta()).epoch
+    writeStoredSyncState('user-a', {
+      version: 2,
+      pull,
+      push,
+      localEpoch: currentEpoch,
+    })
+    await idbPut(STORES.documents, { id: 'doc-1', title: 'document still here' })
+    const nextPull = { snapshot: '2026-02-01T00:00:00.000Z' }
+    vi.mocked(syncOnce).mockResolvedValue({
+      ...report([]),
+      watermarks: nextPull,
+      projectionLanguages: ['fr'],
+      projectionComplete: { fr: false },
+      projectionPaused: ['fr'],
+    })
+
+    await useSyncStore.getState().fullResync()
+
+    expect(syncOnce).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ since: {}, push, resetProjection: true }),
+    )
+    expect(useSyncStore.getState().status).toBe('synced')
+
+    vi.mocked(syncOnce).mockClear()
+    await useSyncStore.getState().syncQuietly()
+    // Ordinary incremental cycle: no second reset, no second full document pull.
+    expect(syncOnce).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ since: nextPull, resetProjection: false }),
+    )
   })
 
   it('keeps a manual full-resync request across a hard failure', async () => {

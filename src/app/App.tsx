@@ -14,6 +14,7 @@ import { SettingsPanel } from '../features/settings/SettingsPanel'
 import { AccountLock } from '../features/sync/AccountLock'
 import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
+import { createLocalProjectionProducer, onLocalProjectionChange } from '../features/wordbook/localProjection'
 import { QuizView } from '../features/quiz/QuizView'
 import { useAuthStore } from './stores/auth'
 import { useDocumentsStore } from './stores/documents'
@@ -21,6 +22,7 @@ import { useFoldersStore } from './stores/folders'
 import { useLanguagesStore } from './stores/languages'
 import { useOccurrencesStore } from './stores/occurrences'
 import { isAccountGateReady, useCloudSync, useSyncStore } from './stores/sync'
+import { useWordbookStore } from './stores/wordbook'
 import { useWordStatesStore } from './stores/wordStates'
 import { useApplyTextScale, useApplyTheme, useTranslation } from './stores/settings'
 
@@ -86,6 +88,7 @@ export default function App() {
   const readyForUserId = useSyncStore((s) => s.readyForUserId)
   const accountBlocked = useSyncStore((s) => s.accountBlocked)
   const claimNeeded = useSyncStore((s) => s.claimNeeded)
+  const localOnly = useSyncStore((s) => s.localOnly)
   // A 의 확인이 끝난 뒤 B 가 로그인하면 효과가 상태를 되돌리기 전 한 번의 렌더가
   // 남는다. 지금 사용자에 대한 확인인지 비교해야 그 한 번에도 이전 화면이 안 보인다.
   const gateReady = isAccountGateReady(accountReady, readyForUserId, currentUserId)
@@ -125,8 +128,12 @@ export default function App() {
   useEffect(() => {
     // 잠긴 계정의 문서를 토크나이징하면 그 기록이 기기에 남는다 — 읽지도 않는다
     if (restoring || !gateReady || accountBlocked) return
-    if (documents.length === 0) return
-    const run = () => void refreshStaleDocuments(documents)
+    // Metadata-only documents have no local text. Recomputing one would clear
+    // its server occurrence rows and push an empty set. The store also guards
+    // this, but never hand it documents it can only damage.
+    const recomputable = documents.filter((doc) => doc.hasContent !== false)
+    if (recomputable.length === 0) return
+    const run = () => void refreshStaleDocuments(recomputable)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300))
     const handle = idle(run)
     return () => {
@@ -151,6 +158,58 @@ export default function App() {
       void loadWordStates(language)
     }
   }, [enrolled, loadOccurrences, loadWordStates, restoring, gateReady, accountBlocked])
+
+  /**
+   * Local-only wordbook producer (Task 11).
+   *
+   * Without an account there is no projection RPC, so this device builds the
+   * same `wordbookEntries` rows from its own occurrences and word states. The
+   * producer owns the worker work and the storage writes; the stores only
+   * announce what changed. Nothing here runs for an account: the server
+   * projection is the read model there.
+   */
+  const localProjection = useMemo(
+    () =>
+      createLocalProjectionProducer({
+        sink: {
+          setEntries: (languageCode, entries) =>
+            useWordbookStore.getState().setLocalEntries(languageCode, entries),
+          applyEntries: (languageCode, entries, removed) =>
+            useWordbookStore.getState().applyLocalEntries(languageCode, entries, removed),
+        },
+      }),
+    [],
+  )
+
+  useEffect(() => {
+    if (!localOnly) return
+    return onLocalProjectionChange((change) => {
+      void localProjection.handle(change)
+    })
+  }, [localOnly, localProjection])
+
+  useEffect(() => {
+    if (localOnly) return
+    // Linking an account hands the wordbook to the server projection. Forget
+    // which languages were built (fencing any in-flight build) and release the
+    // worker's local source rows, so a later return to local-only rebuilds from
+    // this device and the account path never sees local-derived rows.
+    void localProjection.reset()
+  }, [localOnly, localProjection])
+
+  /**
+   * Builds every enrolled language once. `ensureLanguage` is idempotent: an
+   * occurrence load that already triggered a build is not built twice, and a
+   * language whose data did not change costs nothing.
+   */
+  useEffect(() => {
+    if (!localOnly || restoring || !gateReady || accountBlocked) return
+    for (const language of enrolled) {
+      void localProjection.ensureLanguage(language).catch((error) => {
+        console.error('로컬 단어장 준비 실패', error)
+      })
+    }
+  }, [localOnly, enrolled, localProjection, restoring, gateReady, accountBlocked])
 
   /**
    * 세션 복원·소유자 확인이 끝나기 전에는 중립 화면만 보여 준다.

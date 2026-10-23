@@ -50,16 +50,30 @@ export function flipDirection(direction: SortDirection): SortDirection {
   return direction === 'asc' ? 'desc' : 'asc'
 }
 
-/** 목록 글자 수 — '글자가 많은 순' 의 기준 */
+/**
+ * The list's character count — the basis for "longest".
+ *
+ * A metadata-only document has no text on this device. When the server's
+ * `charCount` is present, use it: there is no reason to download a body just to
+ * learn its length.
+ */
 export function documentLength(doc: Document): number {
+  if (typeof doc.charCount === 'number' && Number.isFinite(doc.charCount)) {
+    return doc.charCount
+  }
   return doc.rawText.trim().length
 }
 
 /**
- * 주 키 비교기 — 방향을 적용할 대상이다.
+ * Primary comparators — the direction applies to these.
+ *
+ * "Recently read" means the last **open**. Opening does not touch
+ * `updated_at` (it is not a content edit), so the key is `lastOpenedAt`;
+ * documents from before that stamp existed fall back to `updatedAt`.
  */
 const PRIMARY: Record<DocumentSort, (a: Document, b: Document) => number> = {
-  recent: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+  recent: (a, b) =>
+    (a.lastOpenedAt ?? a.updatedAt).localeCompare(b.lastOpenedAt ?? b.updatedAt),
   created: (a, b) => a.createdAt.localeCompare(b.createdAt),
   longest: (a, b) => documentLength(a) - documentLength(b),
   alpha: (a, b) => a.title.localeCompare(b.title, 'en', { sensitivity: 'base' }),

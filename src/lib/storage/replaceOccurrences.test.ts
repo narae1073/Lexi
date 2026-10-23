@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { STORES, idbGetAllByIndex, replaceOccurrences } from '../../lib/storage/localDb'
+import { STORES, idbGetAllByIndex, readLocalRevision, replaceOccurrences } from '../../lib/storage/localDb'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 
 const record = (lemma: string, extra: Partial<WordOccurrence> = {}): WordOccurrence => ({
@@ -79,5 +79,26 @@ describe('문서의 등장 기록을 통째로 교체한다', () => {
     await replaceOccurrences('doc-1', [])
     const rows = await idbGetAllByIndex<WordOccurrence>(STORES.wordOccurrences, 'languageCode', 'fr')
     expect(rows.map((r) => r.lemma)).toEqual(['autre'])
+  })
+
+  /**
+   * The storage layer is not a no-op by itself.
+   *
+   * Replacing with identical content still deletes and re-inserts the rows and
+   * bumps the revision, pending count and dirty key. Deciding "nothing changed,
+   * so do not write" belongs to the caller (`recordDocument`), so this layer
+   * must not make that decision on its own.
+   */
+  it('counts an identical replace as a change — no-op detection belongs to the caller', async () => {
+    await replaceOccurrences('doc-1', [record('chat')])
+    const before = await readLocalRevision()
+    await replaceOccurrences('doc-1', [record('chat')])
+    expect(await readLocalRevision()).toBe(before + 1)
+    const rows = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      'doc-1',
+    )
+    expect(rows.map((r) => r.lemma)).toEqual(['chat'])
   })
 })

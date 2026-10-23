@@ -364,7 +364,36 @@ export function mergeTombstones(
   return [...byId.values()]
 }
 
-/** 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다 */
+/** 두 시각이 같은 순간인가 — 서버(`+00:00`)와 브라우저(`.000Z`) 형식이 섞인다 */
+function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a === b) return true
+  if (a === null || a === undefined || b === null || b === undefined) return false
+  const left = Date.parse(a)
+  const right = Date.parse(b)
+  return !Number.isNaN(left) && !Number.isNaN(right) && left === right
+}
+
+/** 둘 중 늦은 시각. 해석할 수 없는 값은 늦지 않은 것으로 본다. */
+function laterInstant(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): string | null {
+  if (a === null || a === undefined) return b ?? null
+  if (b === null || b === undefined) return a
+  return isNewer(b, a) ? b : a
+}
+
+/**
+ * 문서는 id 로 갈아끼운다 — 마지막으로 고친 쪽이 이긴다.
+ *
+ * The list pull is metadata-only (`hasContent === false`, empty `rawText`). A
+ * newer metadata row — another device opened the document — must not erase the
+ * text this device already holds. The text is kept when the row's
+ * `contentUpdatedAt` still matches the copy's; when the server's version moved,
+ * the local copy is stale and the row is left metadata-only so the next open
+ * fetches it again. `lastOpenedAt` is server-owned and always the later of the
+ * two: opening is not a content edit, but it does move the list's "recent" key.
+ */
 export function mergeDocuments(local: Document[], remote: Document[]): Document[] {
   const byId = new Map(remote.map((d) => [d.id, d]))
   for (const doc of local) {
@@ -380,8 +409,39 @@ export function mergeDocuments(local: Document[], remote: Document[]): Document[
      */
     const winner = isNewer(doc.updatedAt, theirs.updatedAt) ? doc : theirs
     const folderWinner = folderWinnerOf(doc, theirs)
-    if (winner === folderWinner) byId.set(doc.id, winner)
-    else byId.set(doc.id, { ...winner, folderId: folderWinner.folderId ?? null, folderUpdatedAt: folderWinner.folderUpdatedAt })
+    const withFolder =
+      winner === folderWinner
+        ? winner
+        : {
+            ...winner,
+            folderId: folderWinner.folderId ?? null,
+            folderUpdatedAt: folderWinner.folderUpdatedAt,
+          }
+
+    const localHasContent = doc.hasContent !== false
+    const remoteHasContent = theirs.hasContent !== false
+    const contentUpdatedAt = laterInstant(doc.contentUpdatedAt, theirs.contentUpdatedAt)
+
+    let merged = withFolder
+    if (localHasContent && !remoteHasContent) {
+      const sameTextVersion =
+        !doc.contentUpdatedAt ||
+        !theirs.contentUpdatedAt ||
+        sameInstant(doc.contentUpdatedAt, theirs.contentUpdatedAt)
+      merged = sameTextVersion
+        ? { ...withFolder, rawText: doc.rawText, hasContent: true }
+        : { ...withFolder, rawText: '', hasContent: false }
+    }
+
+    byId.set(doc.id, {
+      ...merged,
+      // 서버가 센 길이가 있으면 그것이 정답이다 — 본문 사본과 무관하게 유지된다
+      charCount: theirs.charCount ?? merged.charCount,
+      contentUpdatedAt,
+      occurrencesUpdatedAt:
+        theirs.occurrencesUpdatedAt ?? doc.occurrencesUpdatedAt ?? null,
+      lastOpenedAt: laterInstant(doc.lastOpenedAt, theirs.lastOpenedAt),
+    })
   }
   return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }

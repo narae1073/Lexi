@@ -35,6 +35,8 @@ import { WordPopover } from './WordPopover'
 import { WordWithStar } from './WordWithStar'
 import { useChineseUpgrade } from './chinese'
 import { useJapaneseUpgrade } from './japanese'
+import { mayRecomputeOccurrences } from './documentContent'
+import { DocumentContentError } from '../../lib/sync/content'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -87,10 +89,48 @@ export function ReaderView({ doc }: { doc: Document }) {
   const t = useTranslation()
   const languageName = useLanguageName()
 
-  const base = useMemo(
-    () => tokenize(doc.rawText, doc.languageCode),
-    [doc.rawText, doc.languageCode],
+  /**
+   * Document text is loaded on open (R3).
+   *
+   * The list carries metadata only, so a metadata-only document's `rawText` is
+   * empty. Text this device already has is rendered immediately; otherwise it
+   * is fetched once and kept in the `documentContent` store — reopening makes
+   * no request.
+   */
+  const openDocument = useDocumentsStore((s) => s.open)
+  const [contentText, setContentText] = useState<string | null>(
+    doc.hasContent === false ? null : doc.rawText,
   )
+  const [contentError, setContentError] = useState<{
+    message: string
+    recoverable: boolean
+  } | null>(null)
+  const [contentAttempt, setContentAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    void openDocument(doc.id)
+      .then((opened) => {
+        if (cancelled || opened === undefined) return
+        setContentText(opened.rawText)
+        // The fetch may have stored the document's occurrence rows.
+        void useOccurrencesStore.getState().loadLanguage(doc.languageCode)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setContentError({
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: error instanceof DocumentContentError ? error.recoverable : true,
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [doc.id, doc.contentUpdatedAt, doc.languageCode, openDocument, contentAttempt])
+
+  const text = contentText ?? ''
+
+  const base = useMemo(() => tokenize(text, doc.languageCode), [text, doc.languageCode])
 
   /**
    * 일본어·중국어는 형태소 분석기로 업그레이드한다.
@@ -99,8 +139,8 @@ export function ReaderView({ doc }: { doc: Document }) {
    * 사전을 기다리게 하지 않는다. 준비 전후의 lemma 가 다를 수 있어
    * lemmaFor 는 업그레이드 표를 먼저 본다.
    */
-  const jaUpgrade = useJapaneseUpgrade(doc.rawText, doc.languageCode)
-  const zhUpgrade = useChineseUpgrade(doc.rawText, doc.languageCode)
+  const jaUpgrade = useJapaneseUpgrade(text, doc.languageCode)
+  const zhUpgrade = useChineseUpgrade(text, doc.languageCode)
   const upgrade = jaUpgrade ?? zhUpgrade
   const segments = upgrade?.segments ?? base.segments
   const sentences = upgrade?.sentences ?? base.sentences
@@ -109,7 +149,6 @@ export function ReaderView({ doc }: { doc: Document }) {
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
   const navigate = useNavigate()
-  const touchDocument = useDocumentsStore((s) => s.touch)
   const renameDocument = useDocumentsStore((s) => s.rename)
   const trashDocument = useDocumentsStore((s) => s.trash)
   /** 버리기 전에 한 번 묻는 상자가 열려 있는가 */
@@ -146,11 +185,11 @@ export function ReaderView({ doc }: { doc: Document }) {
     return resolveLemmasFromWords(
       words.map((w) => ({
         text: w.text,
-        sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
+        sentenceInitial: isCapitalisedPosition(text, sentences, w.start, w.sentenceIndex),
       })),
       doc.languageCode,
     )
-  }, [segments, sentences, doc.rawText, doc.languageCode])
+  }, [segments, sentences, text, doc.languageCode])
 
   /** 세그먼트의 대표 lemma */
   const lemmaFor = useCallback(
@@ -168,7 +207,9 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const refreshStale = useOccurrencesStore((s) => s.refreshStaleDocuments)
   useEffect(() => {
-    if (!upgrade) return
+    // A metadata-only document keeps the server's rows. Recomputing would make
+    // a read change the wordbook and push that change back.
+    if (!upgrade || !mayRecomputeOccurrences(doc)) return
     let cancelled = false
     const run = async () => {
       // 앱 시작 시점의 전체 재계산과 겹치면 밀린다 — 끝날 때까지 기다렸다가 한다.
@@ -190,14 +231,18 @@ export function ReaderView({ doc }: { doc: Document }) {
     void loadWordStates(doc.languageCode)
   }, [doc.languageCode, loadWordStates])
 
-  // 연 시각이 곧 '최근 본 시각' 이다 — 목록에서 쓰인다
+  /**
+   * Occurrence rows the wordbook needs, written at idle time so rendering is
+   * never blocked.
+   *
+   * Only a document authored on this device is recomputed. A metadata-only
+   * document already has the server's rows (fetched with its text); recomputing
+   * on read would write new rows for unchanged content and push them.
+   */
   useEffect(() => {
-    void touchDocument(doc.id)
-  }, [doc.id, touchDocument])
-
-  // 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
-  useEffect(() => {
-    const run = () => void recordOccurrences(doc)
+    if (contentText === null || !mayRecomputeOccurrences(doc)) return
+    const docForRecord = contentText === doc.rawText ? doc : { ...doc, rawText: contentText }
+    const run = () => void recordOccurrences(docForRecord)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 200))
     const handle = idle(run)
     return () => {
@@ -205,7 +250,7 @@ export function ReaderView({ doc }: { doc: Document }) {
         window.cancelIdleCallback(handle)
       }
     }
-  }, [doc, recordOccurrences])
+  }, [contentText, doc, recordOccurrences])
 
   const wordCount = useMemo(
     () => segments.reduce((n, s) => (s.type === 'word' ? n + 1 : n), 0),
@@ -221,7 +266,7 @@ export function ReaderView({ doc }: { doc: Document }) {
   const pages = useMemo(
     () =>
       planPages(
-        doc.rawText,
+        text,
         sentences,
         sentences.map((sentence) =>
           segments.reduce(
@@ -234,7 +279,7 @@ export function ReaderView({ doc }: { doc: Document }) {
         // 텍스트 세그먼트는 잘라서 렌더하므로 마침표와 여는 부호가 제자리를 찾는다.
         segments.filter((s) => s.type === 'word').map((s) => s.start),
       ),
-    [doc.rawText, sentences, segments, pageWords],
+    [text, sentences, segments, pageWords],
   )
 
   // 다른 문서를 열었거나 쪽 크기를 줄여 쪽 수가 줄면 범위를 벗어난 쪽으로 가지 않는다
@@ -494,6 +539,36 @@ export function ReaderView({ doc }: { doc: Document }) {
     },
     [sentences],
   )
+
+  // The text has not arrived yet — say so instead of showing an empty page.
+  if (contentText === null) {
+    return (
+      <article className="mx-auto w-full max-w-2xl px-5 pt-8 pb-32">
+        <header className="mb-6">
+          <h1 className="font-semibold">{doc.title}</h1>
+        </header>
+        {contentError ? (
+          <div className="border-line rounded-lg border px-4 py-3 text-sm">
+            <p>{t('reader.loadFailed')}</p>
+            {contentError.recoverable && (
+              <button
+                type="button"
+                onClick={() => {
+                  setContentError(null)
+                  setContentAttempt((attempt) => attempt + 1)
+                }}
+                className="border-accent text-accent mt-3 rounded-lg border px-3 py-1 text-xs"
+              >
+                {t('reader.retry')}
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="text-ink-muted text-sm">{t('reader.loading')}</p>
+        )}
+      </article>
+    )
+  }
 
   return (
     // 하단 상태 바가 본문을 가리지 않도록 여유를 둔다

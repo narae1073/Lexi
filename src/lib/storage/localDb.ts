@@ -9,20 +9,43 @@ const DB_NAME = 'lexi'
 /**
  * Local DB schema version.
  *
- * **Never bump for sync bookkeeping** — Release 2 stores the reserved
- * `LocalSyncMeta` record inside the existing `documentMeta` store precisely so
- * this stays 6: the previous frontend must keep opening a database this build
- * has touched (a version 7 open would fail with VersionError after a rollback).
+ * **Version 7 is a one-way frontend release.** The wordbook projection and lazy
+ * document content stores cannot be added without a version bump, so a database
+ * this build has opened can no longer be opened by the previous frontend: its
+ * v6 open fails with `VersionError`. Every existing store and row survives the
+ * v6→v7 upgrade, and a server rollback stays possible — only a frontend
+ * rollback against the same database does not.
+ *
+ * Sync bookkeeping still never moves this number: the reserved `LocalSyncMeta`
+ * record lives in the existing `documentMeta` store (see {@link SYNC_META_KEY}),
+ * so revision/pending/dirty changes never require a schema change.
  */
-export const DB_VERSION = 6
+export const DB_VERSION = 7
 
 /**
- * `documentId` of the reserved `LocalSyncMeta` record in `STORES.documentMeta`.
+ * Prefix of every reserved `documentMeta` id.
  *
  * A reserved id instead of a new store/new version: documentMeta is local-only
  * (never sent to the server), so it is the right home for device bookkeeping.
+ * Ids with this prefix are bookkeeping records, never a document's computation
+ * row; every scan that interprets documentMeta rows as documents must skip
+ * them (see {@link isReservedDocumentMetaId}).
  */
-export const SYNC_META_KEY = '__lexi_sync_meta__'
+export const RESERVED_DOCUMENT_META_PREFIX = '__lexi_'
+
+/** `documentId` of the reserved `LocalSyncMeta` record in `STORES.documentMeta`. */
+export const SYNC_META_KEY = `${RESERVED_DOCUMENT_META_PREFIX}sync_meta__`
+
+/**
+ * True for a device-local bookkeeping record (sync meta, projection state).
+ *
+ * Scans that map `documentMeta` rows to documents must filter these out: the
+ * reserved records carry no `lemmaVersion`/`occurrencesUpdatedAt` and must
+ * never be mistaken for a document called `__lexi_…`.
+ */
+export function isReservedDocumentMetaId(documentId: unknown): boolean {
+  return typeof documentId === 'string' && documentId.startsWith(RESERVED_DOCUMENT_META_PREFIX)
+}
 
 export const STORES = {
   documents: 'documents',
@@ -52,6 +75,23 @@ export const STORES = {
    * 다시 올리면 완전 삭제가 무효가 된다. 지운 사실을 남겨 되살아나지 않게 한다.
    */
   documentTombstones: 'documentTombstones',
+  /**
+   * Synced wordbook projection — one row per `(languageCode, lemma)`.
+   *
+   * A server-owned read model (R3) so a device can show the complete wordbook
+   * offline without downloading every occurrence row. This is a device-local
+   * copy: it is filled from the projection pull, never pushed, and its writes
+   * must not bump the sync revision.
+   */
+  wordbookEntries: 'wordbookEntries',
+  /**
+   * Lazily fetched document text, keyed by document id.
+   *
+   * A device-local copy of `documents.raw_text` so opening a document downloads
+   * the text once. Clearing it only means the next open fetches again; its
+   * writes must not bump the sync revision.
+   */
+  documentContent: 'documentContent',
 } as const
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
@@ -166,6 +206,16 @@ function bumpedSyncMeta(
 }
 
 /**
+ * Dirty-key encoding for a word state: `languageCode\0lemma`.
+ *
+ * Exported so the projection merge guards exactly the key the local word-state
+ * writes journal — a second encoding would silently stop protecting edits.
+ */
+export function wordStateDirtyKey(languageCode: string, lemma: string): string {
+  return `${languageCode}\u0000${lemma}`
+}
+
+/**
  * Dirty-key encoding per synced store (plan "Clock-safe dirty keys"):
  * documents/folders/tombstones → row id; wordStates → `languageCode\0lemma`;
  * wordOccurrences → document id (the push unit is a document).
@@ -183,7 +233,7 @@ function dirtyKeyForValue(store: StoreName, value: unknown): string | undefined 
   }
   if (store === STORES.wordStates) {
     return typeof row.languageCode === 'string' && typeof row.lemma === 'string'
-      ? `${row.languageCode}\u0000${row.lemma}`
+      ? wordStateDirtyKey(row.languageCode, row.lemma)
       : undefined
   }
   return undefined
@@ -193,7 +243,7 @@ function dirtyKeyForValue(store: StoreName, value: unknown): string | undefined 
 function dirtyKeyForKey(store: StoreName, key: IDBValidKey): string | undefined {
   if (store === STORES.wordStates) {
     if (Array.isArray(key) && typeof key[0] === 'string' && typeof key[1] === 'string') {
-      return `${key[0]}\u0000${key[1]}`
+      return wordStateDirtyKey(key[0], key[1])
     }
     return typeof key === 'string' ? key : undefined
   }
@@ -358,7 +408,21 @@ function openDb(): Promise<IDBDatabase> {
   }
   if (dbPromise) return dbPromise
 
-  dbPromise = new Promise((resolve, reject) => {
+  // Lets the request callbacks clear the cache slot only when this attempt
+  // still owns it — a retry may already have installed a newer promise.
+  const pending: { promise: Promise<IDBDatabase> | null } = { promise: null }
+
+  const promise = new Promise<IDBDatabase>((resolve, reject) => {
+    /**
+     * Set when `blocked` already rejected this attempt. The request stays
+     * queued in the browser and finishes only once the blocking tab closes;
+     * that late connection belongs to nobody, so it is closed on success.
+     */
+    let abandoned = false
+    const forget = () => {
+      if (dbPromise === pending.promise) dbPromise = null
+    }
+
     const req = indexedDB.open(DB_NAME, DB_VERSION)
 
     req.onupgradeneeded = () => {
@@ -395,12 +459,66 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.documentTombstones)) {
         db.createObjectStore(STORES.documentTombstones, { keyPath: 'documentId' })
       }
+      /**
+       * v7 stores. The `contains` guards keep this an additive upgrade: an
+       * existing v6 database is upgraded in place, so every store and row it
+       * already holds stays untouched. The index on `lemma` answers "which
+       * languages have this lemma"; `languageCode` is the wordbook read path.
+       */
+      if (!db.objectStoreNames.contains(STORES.wordbookEntries)) {
+        const s = db.createObjectStore(STORES.wordbookEntries, {
+          keyPath: ['languageCode', 'lemma'],
+        })
+        s.createIndex('languageCode', 'languageCode')
+        s.createIndex('lemma', 'lemma')
+      }
+      if (!db.objectStoreNames.contains(STORES.documentContent)) {
+        db.createObjectStore(STORES.documentContent, { keyPath: 'documentId' })
+      }
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      if (abandoned) {
+        // The caller was already told the open failed. This connection only
+        // finished because the blocking tab closed; close it so it cannot
+        // block a later delete/upgrade.
+        db.close()
+        return
+      }
+      /**
+       * Another tab upgrading the schema must not wait on this connection —
+       * an R2 tab that ignores the event is exactly what blocks a v7 upgrade.
+       * Close and forget it so the next open reconnects at the new version.
+       */
+      db.onversionchange = () => {
+        db.close()
+        forget()
+      }
+      resolve(db)
+    }
+    req.onerror = () => {
+      forget()
+      reject(req.error ?? new Error('로컬 데이터베이스를 열지 못했습니다'))
+    }
+    /**
+     * Without this handler the open request stays pending for as long as the
+     * older tab lives and the app shows nothing. Reject with the same kind of
+     * user-actionable message `deleteLocalDatabase` uses for a blocked delete.
+     */
+    req.onblocked = () => {
+      abandoned = true
+      forget()
+      reject(
+        new Error(
+          '다른 탭이 이전 버전의 로컬 데이터를 쓰고 있어 새 버전으로 열지 못했습니다. 다른 탭을 닫고 새로고침해 주세요.',
+        ),
+      )
+    }
   })
 
-  return dbPromise
+  pending.promise = promise
+  dbPromise = promise
+  return promise
 }
 
 /**
@@ -694,6 +812,10 @@ export function idbGetAllByIndex<T>(
  * 응답 캐시와 documentMeta 는 뺀다 — 사전을 한 번 보거나 규칙 버전을 적어 둔 것은
  * 학습한 내용이 아니다. 이 둘만 있는 기기를 계정에 붙이면 빈 기기를 옮기는 셈이다.
  * SYNCED_STORES 와 지금은 같은 목록이지만 뜻이 다르므로 따로 둔다.
+ *
+ * The v7 stores stay out for the same reason: the wordbook projection and the
+ * document content are copies of server-owned data. A device that only
+ * downloaded them has not authored anything worth preserving.
  */
 const LEARNING_STORES: readonly StoreName[] = [
   'documents',

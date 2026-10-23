@@ -52,6 +52,7 @@ export const en = {
   list: {
     marked: '{percent}% marked',
     markedLabel: 'Share of marked words',
+    wordbookPreparing: 'Preparing wordbook… ({ready}/{total} languages ready)',
     language: 'Language',
     allLanguages: 'All languages',
     emptyForLanguage: 'No documents in {language}.',
@@ -104,6 +105,9 @@ export const en = {
     titleLabel: 'Document title',
     titleHint: 'Click to rename',
     toWordbook: 'Words in this document',
+    loading: 'Loading text…',
+    loadFailed: 'Could not load this document’s text. Check your connection and try again.',
+    retry: 'Try again',
   },
 
   status: {
@@ -152,6 +156,7 @@ export const en = {
     pickLanguage: 'Pick the language to quiz.',
     countLabel: 'Words',
     none: 'Nothing to quiz yet — mark some words as Unsure or New first.',
+    preparing: 'Preparing your wordbook… quiz words will appear after the first sync.',
     start: 'Start',
     progress: '{done} / {total}',
     know: 'Know',
@@ -270,6 +275,19 @@ export const en = {
     starColorFilter: 'Filter favorites by star color',
     starFilterEmpty: 'No favorites with these colors. Tap the colors again to turn them off.',
     noContext: 'No context recorded.',
+    preparing: 'Preparing your wordbook…',
+    preparingHint:
+      'Your words will appear when the first sync finishes. You can keep reading in the meantime.',
+    preparingProgress: '{ready} of {total} languages ready',
+    paused: 'Wordbook download paused',
+    pausedHint: 'The 64 MB limit paused this download. Continue when you are ready.',
+    pausedContinue: 'Continue download',
+    quotaPaused: 'Wordbook download paused by the server limit',
+    quotaPausedHint:
+      'The server allows a limited number of wordbook downloads per account. It continues automatically in about {minutes} min.',
+    statePaused: 'Wordbook download state was reset',
+    statePausedHint:
+      'The server could not resume this wordbook from the saved position. It restarts from the beginning automatically.',
     group: {
       unmarked: 'Not marked',
       known: 'Know it',
@@ -296,6 +314,8 @@ export const en = {
     offline: 'Offline — showing a copy saved on this device.',
     hide: 'Hide',
     baseForm: 'Base form',
+    downloadPrompt:
+      'Download the {language} dictionary ({size})? It is stored on this device and works offline afterwards.',
   },
 
   note: {
@@ -356,6 +376,18 @@ export const en = {
     storageRequest: 'Ask the browser to keep data',
     storageUsage: 'Local data: {used} of {quota}',
     storageUnavailable: 'This browser does not report storage status.',
+    storageResponseCache:
+      'Offline translation and dictionary cache: up to {size}. Oldest entries are removed first.',
+    dictionaryTitle: 'Dictionaries',
+    dictionaryHint:
+      'Japanese ({jaSize}) and Chinese ({zhSize}) dictionaries are downloaded only when you allow it. They stay on this device and work offline.',
+    dictionaryAutoDownload: 'Download dictionaries without asking',
+    dictionaryAutoDownloadHint:
+      'When off, the app asks before each download. It asks anyway on a metered or slow connection.',
+    dictionaryDownload: 'Download ({size})',
+    dictionaryDownloaded: 'Downloaded — works offline',
+    dictionaryDeclined: 'Download cancelled — the dictionary was not downloaded.',
+    dictionaryFailed: 'The dictionary download failed. Check your connection and try again.',
     close: 'Close',
   },
 

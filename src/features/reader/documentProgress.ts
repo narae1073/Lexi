@@ -1,5 +1,5 @@
 import type { WordOccurrence } from '../../app/stores/occurrences'
-import type { WordState } from '../../types'
+import type { WordStatus, WordState } from '../../types'
 
 /**
  * 문서별 진도.
@@ -53,4 +53,23 @@ export function groupByDocument(occurrences: WordOccurrence[]): Map<string, Word
     else grouped.set(occurrence.documentId, [occurrence])
   }
   return grouped
+}
+
+/**
+ * Status overrides a progress worker still needs.
+ *
+ * The worker's rebuilt dataset already carries each projection row's status.
+ * Only a local tap made after that rebuild differs; sending the whole language
+ * again would copy tens of thousands of statuses for one edit.
+ */
+export function changedStatuses(
+  current: Readonly<Record<string, { status?: WordStatus | null } | undefined>>,
+  rebuilt: ReadonlyMap<string, WordStatus | 'unmarked'>,
+): Record<string, WordStatus | 'unmarked'> {
+  const overrides: Record<string, WordStatus | 'unmarked'> = {}
+  for (const [key, state] of Object.entries(current)) {
+    const status = state?.status ?? 'unmarked'
+    if (rebuilt.get(key) !== status) overrides[key] = status
+  }
+  return overrides
 }

@@ -4,6 +4,7 @@ import type { DocumentTombstone } from '../storage/purged'
 import {
   STORES,
   SYNC_META_KEY,
+  isReservedDocumentMetaId,
   normalizeLocalSyncMeta,
   openLocalDatabase,
   type StoreName,
@@ -125,6 +126,7 @@ const WRITE_STORES: StoreName[] = [
   STORES.wordStates,
   STORES.wordOccurrences,
   STORES.documentTombstones,
+  STORES.documentContent,
   STORES.documentMeta,
 ]
 
@@ -157,10 +159,19 @@ function sameValue(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right)
 }
 
-/** Old document rows have no folder stamp — read them the way `readLocal` does. */
+/**
+ * Old document rows have no folder stamp, content version, or lazy-content
+ * flags — read them the way `readLocal` does. A row written before R3 holds its
+ * text, so `hasContent` defaults to true rather than marking it metadata-only.
+ */
 function normalizedDocument(doc: Document): Document {
   return {
     ...doc,
+    hasContent: doc.hasContent ?? true,
+    charCount: doc.charCount ?? doc.rawText.length,
+    contentUpdatedAt: doc.contentUpdatedAt ?? null,
+    occurrencesUpdatedAt: doc.occurrencesUpdatedAt ?? null,
+    lastOpenedAt: doc.lastOpenedAt ?? null,
     folderId: doc.folderId ?? null,
     folderUpdatedAt: doc.folderUpdatedAt ?? doc.updatedAt,
   }
@@ -218,6 +229,7 @@ export async function writeLocal(
     const wordStatesStore = transaction.objectStore(STORES.wordStates)
     const occurrencesStore = transaction.objectStore(STORES.wordOccurrences)
     const tombstonesStore = transaction.objectStore(STORES.documentTombstones)
+    const contentStore = transaction.objectStore(STORES.documentContent)
     const metaStore = transaction.objectStore(STORES.documentMeta)
 
     let revisionReady = false
@@ -299,14 +311,11 @@ export async function writeLocal(
         const getReq = documentsStore.get(doc.id)
         getReq.onsuccess = () => {
           const stored = getReq.result as Document | undefined
-          if (stored === undefined) {
-            documentsStore.put(doc)
-            result.documents += 1
-            return
-          }
-          const storedView = normalizedDocument(stored)
-          const merged = mergeDocuments([storedView], [doc])[0]
-          if (sameValue(merged, storedView)) return
+          const storedView = stored === undefined ? undefined : normalizedDocument(stored)
+          const incoming = normalizedDocument(doc)
+          const merged =
+            storedView === undefined ? incoming : mergeDocuments([storedView], [incoming])[0]
+          if (storedView !== undefined && sameValue(merged, storedView)) return
           documentsStore.put(merged)
           result.documents += 1
         }
@@ -357,9 +366,13 @@ export async function writeLocal(
           result.tombstones += 1
         }
 
-        // The tombstone wins over any document row.
+        // The tombstone wins over any document row. Reserved bookkeeping
+        // records are never a document, even if a hostile row names one.
         documentsStore.delete(tombstone.documentId)
-        if (tombstone.documentId !== SYNC_META_KEY) {
+        // A permanent delete removes the cached body too: it is user text, not
+        // a disposable cache, and the tombstone is the last local trace.
+        contentStore.delete(tombstone.documentId)
+        if (!isReservedDocumentMetaId(tombstone.documentId)) {
           metaStore.delete(tombstone.documentId)
         }
         whenReady(() => {

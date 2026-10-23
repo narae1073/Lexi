@@ -1,0 +1,4 @@
+# The version of this file committed before R3 embedded a literal NUL byte in a
+# string literal, so git classified every diff of it as binary. The file is
+# ordinary UTF-8 TS; force textual diffs so the cache change is reviewable.
+src/lib/api/offlineCache.ts text diff

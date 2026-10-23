@@ -3,6 +3,8 @@ import type { StoreName } from '../storage/localDb'
 import type { DocumentTombstone } from '../storage/purged'
 import type { WordStateRecord } from './merge'
 import type { OccurrenceRow } from './mapping'
+import type { ProjectionState } from './projectionState'
+import type { ProjectionQuotaBucket, ProjectionRow } from './wordbookPull'
 import type { WriteLocalResult } from './writeLocal'
 
 export type PullWatermarks = { snapshot?: string }
@@ -89,6 +91,44 @@ export type StoredSyncState = {
   lastSyncedAt?: string
 }
 
+/**
+ * What one cycle's projection pull read.
+ *
+ * The projection has its own snapshot and per-language cursor; it never shares
+ * the document pull watermark. `next` is applied to the reserved device-local
+ * state **after** the rows it describes are stored (see `syncOnce`), which is
+ * what makes a crash resume from a cursor that still names stored rows.
+ */
+export type ProjectionPull = {
+  /** Languages whose projection was requested this cycle. */
+  languages: string[]
+  /** Languages pulled from a new full snapshot this cycle (empty on resume). */
+  full: string[]
+  /**
+   * Languages that start a **fresh** full pass this cycle: their stored state
+   * had no usable snapshot (new language, corrupted state, or a manual reset).
+   * Only these are cleared before their rows are applied; a resumed full pass
+   * must never clear what its earlier pages already stored.
+   */
+  reset: string[]
+  /** Per-language state to persist after the rows are stored. */
+  next: Record<string, ProjectionState>
+  /** Per-language completeness after this cycle. */
+  complete: Partial<Record<string, boolean>>
+  /**
+   * Full or incremental passes that could not finish this cycle. Rows read so
+   * far and their cursors are stored; the next cycle resumes. `pauseReason`
+   * says whether the soft byte budget or a server quota caused the pause.
+   */
+  paused: string[]
+  /** Why {@link paused} is non-empty, or null when every pass finished. */
+  pauseReason: 'bytes' | 'quota' | 'state' | null
+  /** Denied quota bucket and backoff when `pauseReason` is `quota`. */
+  quota: { bucket: ProjectionQuotaBucket; retryAfterSeconds: number } | null
+  /** Server snapshot this cycle's projection passes were bounded by. */
+  snapshot: string
+}
+
 export type PullResult = {
   languages: string[]
   documents: Document[]
@@ -96,6 +136,15 @@ export type PullResult = {
   folders: Folder[]
   wordStates: WordStateRecord[]
   occurrences: OccurrenceRow[]
+  /**
+   * Document ids whose occurrence rows were read in full this cycle. An empty
+   * list means the initial projection path read no occurrences: the merge must
+   * keep the local rows instead of treating them as removed.
+   */
+  occurrenceDocumentIds: string[]
+  /** Wordbook projection rows read this cycle, possibly spanning languages. */
+  wordbookEntries: ProjectionRow[]
+  projection: ProjectionPull
   totals: { documents: number; wordStates: number }
   watermarks: { snapshot: string }
 }
@@ -106,6 +155,30 @@ export type SyncReport = {
   pulled: number
   documents: number
   languages: string[]
+  /** Languages whose wordbook projection was requested this cycle. */
+  projectionLanguages: string[]
+  /**
+   * Base wordbook completeness per language: true once a full pass finished,
+   * so the language is offline-complete at its stored snapshot. This is **not**
+   * "this cycle's pass finished" — `projectionPaused` carries the per-cycle
+   * pass state. Task 10 must treat `projectionPaused` as the progress signal
+   * and must not infer an unfinished pass from `projectionComplete`.
+   */
+  projectionComplete: Partial<Record<string, boolean>>
+  /**
+   * Full projection passes paused by the soft 64 MB byte budget or by a server
+   * quota denial. Their cursor is stored, so the next cycle resumes them; the
+   * UI can show a continue prompt instead of an error (Task 10 owns the prompt
+   * copy). Fresh full passes resume from a cursor and do not spend the daily
+   * complete-sync quota again.
+   */
+  projectionPaused: string[]
+  /** Why `projectionPaused` is non-empty; null when nothing was paused. */
+  projectionPausedReason: 'bytes' | 'quota' | 'state' | null
+  /** Denied quota bucket when the pause was a rate/daily limit. */
+  projectionQuotaBucket: ProjectionQuotaBucket | null
+  /** Seconds the client should wait before the next projection retry. */
+  projectionQuotaRetryAfterSeconds: number | null
   /** The next pull watermark. */
   watermarks: PullWatermarks
   /** The next per-table push watermarks; failed tables keep their old value. */

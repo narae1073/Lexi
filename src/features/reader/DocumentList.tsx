@@ -2,11 +2,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
+import { useAuthStore } from '../../app/stores/auth'
 import { useFoldersStore } from '../../app/stores/folders'
+import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useSettingsStore, useTranslation } from '../../app/stores/settings'
+import { useSyncStore } from '../../app/stores/sync'
+import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import { documentProgress, groupByDocument } from './documentProgress'
+import { changedStatuses, documentProgress, groupByDocument } from './documentProgress'
+import {
+  computeDocumentProgress,
+  preparationProgress,
+  type DocumentProgress,
+  type ProgressEntry,
+} from '../wordbook/wordbookProjection'
+import { createWordbookWorkerClient } from '../wordbook/wordbookWorker'
 import { FolderMenu } from './FolderMenu'
 import { FolderPicker } from './FolderPicker'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -14,12 +25,15 @@ import {
   activeDocuments,
   documentLanguageFilterOrDefault,
   DOCUMENT_SORTS,
+  documentLength,
   documentsOfLanguage,
   languagesWithDocuments,
   sortDocuments,
 } from './documentSort'
 import { childrenOf, folderOfDocument, pruneNestedTicks, visibleRoots } from './folderTree'
-import type { Folder } from '../../types'
+import type { Folder, LanguageCode, WordStatus } from '../../types'
+
+const EMPTY_PAUSED: string[] = []
 
 export function DocumentList() {
   const t = useTranslation()
@@ -28,6 +42,22 @@ export function DocumentList() {
   const loading = useDocumentsStore((s) => s.loading)
   const occurrences = useOccurrencesStore((s) => s.occurrences)
   const byKey = useWordStatesStore((s) => s.byKey)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
+  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
+  const quotaRetrySeconds = useSyncStore(
+    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
+  )
+  const syncNow = useSyncStore((s) => s.syncNow)
+  const userId = useAuthStore((s) => s.user?.id ?? null)
+  const enrolled = useLanguagesStore((s) => s.enrolled)
+  const projectionEntries = useWordbookStore((s) => s.entriesByLanguage)
+  const projectionDataRevision = useWordbookStore((s) => s.dataRevision)
+  const completeByLanguage = useWordbookStore((s) => s.projectionCompleteByLanguage)
+  const loadedLanguages = useWordbookStore((s) => s.loadedLanguages)
+  const refreshWordbook = useWordbookStore((s) => s.refreshFromStore)
+  const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
   const documentSort = useSettingsStore((s) => s.documentSort)
   const setDocumentSort = useSettingsStore((s) => s.setDocumentSort)
   const documentSortDir = useSettingsStore((s) => s.documentSortDir)
@@ -157,29 +187,178 @@ export function DocumentList() {
     inputRef.current?.focus()
   }, [creating])
 
-  /**
-   * 문서별 진도를 한 번에 계산한다.
-   *
-   * 문서마다 따로 훅을 부르면 목록이 늘 때 hooks 순서가 달라져 버린다.
-   * 게다가 상태를 표시할 때마다 문서를 전부 다시 훑는다 — memo 로 막는다.
-   */
-  const progressByDocument = useMemo(() => {
-    const grouped = groupByDocument(occurrences)
-    const result = new Map<string, ReturnType<typeof documentProgress>>()
-    for (const [documentId, rows] of grouped) {
-      const languageCode = rows[0]?.languageCode
-      if (!languageCode) continue
-      result.set(
-        documentId,
-        documentProgress(rows, (lemma) => byKey[`${languageCode}::${lemma}`]),
-      )
-    }
-    return result
-  }, [occurrences, byKey])
-
   // 휴지통에 있는 문서는 목록에 나오지 않는다 — 되살릴 곳이 있어야 한다
   const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
   const trashedCount = allDocuments.length - documents.length
+
+  /**
+   * Document progress.
+   *
+   * R3 account mode derives it from projection contexts in a worker: every
+   * context carries a document id, so an ordinary document and a paged one
+   * (whose occurrence rows were never downloaded) both get a gauge. Local-only
+   * mode keeps the occurrence-built calculation: every document that has words
+   * on this device has its rows here too, so there is nothing a projection
+   * would add.
+   */
+  const [progressWorker] = useState(() => createWordbookWorkerClient())
+  useEffect(() => {
+    return () => progressWorker.terminate()
+  }, [progressWorker])
+
+  const [projectedProgress, setProjectedProgress] = useState<Map<string, DocumentProgress>>(
+    () => new Map(),
+  )
+
+  /**
+   * The status of every entry the worker last rebuilt, keyed `${language}::${lemma}`.
+   *
+   * A status tap patches the main-thread row and must reach the worker as an
+   * override. Sending every known word state on each call meant copying ~25k
+   * statuses for one tap on the 200k fixture; only keys that differ from the
+   * dataset the worker holds are actually overrides.
+   */
+  const rebuiltStatusRef = useRef<Map<string, WordStatus | 'unmarked'>>(new Map())
+
+  const projectionReadyLanguages = useMemo(() => {
+    const ready = new Set<string>()
+    for (const language of enrolled) {
+      if (completeByLanguage[language] === true && loadedLanguages[language] === true) {
+        ready.add(language)
+      }
+    }
+    return ready
+  }, [enrolled, completeByLanguage, loadedLanguages])
+
+  const localProgressLanguages = useMemo(() => {
+    if (localOnly) return null
+    return new Set(enrolled.filter((language) => !projectionReadyLanguages.has(language)))
+  }, [localOnly, enrolled, projectionReadyLanguages])
+
+  const preparing = !localOnly && enrolled.some((language) => !projectionReadyLanguages.has(language))
+  const preparation = preparationProgress(completeByLanguage, enrolled)
+  const projectionPaused = pausedLanguages.some((language) =>
+    enrolled.includes(language as LanguageCode),
+  )
+  const quotaPaused = projectionPaused && pausedReason === 'quota'
+  const statePaused = projectionPaused && pausedReason === 'state'
+  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
+
+  /** Reads persisted completeness; this is what keeps an R2 upgrade on local data. */
+  useEffect(() => {
+    if (localOnly) return
+    void refreshReadiness(userId)
+  }, [localOnly, lastSyncedAt, refreshReadiness, userId])
+
+  /** Only complete languages are read from the projection. */
+  useEffect(() => {
+    if (localOnly) return
+    for (const language of enrolled) {
+      if (completeByLanguage[language] === true) void refreshWordbook(language)
+    }
+  }, [localOnly, enrolled, completeByLanguage, refreshWordbook, lastSyncedAt])
+
+  /**
+   * Rebuild the worker dataset when projection content changes. Status taps
+   * arrive through the small override map below, so a 116k payload is not
+   * re-sent for each tap.
+   */
+  useEffect(() => {
+    if (localOnly || projectionReadyLanguages.size === 0) return
+    const entries = Object.entries(useWordbookStore.getState().entriesByLanguage)
+      .filter(([language]) => projectionReadyLanguages.has(language))
+      .flatMap(([, rows]) => rows)
+    const rebuiltStatuses = new Map<string, WordStatus | 'unmarked'>()
+    for (const entry of entries) {
+      rebuiltStatuses.set(
+        `${entry.languageCode}::${entry.lemma}`,
+        entry.status ?? 'unmarked',
+      )
+    }
+    // Adopt the snapshot before sending so the next progress request can stay
+    // small. If the rebuild fails, the worker still holds the previous dataset;
+    // restore the matching snapshot unless a newer rebuild has replaced it.
+    const previousStatuses = rebuiltStatusRef.current
+    rebuiltStatusRef.current = rebuiltStatuses
+    void progressWorker.rebuild(entries, '').catch((error) => {
+      if (rebuiltStatusRef.current === rebuiltStatuses) {
+        rebuiltStatusRef.current = previousStatuses
+      }
+      console.error('문서 진도 준비 실패', error)
+    })
+  }, [localOnly, projectionDataRevision, projectionReadyLanguages, progressWorker])
+
+  const projectedEntries = useMemo(
+    () =>
+      Object.entries(projectionEntries)
+        .filter(([language]) => projectionReadyLanguages.has(language))
+        .flatMap(([, rows]) => rows),
+    [projectionEntries, projectionReadyLanguages],
+  )
+
+  useEffect(() => {
+    if (localOnly || projectedEntries.length === 0) return
+
+    const documentIds = documents.map((doc) => ({ id: doc.id }))
+    // Only statuses that differ from the dataset the worker holds are overrides.
+    // A projection row's status is already in the rebuilt dataset; sending every
+    // word state would copy the whole language for one tap.
+    const statuses = changedStatuses(byKey, rebuiltStatusRef.current)
+    let cancelled = false
+
+    void progressWorker
+      .progress(undefined, documentIds, statuses)
+      .then((progress) => {
+        if (!cancelled) setProjectedProgress(progress)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        // Keep the gauge correct even if the worker boundary is unavailable.
+        console.error('문서 진도 계산 실패', error)
+        setProjectedProgress(
+          computeDocumentProgress(
+            projectedEntries as unknown as ProgressEntry[],
+            documentIds,
+          ),
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [localOnly, projectedEntries, documents, byKey, progressWorker])
+
+  /**
+   * Local progress: local-only mode and every language whose projection is not
+   * complete/loaded yet (R2 upgrade, new device). The two maps cover disjoint
+   * documents, so merging them never mixes a partial projection with local
+   * occurrence rows for the same document.
+   */
+  const legacyProgressByDocument = useMemo(() => {
+    const rows = localOnly
+      ? occurrences
+      : occurrences.filter(
+          (occurrence) => localProgressLanguages?.has(occurrence.languageCode) === true,
+        )
+    const grouped = groupByDocument(rows)
+    const result = new Map<string, ReturnType<typeof documentProgress>>()
+    for (const [documentId, documentRows] of grouped) {
+      const languageCode = documentRows[0]?.languageCode
+      if (!languageCode) continue
+      result.set(
+        documentId,
+        documentProgress(documentRows, (lemma) => byKey[`${languageCode}::${lemma}`]),
+      )
+    }
+    return result
+  }, [localOnly, occurrences, byKey, localProgressLanguages])
+
+  const progressByDocument = useMemo(() => {
+    if (localOnly) return legacyProgressByDocument
+    if (projectedEntries.length === 0) return legacyProgressByDocument
+    if (legacyProgressByDocument.size === 0) return projectedProgress
+    return new Map([...legacyProgressByDocument, ...projectedProgress])
+  }, [localOnly, legacyProgressByDocument, projectedEntries.length, projectedProgress])
 
   /**
    * 언어 필터는 두 문지기를 거친다.
@@ -319,6 +498,44 @@ export function DocumentList() {
           </button>
         )}
       </div>
+      {(preparing || projectionPaused) && (
+        <div className="border-line flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-5 py-2 text-xs">
+          {preparing && (
+            <span
+              role="status"
+              data-list-preparing
+              className="text-ink-muted min-w-0 flex-1"
+            >
+              {t('list.wordbookPreparing', {
+                ready: preparation.ready,
+                total: preparation.total,
+              })}
+            </span>
+          )}
+          {projectionPaused && (
+            <span role="status" data-list-paused className="text-status-unsure min-w-0 flex-1">
+              <strong className="font-medium">
+                {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
+              </strong>{' '}
+              {quotaPaused
+                ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+                : statePaused
+                  ? t('wordbook.statePausedHint')
+                  : t('wordbook.pausedHint')}
+            </span>
+          )}
+          {projectionPaused && !quotaPaused && !statePaused && (
+            <button
+              type="button"
+              data-list-continue
+              onClick={() => void syncNow()}
+              className="border-status-unsure text-status-unsure shrink-0 rounded-md border px-2.5 py-1 font-medium hover:bg-surface"
+            >
+              {t('wordbook.pausedContinue')}
+            </button>
+          )}
+        </div>
+      )}
       <div className="border-line flex flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
         <div className="flex flex-wrap items-center gap-3">
           {showLanguageFilter && (
@@ -425,8 +642,9 @@ export function DocumentList() {
                     <span className="text-ink-muted text-xs">
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
-                        count: doc.rawText.trim().length,
-                        date: new Date(doc.updatedAt).toLocaleString(),
+                        count: documentLength(doc),
+                        // The list's "recent" key is the last open, not a content edit
+                        date: new Date(doc.lastOpenedAt ?? doc.updatedAt).toLocaleString(),
                       })}
                     </span>
                   </span>
@@ -443,8 +661,9 @@ export function DocumentList() {
                     <span className="text-ink-muted text-xs">
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
-                        count: doc.rawText.trim().length,
-                        date: new Date(doc.updatedAt).toLocaleString(),
+                        count: documentLength(doc),
+                        // The list's "recent" key is the last open, not a content edit
+                        date: new Date(doc.lastOpenedAt ?? doc.updatedAt).toLocaleString(),
                       })}
                     </span>
                   </span>

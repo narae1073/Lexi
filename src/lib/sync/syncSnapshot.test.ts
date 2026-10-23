@@ -31,7 +31,17 @@ function serverWord(lemma: string, id: string, updatedAt = SNAPSHOT) {
   }
 }
 
-async function sync(server: ReturnType<typeof memoryServer>, since?: { snapshot?: string }) {
+/**
+ * R3's first sync hydrates from the wordbook projection and reads no
+ * `word_states`; these cases exercise the incremental word-state pull, so they
+ * start from a snapshot before the fixture rows.
+ */
+const BEFORE = { snapshot: '2026-10-29T00:00:00.000Z' }
+
+async function sync(
+  server: ReturnType<typeof memoryServer>,
+  since: { snapshot?: string } = BEFORE,
+) {
   return syncOnce({ userId: USER_ID, languages: ['fr'], db: server.client, since })
 }
 

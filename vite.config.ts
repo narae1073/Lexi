@@ -38,7 +38,11 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // wasm 을 포함한다 — Lindera 런타임은 오프라인 사전 사용의 전제다.
+        // 사전 zip 은 여기 넣지 않는다: 설치 시점에 17 MB 를 더 받게 되고,
+        // 사용자가 허락한 뒤 OPFS 에 한 번만 받는 편이 낫다.
+        globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         navigateFallbackDenylist: [/^\/functions\//],
         runtimeCaching: [
           {

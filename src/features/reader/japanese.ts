@@ -4,6 +4,7 @@ import {
   ensureLindera,
   isLinderaReady,
   peekLindera,
+  requestDictionaryDownload,
   useLinderaUpgrade,
   type LinderaToken,
 } from './lindera'
@@ -43,6 +44,15 @@ export function isJapaneseReady(): boolean {
 
 export function ensureJapaneseTokenizer() {
   return ensureLindera('ja')
+}
+
+/**
+ * 설정 화면의 명시적 사전 다운로드.
+ *
+ * 10.5 MB zip 이므로 자동 다운로드 설정과 무관하게 크기를 보여 주고 확인을 받는다.
+ */
+export function downloadJapaneseDictionary() {
+  return requestDictionaryDownload('ja')
 }
 
 /** lindera 토큰 → 문자 오프셋 형태소. 원형이 없으면(*) 표기를 쓴다 */

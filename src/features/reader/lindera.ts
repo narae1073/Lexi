@@ -12,14 +12,217 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 
+import { useSettingsStore } from '../../app/stores/settings'
+import { createTranslator, type AppLanguage } from '../../i18n'
+
 export type LinderaDict = 'ja' | 'zh'
 
-const DICTS: Record<
+/**
+ * 사전 zip 의 정확한 크기.
+ *
+ * 다운로드 전에 사용자에게 이 숫자를 보여 준다 — 10.5 MB 는 요금제에 따라
+ * 공짜가 아니고, 앱이 말없이 받아서는 안 되는 크기다. 사전 자체는 번들에
+ * 넣지 않는다 (번들이 10 MB 넘게 커진다).
+ */
+export const DICTIONARY_DOWNLOADS: Record<
   LinderaDict,
-  { name: string; url: string }
+  { name: string; url: string; bytes: number; label: string }
 > = {
-  ja: { name: 'ipadic-5.3.0', url: '/dicts/lindera-ipadic-5.3.0.zip' },
-  zh: { name: 'cc-cedict-5.3.0', url: '/dicts/lindera-cc-cedict-5.3.0.zip' },
+  ja: {
+    name: 'ipadic-5.3.0',
+    url: '/dicts/lindera-ipadic-5.3.0.zip',
+    bytes: Math.round(10.5 * 1024 * 1024),
+    label: '10.5 MB',
+  },
+  zh: {
+    name: 'cc-cedict-5.3.0',
+    url: '/dicts/lindera-cc-cedict-5.3.0.zip',
+    bytes: Math.round(7.25 * 1024 * 1024),
+    label: '7.25 MB',
+  },
+}
+
+/**
+ * 사전을 말없이 받아도 되는 환경인가.
+ *
+ * 사용자가 자동 다운로드를 켰더라도 `saveData`(데이터 절약)나 2G 급 연결,
+ * 셀룰러로 보고된 연결에서는 묻는다. 연결 정보를 브라우저가 안 알려 주면
+ * (`effectiveType`/`connectionType` 없음) 자동을 막지 않는다 — 알 수 없는 것을
+ * 느린 연결로 단정하면 매번 묻게 된다.
+ */
+export type DictionaryDownloadEnvironment = {
+  /** 사용자 설정: 묻지 않고 받기 */
+  autoDownload: boolean
+  saveData: boolean
+  /** NetworkInformation.effectiveType — 'slow-2g' | '2g' | '3g' | '4g' */
+  effectiveType?: string
+  /** NetworkInformation.type — 대부분의 브라우저는 노출하지 않는다 */
+  connectionType?: string
+  online: boolean
+}
+
+const SLOW_EFFECTIVE_TYPES = new Set(['slow-2g', '2g'])
+
+export function shouldAutoDownload(env: DictionaryDownloadEnvironment): boolean {
+  if (!env.autoDownload || !env.online || env.saveData) return false
+  if (env.effectiveType && SLOW_EFFECTIVE_TYPES.has(env.effectiveType)) return false
+  if (env.connectionType === 'cellular') return false
+  return true
+}
+
+/** 설정 화면의 '묻지 않고 받기' 값. 기기별 취향이라 localStorage 에 둔다. */
+const AUTO_DOWNLOAD_KEY = 'lexi.dictionary.autoDownload'
+
+export function isDictionaryAutoDownloadEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(AUTO_DOWNLOAD_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function setDictionaryAutoDownloadEnabled(enabled: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(AUTO_DOWNLOAD_KEY, enabled ? 'true' : 'false')
+  } catch {
+    // 저장 못 해도 이번 세션의 동작은 유지된다
+  }
+}
+
+type NetworkInformationLike = {
+  saveData?: boolean
+  effectiveType?: string
+  type?: string
+}
+
+function currentDownloadEnvironment(): DictionaryDownloadEnvironment {
+  if (typeof navigator === 'undefined') {
+    return { autoDownload: false, saveData: false, online: false }
+  }
+  const connection = (navigator as Navigator & { connection?: NetworkInformationLike })
+    .connection
+  return {
+    autoDownload: isDictionaryAutoDownloadEnabled(),
+    saveData: connection?.saveData === true,
+    effectiveType: connection?.effectiveType,
+    connectionType: connection?.type,
+    online: navigator.onLine !== false,
+  }
+}
+
+/**
+ * 확인 대화상자 문구. 사전 이름과 정확한 크기를 넣고 앱 언어로 쓴다.
+ *
+ * React 훅이 아니라 확인 창/설정 화면에서 바로 쓸 수 있게 순수 함수로 둔다.
+ */
+export function dictionaryPromptMessage(
+  dict: LinderaDict,
+  language: AppLanguage = 'en',
+): string {
+  const t = createTranslator(language)
+  const name = t(dict === 'ja' ? 'languageNames.ja' : 'languageNames.zh')
+  return t('dictionary.downloadPrompt', { language: name, size: DICTIONARY_DOWNLOADS[dict].label })
+}
+
+/**
+ * 확인 창에 쓸 앱 언어.
+ *
+ * `document.documentElement.lang` 은 화면이 그려진 뒤에나 맞는다 — 설정에서
+ * 언어를 고르고 곧바로 사전을 받는 경우엔 아직 옛 값일 수 있다. 저장된 설정을
+ * 직접 읽어 사용자가 고른 언어를 쓴다.
+ */
+export function dictionaryPromptLanguage(): AppLanguage {
+  try {
+    return useSettingsStore.getState().resolvedAppLanguage()
+  } catch {
+    return 'en'
+  }
+}
+
+/**
+ * 기본 확인 방법. 브라우저 확인 창을 쓴다.
+ *
+ * 확인 창이 없는 환경(테스트·아주 오래된 브라우저)에서는 거절로 본다 —
+ * 허락 없이 10 MB 를 받는 것보다 폴백이 낫다.
+ */
+function confirmDownload(dict: LinderaDict): Promise<boolean> {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
+    return Promise.resolve(false)
+  }
+  return Promise.resolve(
+    window.confirm(dictionaryPromptMessage(dict, dictionaryPromptLanguage())),
+  )
+}
+
+/**
+ * 이번 세션에 사용자가 거절한 사전.
+ *
+ * 거절은 존중한다 — 문서를 열 때마다 같은 확인 창을 다시 띄우면 괴롭다.
+ * 설정 화면에서 명시적으로 다시 받겠다고 하면 지운다.
+ */
+const declinedThisSession = new Set<LinderaDict>()
+
+async function promptOnce(dict: LinderaDict): Promise<boolean> {
+  if (declinedThisSession.has(dict)) return false
+  const allowed = await confirmDownload(dict)
+  if (allowed) declinedThisSession.delete(dict)
+  else declinedThisSession.add(dict)
+  return allowed
+}
+
+/**
+ * 설정 화면의 명시적 다운로드에서 거절된 사전.
+ *
+ * 세션 거절(`declinedThisSession`)과 따로 둔다 — 설정에서 누른 다운로드는
+ * 이전 거절과 무관하게 항상 묻지만, 그 대화상자에서 취소한 것은 사용자에게
+ * "취소됨" 으로 알려야 한다.
+ */
+const forcedPromptDenied = new Set<LinderaDict>()
+
+async function confirmForced(dict: LinderaDict): Promise<boolean> {
+  forcedPromptDenied.delete(dict)
+  const allowed = await confirmDownload(dict)
+  if (!allowed) forcedPromptDenied.add(dict)
+  return allowed
+}
+
+/** 사전 다운로드를 실제로 읽고 토크나이저를 만드는 부분 — 테스트에서 갈아끼울 수 있다. */
+export type LinderaLoadDeps = {
+  hasDictionary: (name: string) => Promise<boolean>
+  downloadDictionary: (url: string, name: string) => Promise<void>
+  loadTokenizer: (name: string) => Promise<LinderaTokenizer>
+}
+
+/**
+ * 사전 확보 + 로딩의 핵심 경로.
+ *
+ * 이미 OPFS 에 있으면 그냥 연다. 없으면 자동 다운로드가 허락된 경우에만
+ * 묻지 않고 받고, 아니면 확인을 받는다. `forcePrompt` 는 설정 화면의 명시적
+ * 다운로드용이라 자동 다운로드가 켜져 있어도 반드시 확인을 받는다. 거절하면
+ * null — 호출부는 기존 Intl 분절로 폴백한다.
+ */
+export async function loadLinderaWith(
+  dict: LinderaDict,
+  deps: LinderaLoadDeps,
+  env: DictionaryDownloadEnvironment,
+  confirm: (dict: LinderaDict) => Promise<boolean>,
+  options: { forcePrompt?: boolean } = {},
+): Promise<LinderaTokenizer | null> {
+  const { name, url } = DICTIONARY_DOWNLOADS[dict]
+
+  if (!(await deps.hasDictionary(name))) {
+    // forcePrompt 는 자동 다운로드보다 우선한다 — 사용자가 직접 누른 다운로드는
+    // 자동 설정과 무관하게 크기를 보고 허락해야 시작한다.
+    const allowed = options.forcePrompt
+      ? await confirm(dict)
+      : shouldAutoDownload(env) || (await confirm(dict))
+    if (!allowed) return null
+    await deps.downloadDictionary(url, name)
+  }
+
+  return deps.loadTokenizer(name)
 }
 
 export type LinderaToken = {
@@ -83,51 +286,113 @@ function markReady(dict: LinderaDict, tokenizer: LinderaTokenizer | null): Linde
 /**
  * 토크나이저를 준비한다 — 성공하면 같은 것을 돌려준다.
  *
- * 실패하면 null 이다. 사전이 없고 네트워크도 없으면 기존 분절기로 폴백한다 —
- * 문서가 안 열리는 일은 없다.
+ * 실패하면 null 이다. 사전이 없고 네트워크도 없거나 사용자가 다운로드를
+ * 거절하면 기존 분절기로 폴백한다 — 문서가 안 열리는 일은 없다.
+ *
+ * `forcePrompt` 는 설정 화면의 명시적 다운로드용이다. 자동 다운로드가 켜져
+ * 있어도 정확한 크기를 보여 주고 확인을 받는다.
  */
-export function ensureLindera(dict: LinderaDict): Promise<LinderaTokenizer | null> {
+export function ensureLindera(
+  dict: LinderaDict,
+  options: { forcePrompt?: boolean } = {},
+): Promise<LinderaTokenizer | null> {
   const hit = cached.get(dict)
   if (hit) return Promise.resolve(hit)
   const ongoing = loading.get(dict)
   if (ongoing) return ongoing
-  const next = loadLindera(dict)
+  const next = loadLindera(dict, options)
     .then((tokenizer) => markReady(dict, tokenizer))
     .catch(() => markReady(dict, null))
   loading.set(dict, next)
   return next
 }
 
-async function loadLindera(dict: LinderaDict): Promise<LinderaTokenizer | null> {
+async function loadLindera(
+  dict: LinderaDict,
+  options: { forcePrompt?: boolean } = {},
+): Promise<LinderaTokenizer | null> {
   if (typeof window === 'undefined') return null
   try {
     const [{ TokenizerBuilder, loadDictionaryFromBytes }, opfs] = await Promise.all([
       import('lindera-wasm-bundler'),
       import('lindera-wasm-bundler/opfs'),
     ])
-    const { name, url } = DICTS[dict]
-    if (!(await opfs.hasDictionary(name))) {
-      await opfs.downloadDictionary(url, name)
+
+    const deps: LinderaLoadDeps = {
+      hasDictionary: (name) => opfs.hasDictionary(name),
+      downloadDictionary: (url, name) => opfs.downloadDictionary(url, name),
+      loadTokenizer: async (name) => {
+        const files = await opfs.loadDictionaryFiles(name)
+        const dictionary = loadDictionaryFromBytes(
+          files.metadata,
+          files.dictTrie,
+          files.dictValsIdx,
+          files.dictVals,
+          files.dictWordsIdx,
+          files.dictWords,
+          files.matrixMtx,
+          files.charDef,
+          files.unk,
+        )
+        const builder = new TokenizerBuilder()
+        builder.setDictionaryInstance(dictionary)
+        builder.setMode('normal')
+        const tokenizer = builder.build()
+        return { tokenize: (text: string) => tokenizer.tokenize(text) as LinderaToken[] }
+      },
     }
-    const files = await opfs.loadDictionaryFiles(name)
-    const dictionary = loadDictionaryFromBytes(
-      files.metadata,
-      files.dictTrie,
-      files.dictValsIdx,
-      files.dictVals,
-      files.dictWordsIdx,
-      files.dictWords,
-      files.matrixMtx,
-      files.charDef,
-      files.unk,
-    )
-    const builder = new TokenizerBuilder()
-    builder.setDictionaryInstance(dictionary)
-    builder.setMode('normal')
-    const tokenizer = builder.build()
-    return { tokenize: (text: string) => tokenizer.tokenize(text) as LinderaToken[] }
+
+    const env = currentDownloadEnvironment()
+    // 명시적 다운로드는 자동 설정과 무관하게 항상 크기를 보여 주고 묻는다
+    const confirm = options.forcePrompt ? confirmForced : promptOnce
+    return await loadLinderaWith(dict, deps, env, confirm, {
+      forcePrompt: options.forcePrompt === true,
+    })
   } catch {
     return null
+  }
+}
+
+/** 설정 화면의 다운로드 결과 — 사용자에게 취소/실패를 구분해 보여 주려고 쓴다. */
+export type DictionaryDownloadResult = 'downloaded' | 'declined' | 'failed'
+
+/** 로딩 성공 여부와 '사용자가 취소했는가' 를 결과로 가른다. */
+export function dictionaryDownloadResult(
+  loaded: boolean,
+  declined: boolean,
+): DictionaryDownloadResult {
+  if (loaded) return 'downloaded'
+  return declined ? 'declined' : 'failed'
+}
+
+/**
+ * 설정 화면에서 사전을 명시적으로 받는다.
+ *
+ * 세션 거절 기록을 지우고 다시 확인을 받는다 — 사용자가 직접 누른 것이므로
+ * 이전 거절을 이유로 막지 않는다. 결과를 돌려주어 설정 화면이 '취소됨' 과
+ * '실패' 를 조용히 삼키지 않게 한다.
+ */
+export async function requestDictionaryDownload(
+  dict: LinderaDict,
+): Promise<DictionaryDownloadResult> {
+  declinedThisSession.delete(dict)
+  forcedPromptDenied.delete(dict)
+  const tokenizer = await ensureLindera(dict, { forcePrompt: true })
+  return dictionaryDownloadResult(tokenizer !== null, forcedPromptDenied.has(dict))
+}
+
+/** OPFS 에 이미 있는 사전 목록. 설정 화면 표시용이며, 실패하면 빈 배열이다. */
+export async function downloadedDictionaries(): Promise<LinderaDict[]> {
+  if (typeof window === 'undefined') return []
+  try {
+    const opfs = await import('lindera-wasm-bundler/opfs')
+    const found: LinderaDict[] = []
+    for (const dict of ['ja', 'zh'] as const) {
+      if (await opfs.hasDictionary(DICTIONARY_DOWNLOADS[dict].name)) found.push(dict)
+    }
+    return found
+  } catch {
+    return []
   }
 }
 

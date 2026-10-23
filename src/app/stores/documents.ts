@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 
-import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { clearDocumentContent } from '../../lib/storage/documentContent'
+import { STORES, idbDelete, idbGet, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import { markPurged, putDocumentTombstone } from '../../lib/storage/purged'
+import { openDocumentContent, type OpenedDocument } from '../../lib/sync/content'
 import { deleteDocumentRemote } from '../../lib/sync/sync'
 import { useAuthStore } from './auth'
 import { useOccurrencesStore } from './occurrences'
@@ -26,8 +28,16 @@ type DocumentsState = {
     /** 제목이 비었을 때 쓸 표기 — 스토어는 i18n 을 모르므로 호출부가 넘긴다 */
     fallbackTitle: string
   }) => Promise<Document>
-  /** 문서를 열어 봤음을 기록한다 — 목록에 보이는 '최근 본 시각' 의 근거 */
-  touch: (id: string) => Promise<void>
+  /**
+   * Open a document: resolve its text (fetching once when needed) and record
+   * the open.
+   *
+   * Opening is not a content edit. The server call is `touch_document` only;
+   * this device's `lastOpenedAt` is written silently (never counted as a sync
+   * change). The text is never written back into the document row — the local
+   * copy lives in the `documentContent` store.
+   */
+  open: (id: string) => Promise<OpenedDocument | undefined>
   /**
    * 문서를 폴더로 옮긴다. 폴더에 없애는 것도 같은 길이다 (folderId = null).
    *
@@ -66,6 +76,13 @@ export function sameDocuments(a: Document[], b: Document[]): boolean {
       doc.title === other.title &&
       doc.languageCode === other.languageCode &&
       doc.rawText === other.rawText &&
+      // Whether text was loaded, and which version of it, is part of what the
+      // list shows — a metadata-only row and a loaded one are not the same.
+      (doc.hasContent ?? true) === (other.hasContent ?? true) &&
+      (doc.charCount ?? null) === (other.charCount ?? null) &&
+      (doc.contentUpdatedAt ?? null) === (other.contentUpdatedAt ?? null) &&
+      (doc.occurrencesUpdatedAt ?? null) === (other.occurrencesUpdatedAt ?? null) &&
+      (doc.lastOpenedAt ?? null) === (other.lastOpenedAt ?? null) &&
       doc.createdAt === other.createdAt &&
       doc.updatedAt === other.updatedAt &&
       (doc.deletedAt ?? null) === (other.deletedAt ?? null) &&
@@ -170,6 +187,15 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
       console.error('문서 저장 지우기 실패', error)
     }
 
+    // The cached body belongs to the deleted document; keeping it would retain
+    // text the user asked to erase and could serve a stale body on a future
+    // document id reuse.
+    try {
+      await clearDocumentContent(id)
+    } catch (error) {
+      console.error('문서 본문 캐시 지우기 실패', error)
+    }
+
     try {
       await useOccurrencesStore.getState().forgetDocument(id)
     } catch (error) {
@@ -187,21 +213,35 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   },
 
   /**
-   * 문서를 연 시각을 찍는다.
+   * Open a document.
    *
-   * 이 앱에서 문서는 고치지 않는다 — 만들어서 읽기만 한다. 그래서 updated_at 은
-   * '마지막으로 읽은 시각' 이라고 읽는 것이 맞다.
+   * `openDocumentContent` resolves the text (local copy → text already in this
+   * device's document row → server). This action only records the open time.
+   *
+   * **The write is silent.** Opening is not a user content edit, so it must not
+   * count as an unpushed change. Server-side `touch_document` writes only
+   * `last_opened_at`; the next metadata sync pulls that value back.
    */
-  touch: async (id) => {
-    const now = new Date().toISOString()
+  open: async (id) => {
     const doc = get().documents.find((d) => d.id === id)
-    if (!doc || doc.updatedAt === now) return
+    if (!doc) return undefined
 
-    const next = { ...doc, updatedAt: now }
-    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
-    await idbPut(STORES.documents, next).catch((error) => {
-      console.error('문서 열람 시각 저장 실패', error)
-    })
+    const opened = await openDocumentContent({ document: doc })
+    if (opened.lastOpenedAt !== null && opened.lastOpenedAt !== (doc.lastOpenedAt ?? null)) {
+      const stored = await idbGet<Document>(STORES.documents, id)
+      if (stored !== undefined) {
+        const next = { ...stored, lastOpenedAt: opened.lastOpenedAt }
+        await idbPut(STORES.documents, next, { silent: true }).catch((error) => {
+          console.error('문서 열람 시각 저장 실패', error)
+        })
+      }
+      set((s) => ({
+        documents: s.documents.map((d) =>
+          d.id === id ? { ...d, lastOpenedAt: opened.lastOpenedAt } : d,
+        ),
+      }))
+    }
+    return opened
   },
 
   /**
@@ -246,6 +286,12 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
       title: title.trim() || fallbackTitle,
       languageCode,
       rawText,
+      // A document created here already holds its text, so the list knows its
+      // length immediately.
+      charCount: rawText.length,
+      hasContent: true,
+      contentUpdatedAt: null,
+      lastOpenedAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     }

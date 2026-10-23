@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
+import { useAuthStore } from '../../app/stores/auth'
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import type { WordOccurrence } from '../../app/stores/occurrences'
@@ -10,10 +11,23 @@ import {
   useSettingsStore,
   useTranslation,
 } from '../../app/stores/settings'
+import { useSyncStore } from '../../app/stores/sync'
+import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, filterByStarColors, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
+import type { WordbookEntry } from './buildWordbook'
+import type { ProjectionWordbookEntry } from './wordbookProjection'
+import {
+  preparationProgress,
+  resolveWordbookPresentation,
+  resolveWordbookRowSource,
+  scopeProjectionEntry,
+  searchProjectionEntries,
+} from './wordbookProjection'
+import { searchLocalProjection } from './localProjection'
+import { createWordbookWorkerClient } from './wordbookWorker'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
 import { StarColorFilter } from './StarColorFilter'
 import { WordStatusChart } from './WordStatusChart'
@@ -23,6 +37,8 @@ import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
 
 const EMPTY: WordOccurrence[] = []
+const EMPTY_ENTRIES: ProjectionWordbookEntry[] = []
+const EMPTY_PAUSED: string[] = []
 
 /**
  * 단어장 (plan.txt 9줄).
@@ -75,13 +91,163 @@ export function Wordbook() {
 
   const occurrences = useOccurrencesStore((s) => s.byLanguage[languageCode ?? ''] ?? EMPTY)
   const byKey = useWordStatesStore((s) => s.byKey)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
+  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
+  const quotaRetrySeconds = useSyncStore(
+    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
+  )
+  const syncNow = useSyncStore((s) => s.syncNow)
+  const userId = useAuthStore((s) => s.user?.id ?? null)
+  const projectionEntries = useWordbookStore(
+    (s) => s.entriesByLanguage[languageCode ?? ''] ?? EMPTY_ENTRIES,
+  )
+  const projectionRevision = useWordbookStore((s) => s.dataRevision)
+  const projectionComplete = useWordbookStore(
+    (s) => s.projectionCompleteByLanguage[languageCode ?? ''] === true,
+  )
+  const projectionLoaded = useWordbookStore(
+    (s) => s.loadedLanguages[languageCode ?? ''] === true,
+  )
+  const completeByLanguage = useWordbookStore((s) => s.projectionCompleteByLanguage)
+  const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
+  const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
 
-  const entries = useMemo(() => {
-    if (!languageCode) return []
-    // 범위는 목록 안에서 다시 확인한다 — deps 에 파생값을 넣지 않으려면 어쩔 수 없다
-    const scoped = documents.find((d) => d.id === documentId)?.id
-    return buildWordbook({ languageCode, occurrences, byKey, documentId: scoped, query })
-  }, [languageCode, occurrences, byKey, documents, documentId, query])
+  const projectionReady = localOnly ? projectionLoaded : projectionComplete && projectionLoaded
+  const presentation = resolveWordbookPresentation({
+    localOnly,
+    projectionReady,
+    projectionPaused: languageCode !== null && pausedLanguages.includes(languageCode),
+    // The R2 device already has an occurrence-built wordbook. A new device has
+    // none, so it gets the preparing state instead of an empty list.
+    hasLocalWordbook: occurrences.length > 0,
+  })
+  const localSource = presentation.source === 'local'
+  const preparation = preparationProgress(completeByLanguage, enrolled)
+  const quotaPaused = presentation.showPaused && pausedReason === 'quota'
+  const statePaused = presentation.showPaused && pausedReason === 'state'
+  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
+
+  /**
+   * Account mode reads the persisted projection state first. Until a language
+   * is complete, the local wordbook stays on screen (R2 upgrade) or a preparing
+   * state is shown (new device). The projection is read only when complete.
+   */
+  useEffect(() => {
+    if (localOnly) return
+    void refreshReadiness(userId)
+  }, [localOnly, lastSyncedAt, refreshReadiness, userId])
+
+  useEffect(() => {
+    if (!languageCode || localOnly || !projectionComplete) return
+    void refreshFromStore(languageCode)
+  }, [languageCode, localOnly, projectionComplete, refreshFromStore, lastSyncedAt])
+
+  /**
+   * The worker sorts and searches the projection off the main thread. Rebuild
+   * only when the projection content changes — a status tap patches one row and
+   * must not re-send 116k entries.
+   */
+  const [worker] = useState(() => createWordbookWorkerClient())
+  useEffect(() => {
+    return () => worker.terminate()
+  }, [worker])
+
+  const [sortedLemmas, setSortedLemmas] = useState<string[]>([])
+  /**
+   * The language whose first search has resolved. Local-only rows are shown
+   * only after that, so loading the producer never flashes an empty list.
+   * Keyed by language (not query) so typing keeps the previous ordering visible
+   * instead of rebuilding the occurrence list on every keystroke.
+   */
+  const [sortedLanguage, setSortedLanguage] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (localOnly || !languageCode || !projectionReady) return
+    const entries = useWordbookStore.getState().entriesByLanguage[languageCode] ?? []
+    void worker.rebuild(entries, languageCode).catch((error) => {
+      console.error('단어장 정렬 실패', error)
+    })
+  }, [localOnly, languageCode, projectionReady, projectionRevision, worker])
+
+  useEffect(() => {
+    if (!languageCode || !projectionReady) return
+    let cancelled = false
+    const searching = localOnly
+      ? searchLocalProjection(query, languageCode)
+      : worker.search(query, languageCode)
+    void searching
+      .then((lemmas) => {
+        if (cancelled) return
+        setSortedLemmas(lemmas)
+        setSortedLanguage(languageCode)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        // The worker is an optimization, not a correctness dependency.
+        console.error('단어장 검색 실패', error)
+        const entries = useWordbookStore.getState().entriesByLanguage[languageCode] ?? []
+        setSortedLemmas(searchProjectionEntries(entries, query, languageCode).map((entry) => entry.lemma))
+        setSortedLanguage(languageCode)
+      })
+  }, [localOnly, languageCode, projectionReady, query, projectionRevision, worker])
+
+  const rowSource = resolveWordbookRowSource({
+    localOnly,
+    presentation: presentation.source,
+    projectionReady,
+    sortedReady: sortedLanguage === languageCode,
+  })
+
+  /**
+   * Local path: an account whose projection is still incomplete (R2 upgrade),
+   * and local-only mode until the local producer's build and first search land.
+   */
+  const legacyEntries = useMemo(() => {
+    if (rowSource === 'projection' || !localSource || !languageCode) return []
+    return buildWordbook({
+      languageCode,
+      occurrences,
+      byKey,
+      documentId: effectiveDocumentId,
+      query,
+    })
+  }, [
+    rowSource,
+    localSource,
+    languageCode,
+    occurrences,
+    byKey,
+    effectiveDocumentId,
+    query,
+  ])
+
+  /**
+   * Projection path: the worker returned matching lemmas in sorted order; this
+   * maps them back to the rows already held on the main thread. A status edit
+   * changes the row objects but not the order, so no worker round-trip is needed.
+   */
+  const projectionVisible = useMemo(() => {
+    if (!projectionReady || !languageCode) return []
+    const byLemma = new Map(projectionEntries.map((entry) => [entry.lemma, entry]))
+    const matched = sortedLemmas
+      .map((lemma) => byLemma.get(lemma))
+      .filter((entry): entry is ProjectionWordbookEntry => entry !== undefined)
+    if (!effectiveDocumentId) return matched
+    return matched
+      .map((entry) => scopeProjectionEntry(entry, effectiveDocumentId))
+      .filter((entry): entry is ProjectionWordbookEntry => entry !== null)
+  }, [projectionReady, languageCode, projectionEntries, sortedLemmas, effectiveDocumentId])
+
+  /**
+   * Local-only mode uses the same read model once its producer has built and
+   * indexed it — same rows, same worker sorting, same scoping. An account's R2
+   * upgrade keeps the occurrence-built list until the server projection is
+   * complete.
+   */
+  const entries: WordbookEntry[] =
+    rowSource === 'legacy' ? legacyEntries : projectionVisible
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
   /**
@@ -150,18 +316,52 @@ export function Wordbook() {
         <p className="text-ink-muted mt-1 text-xs">
           {scopedDocument
             ? t('wordbook.scoped', { title: scopedDocument.title })
-            : t('wordbook.summary', { count: entries.length })}
+            : presentation.source === 'preparing'
+              ? t('wordbook.preparing')
+              : t('wordbook.summary', { count: entries.length })}
         </p>
       </header>
+
+      {/* Paused by the 64 MB soft cap — continue runs the next sync/resume. */}
+      {presentation.showPaused && (
+        <div
+          role="status"
+          data-wordbook-paused
+          className="border-status-unsure bg-status-unsure-bg mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2 text-xs"
+        >
+          <span className="text-status-unsure min-w-0 flex-1">
+            <strong className="font-medium">
+              {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
+            </strong>{' '}
+            {quotaPaused
+              ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+              : statePaused
+                ? t('wordbook.statePausedHint')
+                : t('wordbook.pausedHint')}
+          </span>
+          {presentation.showContinue && !quotaPaused && !statePaused && (
+            <button
+              type="button"
+              data-wordbook-continue
+              onClick={() => void syncNow()}
+              className="border-status-unsure text-status-unsure shrink-0 rounded-md border px-2.5 py-1 font-medium hover:bg-surface"
+            >
+              {t('wordbook.pausedContinue')}
+            </button>
+          )}
+        </div>
+      )}
 
       {/*
         지금 보고 있는 범위의 통계를 먼저 보여 준다. 목록 아래에 두면 아래까지 스크롤한
         뒤에야 '얼마나 남았지' 를 알게 되는데, 그 판단이 먼저여야 고르기 시작할 수 있다.
         범위가 좁혀져 있으면 그 범위의 통계가 된다 — 같은 화면에서 다른 말을 하지 않는다.
       */}
-      <div className="mb-4">
-        <WordStatusChart counts={countsFromGroups(grouped)} />
-      </div>
+      {presentation.source !== 'preparing' && (
+        <div className="mb-4">
+          <WordStatusChart counts={countsFromGroups(grouped)} />
+        </div>
+      )}
 
       {enrolled.length > 1 && (
         <div className="mb-4 flex flex-wrap gap-2">
@@ -188,7 +388,39 @@ export function Wordbook() {
         </div>
       )}
 
-      <DocumentScopeSelect
+      {presentation.source === 'preparing' ? (
+        <section
+          role="status"
+          data-wordbook-preparing
+          className="border-line bg-surface mt-2 rounded-xl border px-4 py-6"
+        >
+          <h2 className="text-sm font-medium">{t('wordbook.preparing')}</h2>
+          <p className="text-ink-muted mt-1 text-xs leading-relaxed">
+            {t('wordbook.preparingHint')}
+          </p>
+          <p className="text-ink-muted mt-3 text-xs">
+            {t('wordbook.preparingProgress', {
+              ready: preparation.ready,
+              total: preparation.total,
+            })}
+          </p>
+          <div
+            role="progressbar"
+            aria-valuenow={preparation.percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={t('wordbook.preparing')}
+            className="bg-line mt-2 h-1.5 w-full overflow-hidden rounded-full"
+          >
+            <span
+              className="bg-accent block h-full rounded-full transition-[width]"
+              style={{ width: `${preparation.percent}%` }}
+            />
+          </div>
+        </section>
+      ) : (
+        <>
+          <DocumentScopeSelect
         value={effectiveDocumentId ?? ''}
         documents={documents}
         onChange={(id) => {
@@ -262,6 +494,8 @@ export function Wordbook() {
       )}
 
       <Pagination page={current} onPageChange={setPageNumber} />
+        </>
+      )}
     </section>
   )
 }

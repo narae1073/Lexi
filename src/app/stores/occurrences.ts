@@ -2,14 +2,16 @@ import { create } from 'zustand'
 
 import {
   STORES,
-  SYNC_META_KEY,
   idbDelete,
   idbDeleteByIndex,
+  idbGet,
   idbGetAll,
   idbGetAllByIndex,
   idbPut,
+  isReservedDocumentMetaId,
   replaceOccurrences,
 } from '../../lib/storage/localDb'
+import { sameOccurrenceRecords } from '../../lib/sync/occurrenceNoop'
 import { isCapitalisedPosition, tokenize } from '../../features/reader/tokenizer'
 import {
   ensureJapaneseTokenizer,
@@ -22,6 +24,7 @@ import {
   segmentChinese,
 } from '../../features/reader/chinese'
 import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
+import { notifyLocalProjectionChange } from '../../features/wordbook/localProjection'
 import type { Document, LanguageCode, Segment, Sentence } from '../../types'
 
 /**
@@ -81,6 +84,41 @@ type OccurrencesState = {
 /** 서버의 word_occurrences 제약과 같은 상한 — 넘는 행은 동기화가 거부한다 */
 const MAX_WORD_LENGTH = 200
 const MAX_SENTENCE_LENGTH = 5_000
+
+/** One `documentMeta` row — which rules this device used for the document. */
+type DocumentMetaRow = {
+  documentId: string
+  lemmaVersion: number
+  segmenter?: string
+  /** When the occurrence rows were last written — sync uses it to pick this document */
+  occurrencesUpdatedAt?: string
+}
+
+/**
+ * Remembers a computation whose output did not change.
+ *
+ * It refreshes `lemmaVersion`/`segmenter` but **never touches
+ * `occurrencesUpdatedAt`**. That timestamp means "this device changed the
+ * occurrence rows"; stamping it on a computation that wrote nothing would make
+ * sync send the same content again. An existing timestamp is kept as is.
+ *
+ * The rule version must still be recorded: if identical output meant skipping
+ * this bookkeeping, a document computed under an old rule would stay "stale"
+ * forever and be recomputed on every app start.
+ */
+async function rememberUnchangedComputation(
+  documentId: string,
+  segmenter: 'lindera' | 'intl',
+): Promise<void> {
+  const meta = await idbGet<DocumentMetaRow>(STORES.documentMeta, documentId).catch(() => undefined)
+  if (meta?.lemmaVersion === LEMMA_VERSION && meta.segmenter === segmenter) return
+  await idbPut(STORES.documentMeta, {
+    ...meta,
+    documentId,
+    lemmaVersion: LEMMA_VERSION,
+    segmenter,
+  }).catch(() => {})
+}
 
 /** 단어장 정렬용: 문서 내 등장 순서를 유지한다 */
 function sortByPosition(a: WordOccurrence, b: WordOccurrence) {
@@ -189,11 +227,15 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     )
     rows.sort(sortByPosition)
 
+    // Compare once, before the update: the local projection is rebuilt from
+    // IndexedDB, and a load that changed nothing must not rebuild anything.
+    const changed = !sameOccurrences(get().byLanguage[languageCode], rows)
     set((s) => {
-      if (sameOccurrences(s.byLanguage[languageCode], rows)) return s
+      if (!changed) return s
       const byLanguage = { ...s.byLanguage, [languageCode]: rows }
       return { byLanguage, occurrences: flatten(byLanguage) }
     })
+    if (changed) notifyLocalProjectionChange({ type: 'language', languageCode })
   },
 
   /**
@@ -202,7 +244,18 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
    * 한 번에 하나씩 유휴 시점에 처리한다 — 문서가 많으면 토크나이징이 무겁다.
    */
   refreshStaleDocuments: async (docs) => {
-    if (docs.length === 0) return 0
+    /**
+     * Only documents whose text this device holds may be recomputed.
+     *
+     * A metadata-only document (the list pull never carried its `raw_text`) has
+     * an empty `rawText`. Tokenizing that would compute no words, and the write
+     * path would replace its server occurrence rows with an empty set and push
+     * it — a read action erasing data. Metadata-only documents keep the
+     * server's rows; the wordbook and per-document progress are derived
+     * elsewhere (projection / incremental pull).
+     */
+    const recomputable = docs.filter((doc) => doc.hasContent !== false)
+    if (recomputable.length === 0) return 0
     // 목록과 동기화가 동시에 부를 수 있다 — 중복 계산을 막는다
     if (get().refreshing) return 0
     set({ refreshing: true })
@@ -210,11 +263,11 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     const meta = await idbGetAll<{ documentId: string; lemmaVersion: number; segmenter?: string }>(
       STORES.documentMeta,
     ).catch(() => [])
-    // The reserved sync-meta record is device bookkeeping, not a document's
-    // computation record — it must never count as a known document
+    // Reserved device bookkeeping (sync meta, projection state) is not a
+    // document's computation record — it must never count as a known document
     const known = new Map(
       meta
-        .filter((m) => m.documentId !== SYNC_META_KEY)
+        .filter((m) => !isReservedDocumentMetaId(m.documentId))
         .map((m) => [m.documentId, m] as const),
     )
     /**
@@ -222,7 +275,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
      * 다시 계산한다. 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게
      * 하면 모바일 데이터를 사용자가 보지도 않은 문서에 쓰게 된다.
      */
-    const stale = docs.filter(
+    const stale = recomputable.filter(
       (doc) =>
         known.get(doc.id)?.lemmaVersion !== LEMMA_VERSION ||
         (doc.languageCode === 'ja' &&
@@ -250,72 +303,102 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
     const { segments, sentences, lemmaByStart, segmenter } = await segmentForRecord(doc)
     const words = segments.filter((s) => s.type === 'word')
-    if (words.length === 0) {
-      // 단어가 없는 문서도 '확인했다' 고 기억한다 — 안 하면 목록을 열 때마다
-      // 영영 낫지 않은 문서를 다시 훑는다. 본문은 늘지 않으므로 다시 볼 이유가 없다.
-      await idbPut(STORES.documentMeta, {
-        documentId: doc.id,
-        lemmaVersion: LEMMA_VERSION,
-        segmenter,
-        // 등장 기록을 마지막으로 쓴 시각 — 다음 동기화가 이 문서만 보낸다
-        occurrencesUpdatedAt: new Date().toISOString(),
-      }).catch(() => {})
+
+    /**
+     * Records for one computation. A wordless document yields an empty list, and
+     * the comparison below decides whether anything needs writing. That way an
+     * unchanged wordless document writes nothing: no row rewrite, no new
+     * `occurrencesUpdatedAt`, and therefore no sync push. A document that has
+     * genuinely become wordless still has old rows, so the comparison fails and
+     * the normal path clears them — which tells the server once.
+     *
+     * `recordedAt` is attached once, after every row has been collected.
+     */
+    const records: WordOccurrence[] = []
+    if (words.length > 0) {
+      // 문서 안에서 실제로 쓰인 표기만 보고 lemma 를 정한다 (US/us 분리 등)
+      const lemmaOf = resolveLemmasFromWords(
+        words.map((w) => ({
+          text: w.text,
+          // 문장의 첫 단어여도 문서 중간에 다시 나오면 구분 단서가 된다
+          sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
+        })),
+        doc.languageCode,
+      )
+
+      /** recordedAt 은 아래에서 한꺼번에 붙인다 */
+      type Draft = Omit<WordOccurrence, 'recordedAt'>
+      const byLemma = new Map<string, Draft>()
+      for (const word of words) {
+        /**
+         * 서버는 lemma·surface 를 200자까지만 받는다. 붙여넣은 URL·해시처럼
+         * 공백 없이 긴 글자는 토크나이저가 한 단어로 보므로 여기서 먼저 건너뛴다.
+         * 문서 전체를 버리지 않는다 — 나머지 단어는 그대로 기록한다.
+         */
+        if (word.text.length > MAX_WORD_LENGTH) continue
+
+        // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
+        const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
+        // 표기뿐 아니라 해석된 lemma 도 서버 상한을 지켜야 한다
+        if (lemma.length > MAX_WORD_LENGTH) continue
+        const existing = byLemma.get(lemma)
+        if (existing) {
+          existing.count += 1
+          if (!existing.surfaces.includes(word.text)) existing.surfaces.push(word.text)
+          continue
+        }
+        byLemma.set(lemma, {
+          documentId: doc.id,
+          languageCode: doc.languageCode,
+          lemma,
+          surfaces: [word.text],
+          count: 1,
+          charStart: word.start,
+          charEnd: word.end,
+          // 서버는 문장을 5,000자까지만 받는다 — 긴 문장도 예문의 앞부분은 남긴다
+          sentence: (sentences[word.sentenceIndex]?.text ?? '')
+            .trim()
+            .slice(0, MAX_SENTENCE_LENGTH),
+          documentTitle: doc.title,
+        })
+      }
+
+      const recordedAt = Date.now()
+      for (const record of byLemma.values()) records.push({ ...record, recordedAt })
+      records.sort(sortByPosition)
+    }
+
+    /**
+     * Skip the write when the last computation is still the truth.
+     *
+     * Replacing rows looks like invisible work to the user, but it clears and
+     * rewrites storage and makes sync treat the document as changed all the way
+     * to the server. The cost grows with the number of documents. A title-only
+     * rename is not an occurrence-content change either (occurrenceNoop.ts).
+     */
+    const existing = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      doc.id,
+    )
+    if (sameOccurrenceRecords(existing, records)) {
+      await rememberUnchangedComputation(doc.id, segmenter)
       set((s) => ({ recorded: { ...s.recorded, [doc.id]: true } }))
       return
     }
 
-    // 문서 안에서 실제로 쓰인 표기만 보고 lemma 를 정한다 (US/us 분리 등)
-    const lemmaOf = resolveLemmasFromWords(
-      words.map((w) => ({
-        text: w.text,
-        // 문장의 첫 단어여도 문서 중간에 다시 나오면 구분 단서가 된다
-        sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
-      })),
-      doc.languageCode,
-    )
-
-    /** recordedAt 은 아래에서 한꺼번에 붙인다 */
-    type Draft = Omit<WordOccurrence, 'recordedAt'>
-    const byLemma = new Map<string, Draft>()
-    for (const word of words) {
-      /**
-       * 서버는 lemma·surface 를 200자까지만 받는다. 붙여넣은 URL·해시처럼
-       * 공백 없이 긴 글자는 토크나이저가 한 단어로 보므로 여기서 먼저 건너뛴다.
-       * 문서 전체를 버리지 않는다 — 나머지 단어는 그대로 기록한다.
-       */
-      if (word.text.length > MAX_WORD_LENGTH) continue
-
-      // lindera 경로는 시작 자리로 원형을 바로 안다 — 표기가 겹쳐도 자리가 답이다
-      const lemma = lemmaByStart?.get(word.start) ?? lemmaOf.get(word.text) ?? word.lemma
-      // 표기뿐 아니라 해석된 lemma 도 서버 상한을 지켜야 한다
-      if (lemma.length > MAX_WORD_LENGTH) continue
-      const existing = byLemma.get(lemma)
-      if (existing) {
-        existing.count += 1
-        if (!existing.surfaces.includes(word.text)) existing.surfaces.push(word.text)
-        continue
-      }
-      byLemma.set(lemma, {
-        documentId: doc.id,
-        languageCode: doc.languageCode,
-        lemma,
-        surfaces: [word.text],
-        count: 1,
-        charStart: word.start,
-        charEnd: word.end,
-        // 서버는 문장을 5,000자까지만 받는다 — 긴 문장도 예문의 앞부분은 남긴다
-        sentence: (sentences[word.sentenceIndex]?.text ?? '')
-          .trim()
-          .slice(0, MAX_SENTENCE_LENGTH),
-        documentTitle: doc.title,
-      })
-    }
-
-    const recordedAt = Date.now()
-    const records = [...byLemma.values()]
-      .map((record) => ({ ...record, recordedAt }))
-      .sort(sortByPosition)
     await replaceOccurrences(doc.id, records)
+
+    // The local wordbook projection is derived from these rows. Announce the
+    // document after the write committed, so a local-only device can recompute
+    // just this document's lemmas from IndexedDB. The unchanged path above never
+    // reaches here — a recomputation that wrote nothing is still a projection
+    // no-op.
+    notifyLocalProjectionChange({
+      type: 'document',
+      languageCode: doc.languageCode,
+      documentId: doc.id,
+    })
 
     /**
      * 계산을 기억한다 — 다음에 이 규칙이 바뀌면 다시 계산된다.
@@ -343,6 +426,17 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   },
 
   forgetDocument: async (documentId) => {
+    /**
+     * Read the rows before deleting them. They name the languages whose local
+     * projection must drop this document, and reading by the `documentId` index
+     * is proportional to the document, not to the whole device.
+     */
+    const removedRows = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      documentId,
+    ).catch(() => [])
+
     await idbDeleteByIndex(STORES.wordOccurrences, 'documentId', documentId)
     /**
      * documentMeta 는 주키가 documentId 다 — 같은 이름의 인덱스가 없다.
@@ -352,6 +446,18 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
      * 남았다 — 새로고침해야 사라졌다.
      */
     await idbDelete(STORES.documentMeta, documentId)
+
+    // A shared lemma keeps its other documents' rows; the producer recomputes it
+    // from what remains, so a purge never takes a word that still occurs
+    // elsewhere with it.
+    for (const languageCode of new Set(removedRows.map((row) => row.languageCode))) {
+      notifyLocalProjectionChange({
+        type: 'documents-removed',
+        languageCode,
+        documentIds: [documentId],
+      })
+    }
+
     set((s) => {
       const recorded = { ...s.recorded }
       delete recorded[documentId]

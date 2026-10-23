@@ -1,14 +1,23 @@
 import { useEffect, useState } from 'react'
 
 import { useTranslation } from '../../app/stores/settings'
+import { CACHE_MAX_BYTES } from '../../lib/api/offlineCache'
 import {
   getStorageEstimate,
   isStoragePersisted,
   isStorageSupported,
   requestPersistentStorage,
 } from '../../lib/storage/storagePersistence'
+import { downloadChineseDictionary } from '../reader/chinese'
+import { downloadJapaneseDictionary } from '../reader/japanese'
+import {
+  DICTIONARY_DOWNLOADS,
+  downloadedDictionaries,
+  type LinderaDict,
+} from '../reader/lindera'
 
 type Estimate = { usage: number; quota: number }
+type DictionaryState = Record<LinderaDict, boolean>
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '—'
@@ -20,6 +29,8 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(1)} GB`
 }
 
+const DICT_ORDER: LinderaDict[] = ['ja', 'zh']
+
 /**
  * Storage card.
  *
@@ -27,6 +38,10 @@ function formatBytes(bytes: number): string {
  * every browser exposes the same Storage API, so an unknown state is reported
  * as unknown — claiming "persisted" on an unsupported browser would tell the
  * user their data is safer than it is.
+ *
+ * Dictionary downloads live here because they are the two big, visible things
+ * this app stores besides learning data: the user can see the exact size before
+ * fetching a zip, and can fetch one on demand even after declining the prompt.
  */
 export function StoragePanel() {
   const t = useTranslation()
@@ -35,19 +50,27 @@ export function StoragePanel() {
   const [status, setStatus] = useState<{ supported: boolean; persisted: boolean } | null>(null)
   const [estimate, setEstimate] = useState<Estimate | null>(null)
   const [busy, setBusy] = useState(false)
+  const [dictionaries, setDictionaries] = useState<DictionaryState | null>(null)
+  const [downloading, setDownloading] = useState<LinderaDict | null>(null)
+  const [notice, setNotice] = useState<{ dict: LinderaDict; declined: boolean } | null>(null)
 
   useEffect(() => {
     let cancelled = false
 
     void (async () => {
       const supported = isStorageSupported()
-      const [persisted, usage] = await Promise.all([
+      const [persisted, usage, downloaded] = await Promise.all([
         isStoragePersisted(),
         getStorageEstimate(),
+        downloadedDictionaries(),
       ])
       if (cancelled) return
       setStatus({ supported, persisted })
       setEstimate(usage)
+      setDictionaries({
+        ja: downloaded.includes('ja'),
+        zh: downloaded.includes('zh'),
+      })
     })()
 
     return () => {
@@ -65,6 +88,28 @@ export function StoragePanel() {
       setStatus((current) => (current ? { ...current, persisted } : current))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const download = async (dict: LinderaDict) => {
+    setDownloading(dict)
+    setNotice(null)
+    try {
+      // The language module asks for confirmation with the exact zip size.
+      const result =
+        dict === 'ja' ? await downloadJapaneseDictionary() : await downloadChineseDictionary()
+
+      const downloaded = await downloadedDictionaries()
+      setDictionaries({
+        ja: downloaded.includes('ja'),
+        zh: downloaded.includes('zh'),
+      })
+      // A cancel or a failure must not look like nothing happened.
+      if (result !== 'downloaded') {
+        setNotice({ dict, declined: result === 'declined' })
+      }
+    } finally {
+      setDownloading(null)
     }
   }
 
@@ -103,6 +148,49 @@ export function StoragePanel() {
           )}
         </>
       ) : null}
+
+      <p className="text-ink-muted mt-2 text-xs">
+        {t('settings.storageResponseCache', { size: formatBytes(CACHE_MAX_BYTES) })}
+      </p>
+
+      <p className="mt-3 text-sm font-medium">{t('settings.dictionaryTitle')}</p>
+      <div className="mt-1 space-y-1">
+        {DICT_ORDER.map((dict) => (
+          <div key={dict} className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-ink-muted">
+              {t(dict === 'ja' ? 'languageNames.ja' : 'languageNames.zh')} ·{' '}
+              {DICTIONARY_DOWNLOADS[dict].label}
+            </span>
+
+            {dictionaries?.[dict] ? (
+              <span className="text-ink-muted">{t('settings.dictionaryDownloaded')}</span>
+            ) : (
+              <button
+                type="button"
+                disabled={downloading !== null}
+                onClick={() => void download(dict)}
+                className="border-line hover:border-accent rounded-lg border px-2 py-1 disabled:opacity-40"
+              >
+                {downloading === dict
+                  ? t('list.loading')
+                  : t('settings.dictionaryDownload', {
+                      size: DICTIONARY_DOWNLOADS[dict].label,
+                    })}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {notice && (
+        <p className="text-ink-muted mt-1 text-xs" role="status">
+          {t(
+            notice.declined
+              ? 'settings.dictionaryDeclined'
+              : 'settings.dictionaryFailed',
+          )}
+        </p>
+      )}
     </div>
   )
 }
