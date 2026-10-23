@@ -5,8 +5,16 @@ import { useDocumentsStore } from '../../app/stores/documents'
 import { useFoldersStore } from '../../app/stores/folders'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useSettingsStore, useTranslation } from '../../app/stores/settings'
+import { useSyncStore } from '../../app/stores/sync'
+import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { documentProgress, groupByDocument } from './documentProgress'
+import {
+  computeDocumentProgress,
+  type DocumentProgress,
+  type ProgressEntry,
+} from '../wordbook/wordbookProjection'
+import { createWordbookWorkerClient } from '../wordbook/wordbookWorker'
 import { FolderMenu } from './FolderMenu'
 import { FolderPicker } from './FolderPicker'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -22,6 +30,8 @@ import {
 import { childrenOf, folderOfDocument, pruneNestedTicks, visibleRoots } from './folderTree'
 import type { Folder } from '../../types'
 
+const EMPTY_PROGRESS = new Map<string, DocumentProgress>()
+
 export function DocumentList() {
   const t = useTranslation()
   const languageName = useLanguageName()
@@ -29,6 +39,11 @@ export function DocumentList() {
   const loading = useDocumentsStore((s) => s.loading)
   const occurrences = useOccurrencesStore((s) => s.occurrences)
   const byKey = useWordStatesStore((s) => s.byKey)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const projectionEntries = useWordbookStore((s) => s.entriesByLanguage)
+  const projectionDataRevision = useWordbookStore((s) => s.dataRevision)
+  const refreshWordbook = useWordbookStore((s) => s.refreshFromStore)
   const documentSort = useSettingsStore((s) => s.documentSort)
   const setDocumentSort = useSettingsStore((s) => s.setDocumentSort)
   const documentSortDir = useSettingsStore((s) => s.documentSortDir)
@@ -158,13 +173,81 @@ export function DocumentList() {
     inputRef.current?.focus()
   }, [creating])
 
+  // 휴지통에 있는 문서는 목록에 나오지 않는다 — 되살릴 곳이 있어야 한다
+  const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
+  const trashedCount = allDocuments.length - documents.length
+
   /**
-   * 문서별 진도를 한 번에 계산한다.
+   * Document progress.
    *
-   * 문서마다 따로 훅을 부르면 목록이 늘 때 hooks 순서가 달라져 버린다.
-   * 게다가 상태를 표시할 때마다 문서를 전부 다시 훑는다 — memo 로 막는다.
+   * R3 account mode derives it from projection contexts in a worker: every
+   * context carries a document id, so an ordinary document and a paged one
+   * (whose occurrence rows were never downloaded) both get a gauge. Local-only
+   * accounts keep the occurrence-built calculation until Task 11.
    */
-  const progressByDocument = useMemo(() => {
+  const [progressWorker] = useState(() => createWordbookWorkerClient())
+  useEffect(() => {
+    return () => progressWorker.terminate()
+  }, [progressWorker])
+
+  const [projectedProgress, setProjectedProgress] = useState<Map<string, DocumentProgress>>(
+    () => new Map(),
+  )
+
+  useEffect(() => {
+    if (localOnly) return
+    // Reads whichever projections are on this device; after a projection pull
+    // `lastSyncedAt` changes and this runs again.
+    void refreshWordbook()
+  }, [localOnly, refreshWordbook, lastSyncedAt])
+
+  useEffect(() => {
+    if (localOnly) return
+    const entries = Object.values(useWordbookStore.getState().entriesByLanguage).flat()
+    void progressWorker.rebuild(entries, '').catch((error) => {
+      console.error('문서 진도 준비 실패', error)
+    })
+  }, [localOnly, projectionDataRevision, progressWorker])
+
+  useEffect(() => {
+    if (localOnly) return
+    const allEntries = Object.values(projectionEntries).flat()
+    if (allEntries.length === 0) return
+
+    const documentIds = documents.map((doc) => ({ id: doc.id }))
+    // Status taps arrive as a small override map; the rebuilt projection stays
+    // in the worker, so a 116k payload is not re-sent on every tap.
+    const statuses: Record<string, 'known' | 'unsure' | 'unknown' | 'unmarked'> = {}
+    for (const [key, state] of Object.entries(byKey)) {
+      statuses[key] = state.status ?? 'unmarked'
+    }
+    let cancelled = false
+
+    void progressWorker
+      .progress(undefined, documentIds, statuses)
+      .then((progress) => {
+        if (!cancelled) setProjectedProgress(progress)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        // Keep the gauge correct even if the worker boundary is unavailable.
+        console.error('문서 진도 계산 실패', error)
+        setProjectedProgress(
+          computeDocumentProgress(
+            allEntries as unknown as ProgressEntry[],
+            documentIds,
+          ),
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [localOnly, projectionDataRevision, projectionEntries, documents, byKey, progressWorker])
+
+  /** Local-only: the old occurrence scan, unchanged (Task 11 replaces it). */
+  const legacyProgressByDocument = useMemo(() => {
+    if (!localOnly) return new Map<string, ReturnType<typeof documentProgress>>()
     const grouped = groupByDocument(occurrences)
     const result = new Map<string, ReturnType<typeof documentProgress>>()
     for (const [documentId, rows] of grouped) {
@@ -176,11 +259,13 @@ export function DocumentList() {
       )
     }
     return result
-  }, [occurrences, byKey])
+  }, [localOnly, occurrences, byKey])
 
-  // 휴지통에 있는 문서는 목록에 나오지 않는다 — 되살릴 곳이 있어야 한다
-  const documents = useMemo(() => activeDocuments(allDocuments), [allDocuments])
-  const trashedCount = allDocuments.length - documents.length
+  const progressByDocument = localOnly
+    ? legacyProgressByDocument
+    : Object.values(projectionEntries).some((entries) => entries.length > 0)
+      ? projectedProgress
+      : EMPTY_PROGRESS
 
   /**
    * 언어 필터는 두 문지기를 거친다.

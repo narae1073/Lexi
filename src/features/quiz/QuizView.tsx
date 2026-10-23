@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
+import { useSyncStore } from '../../app/stores/sync'
+import { useWordbookStore } from '../../app/stores/wordbook'
 import { wordKey, useWordStatesStore } from '../../app/stores/wordStates'
 import { statusPillClass } from '../../lib/color'
 import type { LanguageCode, Segment, WordStatus } from '../../types'
@@ -57,9 +59,15 @@ export function QuizView() {
   const occurrences = useOccurrencesStore((s) => s.byLanguage)
   const byKey = useWordStatesStore((s) => s.byKey)
   const pressStatus = useWordStatesStore((s) => s.pressStatus)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
 
   const [phase, setPhase] = useState<Phase>('setup')
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(enrolled[0] ?? null)
+  const projectionEntries = useWordbookStore(
+    (s) => s.entriesByLanguage[languageCode ?? ''] ?? [],
+  )
+  const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
   /** 고른 개수. 아직 안 골랐으면 가장 큰 선택지로 본다 */
   const [size, setSize] = useState<number | null>(null)
 
@@ -83,17 +91,27 @@ export function QuizView() {
   })
 
   /** 이 언어의 단어장 — 퀴즈와 복습의 공통 재료 */
+  useEffect(() => {
+    if (!languageCode || localOnly) return
+    void refreshFromStore(languageCode)
+  }, [languageCode, localOnly, refreshFromStore, lastSyncedAt])
+
   const entries = useMemo(() => {
     // 세션·요약에서는 시작할 때 떠 둔 사본을 쓴다. 답할 때마다 byKey 가 바뀌는데
     // 그때마다 등장 기록 전체를 다시 훑으면 큰 단어장에서 화면이 멈춘다.
     if (phase !== 'setup') return sessionEntries
     if (!languageCode) return []
-    return buildWordbook({
-      languageCode,
-      occurrences: occurrences[languageCode] ?? [],
-      byKey,
-    })
-  }, [phase, languageCode, occurrences, byKey, sessionEntries])
+    // Local-only accounts keep the occurrence builder until Task 11.
+    if (localOnly) {
+      return buildWordbook({
+        languageCode,
+        occurrences: occurrences[languageCode] ?? [],
+        byKey,
+      })
+    }
+    // Account wordbooks (including quiz contexts) come from the projection.
+    return projectionEntries
+  }, [phase, languageCode, localOnly, occurrences, byKey, sessionEntries, projectionEntries])
 
   /** 아직 확실하지 않은 단어 — 새로 배우는 재료 */
   const pool = useMemo(() => quizPool(entries), [entries])

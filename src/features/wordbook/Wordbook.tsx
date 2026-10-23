@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
@@ -10,10 +10,16 @@ import {
   useSettingsStore,
   useTranslation,
 } from '../../app/stores/settings'
+import { useSyncStore } from '../../app/stores/sync'
+import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
 import { buildWordbook, filterByStarColors, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
+import type { WordbookEntry } from './buildWordbook'
+import type { ProjectionWordbookEntry } from './wordbookProjection'
+import { scopeProjectionEntry, searchProjectionEntries } from './wordbookProjection'
+import { createWordbookWorkerClient } from './wordbookWorker'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
 import { StarColorFilter } from './StarColorFilter'
 import { WordStatusChart } from './WordStatusChart'
@@ -23,6 +29,7 @@ import { Pagination } from './Pagination'
 import { WordbookItem } from './WordbookItem'
 
 const EMPTY: WordOccurrence[] = []
+const EMPTY_ENTRIES: ProjectionWordbookEntry[] = []
 
 /**
  * 단어장 (plan.txt 9줄).
@@ -75,13 +82,91 @@ export function Wordbook() {
 
   const occurrences = useOccurrencesStore((s) => s.byLanguage[languageCode ?? ''] ?? EMPTY)
   const byKey = useWordStatesStore((s) => s.byKey)
+  const localOnly = useSyncStore((s) => s.localOnly)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const projectionEntries = useWordbookStore(
+    (s) => s.entriesByLanguage[languageCode ?? ''] ?? EMPTY_ENTRIES,
+  )
+  const projectionRevision = useWordbookStore((s) => s.dataRevision)
+  const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
 
-  const entries = useMemo(() => {
-    if (!languageCode) return []
-    // 범위는 목록 안에서 다시 확인한다 — deps 에 파생값을 넣지 않으려면 어쩔 수 없다
-    const scoped = documents.find((d) => d.id === documentId)?.id
-    return buildWordbook({ languageCode, occurrences, byKey, documentId: scoped, query })
-  }, [languageCode, occurrences, byKey, documents, documentId, query])
+  /**
+   * Account wordbooks read the projection (R3). Local-only accounts keep the
+   * occurrence-built wordbook until Task 11 moves the local producer to the same
+   * read model — this task must not break that mode.
+   */
+  useEffect(() => {
+    if (!languageCode || localOnly) return
+    void refreshFromStore(languageCode)
+  }, [languageCode, localOnly, refreshFromStore, lastSyncedAt])
+
+  /**
+   * The worker sorts and searches the projection off the main thread. Rebuild
+   * only when the projection content changes — a status tap patches one row and
+   * must not re-send 116k entries.
+   */
+  const [worker] = useState(() => createWordbookWorkerClient())
+  useEffect(() => {
+    return () => worker.terminate()
+  }, [worker])
+
+  const [sortedLemmas, setSortedLemmas] = useState<string[]>([])
+
+  useEffect(() => {
+    if (localOnly || !languageCode) return
+    const entries = useWordbookStore.getState().entriesByLanguage[languageCode] ?? []
+    void worker.rebuild(entries, languageCode).catch((error) => {
+      console.error('단어장 정렬 실패', error)
+    })
+  }, [localOnly, languageCode, projectionRevision, worker])
+
+  useEffect(() => {
+    if (localOnly || !languageCode) return
+    let cancelled = false
+    void worker
+      .search(query, languageCode)
+      .then((lemmas) => {
+        if (!cancelled) setSortedLemmas(lemmas)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        // The worker is an optimization, not a correctness dependency.
+        console.error('단어장 검색 실패', error)
+        const entries = useWordbookStore.getState().entriesByLanguage[languageCode] ?? []
+        setSortedLemmas(searchProjectionEntries(entries, query, languageCode).map((entry) => entry.lemma))
+      })
+  }, [localOnly, languageCode, query, projectionRevision, worker])
+
+  /** Local-only path: the existing occurrence builder, untouched. */
+  const legacyEntries = useMemo(() => {
+    if (!localOnly || !languageCode) return []
+    return buildWordbook({
+      languageCode,
+      occurrences,
+      byKey,
+      documentId: effectiveDocumentId,
+      query,
+    })
+  }, [localOnly, languageCode, occurrences, byKey, effectiveDocumentId, query])
+
+  /**
+   * Projection path: the worker returned matching lemmas in sorted order; this
+   * maps them back to the rows already held on the main thread. A status edit
+   * changes the row objects but not the order, so no worker round-trip is needed.
+   */
+  const projectionVisible = useMemo(() => {
+    if (localOnly || !languageCode) return []
+    const byLemma = new Map(projectionEntries.map((entry) => [entry.lemma, entry]))
+    const matched = sortedLemmas
+      .map((lemma) => byLemma.get(lemma))
+      .filter((entry): entry is ProjectionWordbookEntry => entry !== undefined)
+    if (!effectiveDocumentId) return matched
+    return matched
+      .map((entry) => scopeProjectionEntry(entry, effectiveDocumentId))
+      .filter((entry): entry is ProjectionWordbookEntry => entry !== null)
+  }, [localOnly, languageCode, projectionEntries, sortedLemmas, effectiveDocumentId])
+
+  const entries: WordbookEntry[] = localOnly ? legacyEntries : projectionVisible
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
   /**
