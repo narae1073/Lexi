@@ -141,6 +141,20 @@ export function memoryServer(
             }
             const key = keyOf(table, row)
             const at = tables[table].findIndex((existing) => keyOf(table, existing) === key)
+            if (table === 'documents') {
+              const existing = at >= 0 ? tables[table][at] : undefined
+              if (row.raw_text !== undefined) {
+                // The real triggers maintain char_count and content_updated_at.
+                if (row.char_count === undefined) {
+                  row.char_count = Array.from(String(row.raw_text)).length
+                }
+                if (existing === undefined || existing.raw_text !== row.raw_text) {
+                  row.content_updated_at = row.content_updated_at ?? snapshot
+                }
+              }
+              // A metadata-only upsert carries no raw_text: the existing text and
+              // its version columns must stay exactly as they were.
+            }
             if (at >= 0) tables[table][at] = { ...tables[table][at], ...row }
             else tables[table].push(row)
           }
@@ -185,6 +199,10 @@ export function memoryServer(
     },
     rpc: async (name: string, args: Record<string, unknown> = {}) => {
       rpcCalls[name] = (rpcCalls[name] ?? 0) + 1
+      const rejectRpc = rpcRejects.get(name)
+      if (rejectRpc && rejectRpc(args)) {
+        return { data: null, error: { message: `${name} rejected` } }
+      }
       if (name === 'sync_snapshot') return { data: snapshot, error: null }
       if (name === 'get_wordbook_projection_page') {
         const language = String(args.p_language_code)
@@ -219,12 +237,88 @@ export function memoryServer(
           .map((row) => ({ ...row }))
         return { data: page, error: null }
       }
+      if (name === 'get_document_payload') {
+        const document = tables.documents.find(
+          (row) => row.id === args.p_document_id && row.user_id === 'user-1',
+        )
+        if (document === undefined) return { data: null, error: null }
+        const occurrences = tables.word_occurrences
+          .filter(
+            (row) =>
+              row.document_id === document.id && row.user_id === 'user-1',
+          )
+          .sort(
+            (a, b) =>
+              Number(a.char_start) - Number(b.char_start) ||
+              Number(a.char_end) - Number(b.char_end) ||
+              compare(a.lemma, b.lemma) ||
+              compare(a.surface, b.surface),
+          )
+          .map((row) => ({
+            languageCode: row.language_code,
+            lemma: row.lemma,
+            surface: row.surface,
+            charStart: row.char_start,
+            charEnd: row.char_end,
+            sentence: row.sentence,
+            occurrencesCount: row.occurrences_count ?? 1,
+          }))
+        return {
+          data: {
+            rawText: String(document.raw_text ?? ''),
+            contentUpdatedAt: document.content_updated_at ?? null,
+            occurrencesUpdatedAt: document.occurrences_updated_at ?? null,
+            occurrences,
+          },
+          error: null,
+        }
+      }
+      if (name === 'get_document_content_page') {
+        const document = tables.documents.find(
+          (row) => row.id === args.p_document_id && row.user_id === 'user-1',
+        )
+        if (document === undefined) return { data: null, error: null }
+        // Page by code point, like Postgres char_length/substr.
+        const characters = Array.from(String(document.raw_text ?? ''))
+        const after = Math.max(Math.trunc(Number(args.p_after_char ?? 0)) || 0, 0)
+        const limit = Math.min(
+          Math.max(Math.trunc(Number(args.p_max_chars ?? 262144)) || 262144, 1),
+          1_000_000,
+        )
+        const pageText = characters.slice(after, after + limit).join('')
+        const nextOffset = Math.min(after + Array.from(pageText).length, characters.length)
+        return {
+          data: {
+            rawText: pageText,
+            contentUpdatedAt: document.content_updated_at ?? null,
+            charCount: characters.length,
+            nextOffset,
+            done: nextOffset >= characters.length,
+          },
+          error: null,
+        }
+      }
+      if (name === 'touch_document') {
+        const document = tables.documents.find(
+          (row) => row.id === args.p_document_id && row.user_id === 'user-1',
+        )
+        if (document === undefined) {
+          return { data: null, error: { message: 'document not found' } }
+        }
+        const opened = args.p_opened_at as string | null
+        const previous = document.last_opened_at as string | null | undefined
+        if (
+          opened !== null &&
+          opened !== undefined &&
+          (previous === null || previous === undefined || compare(opened, previous) > 0)
+        ) {
+          document.last_opened_at = opened
+          document.server_updated_at = snapshot
+        }
+        return { data: null, error: null }
+      }
       if (name !== 'replace_word_occurrences') {
         return { data: null, error: { message: `unknown rpc ${name}` } }
-      }
-      const rejectRpc = rpcRejects.get(name)
-      if (rejectRpc && rejectRpc(args)) {
-        return { data: null, error: { message: `${name} rejected` } }
       }
       const documentId = String(args.p_document_id)
       const rows = (args.p_rows ?? []) as Record<string, unknown>[]

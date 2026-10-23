@@ -17,6 +17,34 @@ export type DocumentTombstoneRow = Database['public']['Tables']['document_tombst
 export type OccurrenceRow = Database['public']['Tables']['word_occurrences']['Row']
 
 /**
+ * Columns a document list needs, without the text.
+ *
+ * R3 pulls metadata only: `raw_text` is what made a 200k-document sync heavy,
+ * and a document is opened at most a few at a time. `char_count` gives the list
+ * its length and sort key, and the version columns tell an open whether a local
+ * copy of the text is still current.
+ */
+export const DOCUMENT_METADATA_COLUMNS = [
+  'id',
+  'user_id',
+  'title',
+  'language_code',
+  'created_at',
+  'updated_at',
+  'deleted_at',
+  'folder_id',
+  'folder_updated_at',
+  'server_updated_at',
+  'last_opened_at',
+  'content_updated_at',
+  'occurrences_updated_at',
+  'char_count',
+].join(',')
+
+/** A document row as a metadata-only read returns it. */
+export type DocumentMetadataRow = Omit<DocumentRow, 'raw_text'> & { raw_text?: string }
+
+/**
  * 서버에 보낼 때는 Insert 모양(자동 채번 열 없음)으로 만든다.
  *
  * upsert 의 payload 에 id 를 넣으면, 기존 행이 갱신될 때 그 자리에 쓰인 값으로
@@ -112,15 +140,13 @@ export function documentTombstoneFromRow(row: DocumentTombstoneRow): DocumentTom
   }
 }
 
-// server_updated_at, occurrences_hash, and the R3 version columns are
-// server-owned. Sending any of them on a document upsert would overwrite the
-// value the server just computed (opening a document, for example, must not
-// look like a content edit).
-export function documentToRow(
+/** The non-text fields every document write shares. */
+function documentMetadataFields(
   userId: string,
   doc: Document,
 ): Omit<
   DocumentRow,
+  | 'raw_text'
   | 'server_updated_at'
   | 'occurrences_hash'
   | 'last_opened_at'
@@ -133,26 +159,93 @@ export function documentToRow(
     user_id: userId,
     title: doc.title,
     language_code: doc.languageCode,
-    raw_text: doc.rawText,
     created_at: doc.createdAt,
     updated_at: doc.updatedAt,
     deleted_at: doc.deletedAt ?? null,
-    // 옮기지 않은 문서도 같은 말을 한다 (null) — 옛내 행이 서버 기본값으로 잠기지 않게
+    // 옮기지 않은 문서도 같은 말을 한다 (null) — 옛 행이 서버 기본값으로 잠기지 않게
     folder_id: doc.folderId ?? null,
     folder_updated_at: doc.folderUpdatedAt ?? null,
   }
 }
 
+/**
+ * A document write for a document whose text this device holds.
+ *
+ * `server_updated_at`, `occurrences_hash`, and the R3 version columns are
+ * server-owned. Sending any of them on a document upsert would overwrite the
+ * value the server just computed (opening a document, for example, must not
+ * look like a content edit).
+ */
+export function documentToRow(
+  userId: string,
+  doc: Document,
+): ReturnType<typeof documentMetadataFields> & { raw_text: string } {
+  return {
+    ...documentMetadataFields(userId, doc),
+    raw_text: doc.rawText,
+  }
+}
+
+/**
+ * A document write for a metadata-only document.
+ *
+ * `raw_text` is deliberately absent. Sending an empty string would erase the
+ * server's text — the one write that is never allowed to happen by accident.
+ * PostgREST's upsert updates only the keys it receives, so the existing text
+ * stays exactly as it was; a metadata-only row is always an update of a row
+ * that already exists on the server.
+ */
+export function documentMetadataToRow(
+  userId: string,
+  doc: Document,
+): ReturnType<typeof documentMetadataFields> {
+  return documentMetadataFields(userId, doc)
+}
+
+/** A full document row (with text) as the legacy pull and tests build it. */
 export function documentFromRow(row: DocumentRow): Document {
   return {
     id: row.id,
     title: row.title,
     languageCode: row.language_code as LanguageCode,
     rawText: row.raw_text,
+    charCount: row.char_count ?? row.raw_text.length,
+    hasContent: true,
+    contentUpdatedAt: row.content_updated_at ?? null,
+    occurrencesUpdatedAt: row.occurrences_updated_at ?? null,
+    lastOpenedAt: row.last_opened_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at ?? null,
     // 마이그레이션 이전 행에는 없다 — 서버 기본값이 있어도 여기서 기본값을 정한다
+    folderId: row.folder_id ?? null,
+    folderUpdatedAt: row.folder_updated_at ?? row.updated_at,
+  }
+}
+
+/**
+ * A metadata-only document row as the list pull returns it.
+ *
+ * `rawText` is always empty and `hasContent` is always false, whatever a row
+ * happens to include: the list pull never carries text, and treating a stray
+ * `raw_text` as loaded content would make a remote copy silently override the
+ * local one. The text is loaded on open (see `sync/content.ts`).
+ */
+export function documentMetadataFromRow(row: DocumentMetadataRow): Document {
+  const serverLength = typeof row.raw_text === 'string' ? row.raw_text.length : 0
+  return {
+    id: row.id,
+    title: row.title,
+    languageCode: row.language_code as LanguageCode,
+    rawText: '',
+    charCount: row.char_count ?? serverLength,
+    hasContent: false,
+    contentUpdatedAt: row.content_updated_at ?? null,
+    occurrencesUpdatedAt: row.occurrences_updated_at ?? null,
+    lastOpenedAt: row.last_opened_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? null,
     folderId: row.folder_id ?? null,
     folderUpdatedAt: row.folder_updated_at ?? row.updated_at,
   }

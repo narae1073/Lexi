@@ -158,10 +158,19 @@ function sameValue(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right)
 }
 
-/** Old document rows have no folder stamp — read them the way `readLocal` does. */
+/**
+ * Old document rows have no folder stamp, content version, or lazy-content
+ * flags — read them the way `readLocal` does. A row written before R3 holds its
+ * text, so `hasContent` defaults to true rather than marking it metadata-only.
+ */
 function normalizedDocument(doc: Document): Document {
   return {
     ...doc,
+    hasContent: doc.hasContent ?? true,
+    charCount: doc.charCount ?? doc.rawText.length,
+    contentUpdatedAt: doc.contentUpdatedAt ?? null,
+    occurrencesUpdatedAt: doc.occurrencesUpdatedAt ?? null,
+    lastOpenedAt: doc.lastOpenedAt ?? null,
     folderId: doc.folderId ?? null,
     folderUpdatedAt: doc.folderUpdatedAt ?? doc.updatedAt,
   }
@@ -300,14 +309,11 @@ export async function writeLocal(
         const getReq = documentsStore.get(doc.id)
         getReq.onsuccess = () => {
           const stored = getReq.result as Document | undefined
-          if (stored === undefined) {
-            documentsStore.put(doc)
-            result.documents += 1
-            return
-          }
-          const storedView = normalizedDocument(stored)
-          const merged = mergeDocuments([storedView], [doc])[0]
-          if (sameValue(merged, storedView)) return
+          const storedView = stored === undefined ? undefined : normalizedDocument(stored)
+          const incoming = normalizedDocument(doc)
+          const merged =
+            storedView === undefined ? incoming : mergeDocuments([storedView], [incoming])[0]
+          if (storedView !== undefined && sameValue(merged, storedView)) return
           documentsStore.put(merged)
           result.documents += 1
         }

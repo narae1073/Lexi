@@ -103,6 +103,9 @@ export const ko: Dictionary = {
     titleLabel: '문서 제목',
     titleHint: '클릭해 제목을 바꿉니다',
     toWordbook: '이 문서의 단어',
+    loading: '본문을 받는 중…',
+    loadFailed: '문서 본문을 받지 못했습니다. 연결을 확인하고 다시 시도해 주세요.',
+    retry: '다시 시도',
   },
 
   status: {

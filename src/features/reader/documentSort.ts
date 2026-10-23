@@ -50,16 +50,29 @@ export function flipDirection(direction: SortDirection): SortDirection {
   return direction === 'asc' ? 'desc' : 'asc'
 }
 
-/** 목록 글자 수 — '글자가 많은 순' 의 기준 */
+/**
+ * 목록 글자 수 — '글자가 많은 순' 의 기준.
+ *
+ * 메타데이터만 받은 문서에는 본문이 없다. 서버가 센 `charCount` 가 있으면
+ * 그것을 쓴다 — 길이를 알기 위해 본문을 받아 올 이유가 없다.
+ */
 export function documentLength(doc: Document): number {
+  if (typeof doc.charCount === 'number' && Number.isFinite(doc.charCount)) {
+    return doc.charCount
+  }
   return doc.rawText.trim().length
 }
 
 /**
  * 주 키 비교기 — 방향을 적용할 대상이다.
+ *
+ * '최근 본 순' 은 마지막으로 **연** 시각이다. 여는 일은 `updated_at` 을
+ * 건드리지 않으므로(내용 수정이 아니다) `lastOpenedAt` 을 먼저 보고, 아직
+ * 기록이 없는 옛 문서는 `updatedAt` 으로 대신한다.
  */
 const PRIMARY: Record<DocumentSort, (a: Document, b: Document) => number> = {
-  recent: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+  recent: (a, b) =>
+    (a.lastOpenedAt ?? a.updatedAt).localeCompare(b.lastOpenedAt ?? b.updatedAt),
   created: (a, b) => a.createdAt.localeCompare(b.createdAt),
   longest: (a, b) => documentLength(a) - documentLength(b),
   alpha: (a, b) => a.title.localeCompare(b.title, 'en', { sensitivity: 'base' }),

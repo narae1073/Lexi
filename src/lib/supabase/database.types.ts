@@ -418,6 +418,10 @@ export type Database = {
         Args: { p_document_id: string }
         Returns: Json
       }
+      get_document_content_page: {
+        Args: { p_document_id: string; p_after_char: number | null; p_max_chars: number | null }
+        Returns: Json
+      }
       touch_document: {
         Args: { p_document_id: string; p_opened_at: string | null }
         Returns: undefined

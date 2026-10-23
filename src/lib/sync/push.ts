@@ -12,6 +12,7 @@ import {
 import type { DocumentTombstone } from '../storage/purged'
 import type { Database } from '../supabase/database.types'
 import {
+  documentMetadataToRow,
   documentTombstoneToRow,
   documentToRow,
   folderToRow,
@@ -299,15 +300,47 @@ export async function push({
     outcome,
   )
 
+  /**
+   * Documents split by whether this device holds their text.
+   *
+   * A metadata-only row must never carry `raw_text`: an empty string would erase
+   * the server's text for a document that was only renamed, moved, or trashed on
+   * a device that never opened it. The metadata batch therefore omits the
+   * column entirely and updates the row that already exists.
+   */
+  const documentsWithContent = documents.filter((doc) => doc.hasContent !== false)
+  const metadataOnlyDocuments = documents.filter((doc) => doc.hasContent === false)
+
   await pushPlan(
     {
       table: 'documents',
-      rows: documents,
+      rows: documentsWithContent,
       keyOf: (doc) => doc.id,
       chunkSize: DOCUMENT_CHUNK,
       send: (part) =>
         db.from('documents').upsert(
           part.map((doc) => documentToRow(userId, doc)),
+          { onConflict: 'id' },
+        ),
+    },
+    dirtyFor('documents'),
+    outcome,
+  )
+
+  await pushPlan(
+    {
+      table: 'documents',
+      rows: metadataOnlyDocuments,
+      keyOf: (doc) => doc.id,
+      chunkSize: DOCUMENT_CHUNK,
+      send: (part) =>
+        db.from('documents').upsert(
+          // The generated Insert type makes raw_text mandatory (a full row). A
+          // metadata-only upsert deliberately omits it; PostgREST updates only
+          // the keys it receives, so the existing text is left untouched.
+          part.map(
+            (doc) => documentMetadataToRow(userId, doc),
+          ) as Database['public']['Tables']['documents']['Insert'][],
           { onConflict: 'id' },
         ),
     },

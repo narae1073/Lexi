@@ -14,6 +14,7 @@ import {
   activeDocuments,
   documentLanguageFilterOrDefault,
   DOCUMENT_SORTS,
+  documentLength,
   documentsOfLanguage,
   languagesWithDocuments,
   sortDocuments,
@@ -425,7 +426,7 @@ export function DocumentList() {
                     <span className="text-ink-muted text-xs">
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
-                        count: doc.rawText.trim().length,
+                        count: documentLength(doc),
                         date: new Date(doc.updatedAt).toLocaleString(),
                       })}
                     </span>
@@ -443,7 +444,7 @@ export function DocumentList() {
                     <span className="text-ink-muted text-xs">
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
-                        count: doc.rawText.trim().length,
+                        count: documentLength(doc),
                         date: new Date(doc.updatedAt).toLocaleString(),
                       })}
                     </span>

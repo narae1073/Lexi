@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 
-import { STORES, idbDelete, idbGetAll, idbPut } from '../../lib/storage/localDb'
+import { STORES, idbDelete, idbGet, idbGetAll, idbPut } from '../../lib/storage/localDb'
 import { markPurged, putDocumentTombstone } from '../../lib/storage/purged'
+import { openDocumentContent, type OpenedDocument } from '../../lib/sync/content'
 import { deleteDocumentRemote } from '../../lib/sync/sync'
 import { useAuthStore } from './auth'
 import { useOccurrencesStore } from './occurrences'
@@ -26,8 +27,14 @@ type DocumentsState = {
     /** 제목이 비었을 때 쓸 표기 — 스토어는 i18n 을 모르므로 호출부가 넘긴다 */
     fallbackTitle: string
   }) => Promise<Document>
-  /** 문서를 열어 봤음을 기록한다 — 목록에 보이는 '최근 본 시각' 의 근거 */
-  touch: (id: string) => Promise<void>
+  /**
+   * 문서를 연다 — 본문을 (필요하면 한 번 받아) 돌려주고 열람 시각만 남긴다.
+   *
+   * 여는 일은 내용을 고치는 일이 아니다. 서버에는 `touch_document` 만 부르고,
+   * 이 기기의 `lastOpenedAt` 은 조용히(동기화 변경으로 세지 않고) 적는다.
+   * 본문을 문서 행에 되쓰지도 않는다 — 본문 사본은 `documentContent` 저장소에 있다.
+   */
+  open: (id: string) => Promise<OpenedDocument | undefined>
   /**
    * 문서를 폴더로 옮긴다. 폴더에 없애는 것도 같은 길이다 (folderId = null).
    *
@@ -66,6 +73,12 @@ export function sameDocuments(a: Document[], b: Document[]): boolean {
       doc.title === other.title &&
       doc.languageCode === other.languageCode &&
       doc.rawText === other.rawText &&
+      // 본문을 아직 받지 않았는지, 받은 본문이 어느 버전인지도 목록의 말이다
+      (doc.hasContent ?? true) === (other.hasContent ?? true) &&
+      (doc.charCount ?? null) === (other.charCount ?? null) &&
+      (doc.contentUpdatedAt ?? null) === (other.contentUpdatedAt ?? null) &&
+      (doc.occurrencesUpdatedAt ?? null) === (other.occurrencesUpdatedAt ?? null) &&
+      (doc.lastOpenedAt ?? null) === (other.lastOpenedAt ?? null) &&
       doc.createdAt === other.createdAt &&
       doc.updatedAt === other.updatedAt &&
       (doc.deletedAt ?? null) === (other.deletedAt ?? null) &&
@@ -187,21 +200,35 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   },
 
   /**
-   * 문서를 연 시각을 찍는다.
+   * 문서를 연다.
    *
-   * 이 앱에서 문서는 고치지 않는다 — 만들어서 읽기만 한다. 그래서 updated_at 은
-   * '마지막으로 읽은 시각' 이라고 읽는 것이 맞다.
+   * 본문 해석은 `openDocumentContent` 가 맡는다 (로컬 사본 → 이 기기에 이미 있는
+   * 본문 → 서버). 여기서는 열람 시각만 이 기기에 남긴다.
+   *
+   * **조용히 쓴다.** 열기는 사용자가 고친 내용이 아니므로 동기화 변경으로 세면
+   * 안 된다. 서버는 `touch_document` 가 `last_opened_at` 만 찍고, 다음 메타데이터
+   * 동기화가 그 값을 그대로 가져온다.
    */
-  touch: async (id) => {
-    const now = new Date().toISOString()
+  open: async (id) => {
     const doc = get().documents.find((d) => d.id === id)
-    if (!doc || doc.updatedAt === now) return
+    if (!doc) return undefined
 
-    const next = { ...doc, updatedAt: now }
-    set((s) => ({ documents: s.documents.map((d) => (d.id === id ? next : d)) }))
-    await idbPut(STORES.documents, next).catch((error) => {
-      console.error('문서 열람 시각 저장 실패', error)
-    })
+    const opened = await openDocumentContent({ document: doc })
+    if (opened.lastOpenedAt !== null && opened.lastOpenedAt !== (doc.lastOpenedAt ?? null)) {
+      const stored = await idbGet<Document>(STORES.documents, id)
+      if (stored !== undefined) {
+        const next = { ...stored, lastOpenedAt: opened.lastOpenedAt }
+        await idbPut(STORES.documents, next, { silent: true }).catch((error) => {
+          console.error('문서 열람 시각 저장 실패', error)
+        })
+      }
+      set((s) => ({
+        documents: s.documents.map((d) =>
+          d.id === id ? { ...d, lastOpenedAt: opened.lastOpenedAt } : d,
+        ),
+      }))
+    }
+    return opened
   },
 
   /**
@@ -246,6 +273,11 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
       title: title.trim() || fallbackTitle,
       languageCode,
       rawText,
+      // 이 기기에서 만든 문서는 본문을 이미 들고 있다 — 목록 길이도 바로 안다
+      charCount: rawText.length,
+      hasContent: true,
+      contentUpdatedAt: null,
+      lastOpenedAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     }

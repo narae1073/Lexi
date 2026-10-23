@@ -35,6 +35,8 @@ import { WordPopover } from './WordPopover'
 import { WordWithStar } from './WordWithStar'
 import { useChineseUpgrade } from './chinese'
 import { useJapaneseUpgrade } from './japanese'
+import { mayRecomputeOccurrences } from './documentContent'
+import { DocumentContentError } from '../../lib/sync/content'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -87,10 +89,47 @@ export function ReaderView({ doc }: { doc: Document }) {
   const t = useTranslation()
   const languageName = useLanguageName()
 
-  const base = useMemo(
-    () => tokenize(doc.rawText, doc.languageCode),
-    [doc.rawText, doc.languageCode],
+  /**
+   * 본문은 열 때 받아 온다 (R3).
+   *
+   * 목록은 메타데이터만 들고 있으므로 메타데이터만 받은 문서의 `rawText` 는
+   * 비어 있다. 이 기기에 이미 본문이 있으면 그대로 그리고, 없으면 한 번 받아
+   * `documentContent` 저장소에 둔다 — 다시 열 때는 요청이 없다.
+   */
+  const openDocument = useDocumentsStore((s) => s.open)
+  const [contentText, setContentText] = useState<string | null>(
+    doc.hasContent === false ? null : doc.rawText,
   )
+  const [contentError, setContentError] = useState<{
+    message: string
+    recoverable: boolean
+  } | null>(null)
+  const [contentAttempt, setContentAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    void openDocument(doc.id)
+      .then((opened) => {
+        if (cancelled || opened === undefined) return
+        setContentText(opened.rawText)
+        // 본문과 함께 받은 등장 기록이 저장소에 들어왔을 수 있다
+        void useOccurrencesStore.getState().loadLanguage(doc.languageCode)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setContentError({
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: error instanceof DocumentContentError ? error.recoverable : true,
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [doc.id, doc.contentUpdatedAt, doc.languageCode, openDocument, contentAttempt])
+
+  const text = contentText ?? ''
+
+  const base = useMemo(() => tokenize(text, doc.languageCode), [text, doc.languageCode])
 
   /**
    * 일본어·중국어는 형태소 분석기로 업그레이드한다.
@@ -99,8 +138,8 @@ export function ReaderView({ doc }: { doc: Document }) {
    * 사전을 기다리게 하지 않는다. 준비 전후의 lemma 가 다를 수 있어
    * lemmaFor 는 업그레이드 표를 먼저 본다.
    */
-  const jaUpgrade = useJapaneseUpgrade(doc.rawText, doc.languageCode)
-  const zhUpgrade = useChineseUpgrade(doc.rawText, doc.languageCode)
+  const jaUpgrade = useJapaneseUpgrade(text, doc.languageCode)
+  const zhUpgrade = useChineseUpgrade(text, doc.languageCode)
   const upgrade = jaUpgrade ?? zhUpgrade
   const segments = upgrade?.segments ?? base.segments
   const sentences = upgrade?.sentences ?? base.sentences
@@ -109,7 +148,6 @@ export function ReaderView({ doc }: { doc: Document }) {
   const loadWordStates = useWordStatesStore((s) => s.loadLanguage)
   const recordOccurrences = useOccurrencesStore((s) => s.recordDocument)
   const navigate = useNavigate()
-  const touchDocument = useDocumentsStore((s) => s.touch)
   const renameDocument = useDocumentsStore((s) => s.rename)
   const trashDocument = useDocumentsStore((s) => s.trash)
   /** 버리기 전에 한 번 묻는 상자가 열려 있는가 */
@@ -146,11 +184,11 @@ export function ReaderView({ doc }: { doc: Document }) {
     return resolveLemmasFromWords(
       words.map((w) => ({
         text: w.text,
-        sentenceInitial: isCapitalisedPosition(doc.rawText, sentences, w.start, w.sentenceIndex),
+        sentenceInitial: isCapitalisedPosition(text, sentences, w.start, w.sentenceIndex),
       })),
       doc.languageCode,
     )
-  }, [segments, sentences, doc.rawText, doc.languageCode])
+  }, [segments, sentences, text, doc.languageCode])
 
   /** 세그먼트의 대표 lemma */
   const lemmaFor = useCallback(
@@ -168,7 +206,9 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const refreshStale = useOccurrencesStore((s) => s.refreshStaleDocuments)
   useEffect(() => {
-    if (!upgrade) return
+    // 메타데이터만 받은 문서는 서버의 기록을 그대로 쓴다 — 다시 계산하면
+    // 읽기만 해도 단어장이 바뀌고 다음 동기화가 그것을 올린다.
+    if (!upgrade || !mayRecomputeOccurrences(doc)) return
     let cancelled = false
     const run = async () => {
       // 앱 시작 시점의 전체 재계산과 겹치면 밀린다 — 끝날 때까지 기다렸다가 한다.
@@ -190,14 +230,17 @@ export function ReaderView({ doc }: { doc: Document }) {
     void loadWordStates(doc.languageCode)
   }, [doc.languageCode, loadWordStates])
 
-  // 연 시각이 곧 '최근 본 시각' 이다 — 목록에서 쓰인다
+  /**
+   * 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
+   *
+   * 이 기기에서 만든 문서만 다시 계산한다. 메타데이터만 받은 문서의 기록은
+   * 서버 것이 이미 있으므로(본문과 함께 받아 두었다), 읽는 김에 다시 계산하면
+   * 내용을 고치지 않았는데도 등장 기록을 새로 써서 동기화가 그것을 올린다.
+   */
   useEffect(() => {
-    void touchDocument(doc.id)
-  }, [doc.id, touchDocument])
-
-  // 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
-  useEffect(() => {
-    const run = () => void recordOccurrences(doc)
+    if (contentText === null || !mayRecomputeOccurrences(doc)) return
+    const docForRecord = contentText === doc.rawText ? doc : { ...doc, rawText: contentText }
+    const run = () => void recordOccurrences(docForRecord)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 200))
     const handle = idle(run)
     return () => {
@@ -205,7 +248,7 @@ export function ReaderView({ doc }: { doc: Document }) {
         window.cancelIdleCallback(handle)
       }
     }
-  }, [doc, recordOccurrences])
+  }, [contentText, doc, recordOccurrences])
 
   const wordCount = useMemo(
     () => segments.reduce((n, s) => (s.type === 'word' ? n + 1 : n), 0),
@@ -221,7 +264,7 @@ export function ReaderView({ doc }: { doc: Document }) {
   const pages = useMemo(
     () =>
       planPages(
-        doc.rawText,
+        text,
         sentences,
         sentences.map((sentence) =>
           segments.reduce(
@@ -234,7 +277,7 @@ export function ReaderView({ doc }: { doc: Document }) {
         // 텍스트 세그먼트는 잘라서 렌더하므로 마침표와 여는 부호가 제자리를 찾는다.
         segments.filter((s) => s.type === 'word').map((s) => s.start),
       ),
-    [doc.rawText, sentences, segments, pageWords],
+    [text, sentences, segments, pageWords],
   )
 
   // 다른 문서를 열었거나 쪽 크기를 줄여 쪽 수가 줄면 범위를 벗어난 쪽으로 가지 않는다
@@ -494,6 +537,36 @@ export function ReaderView({ doc }: { doc: Document }) {
     },
     [sentences],
   )
+
+  // 본문을 아직 받지 못했다 — 읽을 것이 없는 상태와 구분해 말한다
+  if (contentText === null) {
+    return (
+      <article className="mx-auto w-full max-w-2xl px-5 pt-8 pb-32">
+        <header className="mb-6">
+          <h1 className="font-semibold">{doc.title}</h1>
+        </header>
+        {contentError ? (
+          <div className="border-line rounded-lg border px-4 py-3 text-sm">
+            <p>{t('reader.loadFailed')}</p>
+            {contentError.recoverable && (
+              <button
+                type="button"
+                onClick={() => {
+                  setContentError(null)
+                  setContentAttempt((attempt) => attempt + 1)
+                }}
+                className="border-accent text-accent mt-3 rounded-lg border px-3 py-1 text-xs"
+              >
+                {t('reader.retry')}
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="text-ink-muted text-sm">{t('reader.loading')}</p>
+        )}
+      </article>
+    )
+  }
 
   return (
     // 하단 상태 바가 본문을 가리지 않도록 여유를 둔다

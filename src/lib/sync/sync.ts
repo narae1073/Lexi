@@ -764,17 +764,21 @@ export async function syncOnce({
       return false
     }
     const theirs = remoteById.get(doc.id)
-    // 새 문서
+    // 이번에 읽지 않은 문서 — 새 문서이거나 증분 창 밖의 문서다.
+    // 본문을 싣는지는 push 가 `hasContent` 로 가른다.
     if (!theirs) return true
     // 내용이 달라졌다
     if (theirs.title !== doc.title) return true
-    if (theirs.rawText !== doc.rawText) return true
     if (theirs.languageCode !== doc.languageCode) return true
+    // 본문은 여기서 비교하지 않는다. 메타데이터만 받은 문서는 본문이 비어 있고,
+    // 본문 쓰기는 열기/만들기의 명시적인 길로만 일어난다. 본문이 비었다고
+    // '달라졌다' 고 판단하면 서버의 본문을 빈 문자열로 덮어쓴다.
     // 휴지통 상태가 달라졌다 — 버리거나 되살린 것을 서버도 알아야 한다
     if ((theirs.deletedAt ?? null) !== (doc.deletedAt ?? null)) return true
     // 폴더가 달라졌다 — 문서를 옮긴 것을 서버도 알아야 한다
     if ((theirs.folderId ?? null) !== (doc.folderId ?? null)) return true
-    // 이 기기에서 더 늦게 열었다
+    // 이 기기에서 메타데이터를 더 늦게 고쳤다 (제목·휴지통 등). 여는 일은
+    // updatedAt 을 건드리지 않으므로 이 비교에 걸리지 않는다.
     return isNewer(doc.updatedAt, theirs.updatedAt)
   })
 

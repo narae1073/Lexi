@@ -104,6 +104,9 @@ export const en = {
     titleLabel: 'Document title',
     titleHint: 'Click to rename',
     toWordbook: 'Words in this document',
+    loading: 'Loading text…',
+    loadFailed: 'Could not load this document’s text. Check your connection and try again.',
+    retry: 'Try again',
   },
 
   status: {

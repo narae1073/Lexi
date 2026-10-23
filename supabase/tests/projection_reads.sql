@@ -116,6 +116,7 @@ begin
     and p.proname in (
       'get_wordbook_projection_page',
       'get_document_payload',
+      'get_document_content_page',
       'touch_document'
     )
     and (
@@ -447,6 +448,95 @@ begin
   end if;
 end $$;
 
+-- ---------------------------------------------------------------------------
+-- 4b. get_document_content_page — paged, resumable text under the soft cap
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_document public.documents%rowtype;
+  v_expected_version timestamptz;
+  v_page jsonb;
+  v_text text := '';
+  v_offset int := 0;
+  v_guard int := 0;
+  v_single jsonb;
+begin
+  select * into v_document from public.documents
+  where id = current_setting('test.document_id')::uuid;
+  v_expected_version := v_document.content_updated_at;
+
+  -- Assemble the text the way the client does: page, append, advance.
+  loop
+    v_page := public.get_document_content_page(v_document.id, v_offset, 5);
+    if v_page is null then
+      raise exception 'get_document_content_page returned NULL for the owner';
+    end if;
+    if (v_page->>'contentUpdatedAt')::timestamptz is distinct from v_expected_version then
+      raise exception 'content page version is %, expected %',
+        v_page->>'contentUpdatedAt', v_expected_version;
+    end if;
+    if (v_page->>'charCount')::int <> char_length(v_document.raw_text) then
+      raise exception 'content page charCount is %, expected %',
+        v_page->>'charCount', char_length(v_document.raw_text);
+    end if;
+
+    v_text := v_text || coalesce(v_page->>'rawText', '');
+    v_offset := (v_page->>'nextOffset')::int;
+    exit when (v_page->>'done')::boolean;
+
+    v_guard := v_guard + 1;
+    if v_guard > 50 then
+      raise exception 'paged content did not finish in 50 pages';
+    end if;
+  end loop;
+
+  if v_text is distinct from v_document.raw_text then
+    raise exception 'paged content assembled to %, expected %', v_text, v_document.raw_text;
+  end if;
+  if v_offset <> char_length(v_document.raw_text) then
+    raise exception 'final nextOffset is %, expected the text length', v_offset;
+  end if;
+
+  -- A NULL p_max_chars / oversized limit is bounded; a zero limit is one char.
+  v_single := public.get_document_content_page(v_document.id, null, null);
+  if v_single->>'rawText' is distinct from v_document.raw_text then
+    raise exception 'default page did not return the whole small document';
+  end if;
+  if not (v_single->>'done')::boolean or (v_single->>'nextOffset')::int <> char_length(v_document.raw_text) then
+    raise exception 'default page did not report done/nextOffset: %', v_single;
+  end if;
+
+  v_single := public.get_document_content_page(v_document.id, 0, 0);
+  if v_single->>'rawText' is distinct from left(v_document.raw_text, 1) then
+    raise exception 'p_max_chars 0 returned %, expected one character', v_single->>'rawText';
+  end if;
+
+  -- An offset past the end is an empty, done page — a retry never loops.
+  v_single := public.get_document_content_page(v_document.id, 1000, 5);
+  if v_single->>'rawText' is distinct from '' or not (v_single->>'done')::boolean then
+    raise exception 'past-the-end page was %', v_single;
+  end if;
+
+  -- Empty documents still have a page.
+  v_single := public.get_document_content_page(
+    current_setting('test.empty_document_id')::uuid, 0, 5
+  );
+  if v_single is null or v_single->>'rawText' is distinct from 'No words here.' then
+    raise exception 'empty document page is %', v_single;
+  end if;
+
+  -- Another tenant's document and a missing one are indistinguishable from NULL.
+  if public.get_document_content_page(
+    current_setting('test.other_document_id')::uuid, 0, 5
+  ) is not null then
+    raise exception 'get_document_content_page returned another tenant''s document';
+  end if;
+  if public.get_document_content_page(gen_random_uuid(), 0, 5) is not null then
+    raise exception 'get_document_content_page returned a missing document';
+  end if;
+end $$;
+
 reset role;
 
 -- ---------------------------------------------------------------------------
@@ -564,6 +654,13 @@ begin
   begin
     perform public.get_document_payload(gen_random_uuid());
     raise exception 'anon executed get_document_payload';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    perform public.get_document_content_page(gen_random_uuid(), 0, 5);
+    raise exception 'anon executed get_document_content_page';
   exception
     when insufficient_privilege then null;
   end;

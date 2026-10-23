@@ -1,9 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import type { Database } from '../supabase/database.types'
-import { documentFromRow, documentTombstoneFromRow, folderFromRow, wordStateFromRow } from './mapping'
+import {
+  DOCUMENT_METADATA_COLUMNS,
+  documentMetadataFromRow,
+  documentTombstoneFromRow,
+  folderFromRow,
+  wordStateFromRow,
+} from './mapping'
 import type {
-  DocumentRow,
+  DocumentMetadataRow,
   DocumentTombstoneRow,
   FolderRow,
   OccurrenceRow,
@@ -34,10 +40,11 @@ export const PROJECTION_BYTE_BUDGET = 64 * 1024 * 1024
 /**
  * Soft cap for one document's content/occurrence payload (Task 9).
  *
- * Exported here because both budgets belong to the same pull protocol; the
- * document payload path is the only other place that reads by bytes.
+ * Re-exported here because the pull protocol owns the byte budgets; the lazy
+ * content path in `content.ts` enforces it. A document above the cap is read
+ * page by page instead of in one response.
  */
-export const DOCUMENT_PAYLOAD_BYTE_BUDGET = 10 * 1024 * 1024
+export { DOCUMENT_PAYLOAD_BYTE_BUDGET } from './content'
 
 const PAGE_SIZE = 1000
 
@@ -384,7 +391,15 @@ export async function pull(
 
   const [languageRows, documentRows, tombstones, folders, wordStates, totals] = await Promise.all([
     fetchAll<{ language_code: string }>(db, 'user_languages', userId, 'language_code', 'language_code'),
-    fetchAll<DocumentRow>(db, 'documents', userId, 'id', '*', timestampOptions),
+    // Metadata only: the text is fetched when a document is opened (content.ts).
+    fetchAll<DocumentMetadataRow>(
+      db,
+      'documents',
+      userId,
+      'id',
+      DOCUMENT_METADATA_COLUMNS,
+      timestampOptions,
+    ),
     fetchAll<DocumentTombstoneRow>(db, 'document_tombstones', userId, 'document_id', '*', timestampOptions),
     fetchAll<FolderRow>(db, 'folders', userId, 'id', '*', timestampOptions),
     // A first sync hydrates states from the projection instead.
@@ -397,7 +412,7 @@ export async function pull(
     ]).then(([documentCount, wordCount]) => ({ documents: documentCount, wordStates: wordCount })),
   ])
 
-  const documents = documentRows.map(documentFromRow)
+  const documents = documentRows.map(documentMetadataFromRow)
 
   let occurrences: OccurrenceRow[] = []
   let occurrenceDocumentIds: string[] = []

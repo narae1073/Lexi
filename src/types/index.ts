@@ -38,7 +38,37 @@ export type Document = {
   id: string
   title: string
   languageCode: LanguageCode
+  /**
+   * 이 기기에 들어 있는 본문. 메타데이터만 받은 문서는 비어 있다 —
+   * 본문은 처음 열 때 받아 `documentContent` 저장소에 둔다.
+   */
   rawText: string
+  /**
+   * 본문 글자 수 (서버의 `char_count`). 본문 없이도 목록이 길이를 말하고
+   * '글자가 많은 순' 으로 정렬할 수 있게 한다. 옛 로컬 행에는 없을 수 있다.
+   */
+  charCount?: number
+  /**
+   * 이 행이 실제 본문을 들고 있는가. `false` 면 `rawText` 는 빈 문자열이고
+   * 본문은 아직 받지 않았다. 없으면(`undefined`) 옛 로컬 행처럼 본문이 있다고 본다.
+   */
+  hasContent?: boolean
+  /**
+   * 본문을 마지막으로 고친 서버 시각. 기기에 든 본문 사본이 아직 최신인지
+   * 열 때 비교하는 근거다 (본문을 여는 일은 이 값을 바꾸지 않는다).
+   */
+  contentUpdatedAt?: string | null
+  /**
+   * 등장 기록을 마지막으로 고친 서버 시각. 본문과 따로 움직인다 —
+   * 이 값만 바뀌었다고 본문을 다시 받을 이유는 없다.
+   */
+  occurrencesUpdatedAt?: string | null
+  /**
+   * 마지막으로 연 시각 — `updated_at` 과 다른 말이다.
+   * 문서를 여는 일은 내용을 고치는 일이 아니므로 `updated_at` 을 건드리지 않고,
+   * 서버의 `touch_document` 가 이 값만 찍는다. 없으면 `updatedAt` 으로 대신한다.
+   */
+  lastOpenedAt?: string | null
   createdAt: string
   updatedAt: string
   /**
