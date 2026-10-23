@@ -112,12 +112,22 @@ export function documentTombstoneFromRow(row: DocumentTombstoneRow): DocumentTom
   }
 }
 
-// server_updated_at and occurrences_hash are server-owned. Sending either on a
-// document upsert would overwrite the value the server just computed.
+// server_updated_at, occurrences_hash, and the R3 version columns are
+// server-owned. Sending any of them on a document upsert would overwrite the
+// value the server just computed (opening a document, for example, must not
+// look like a content edit).
 export function documentToRow(
   userId: string,
   doc: Document,
-): Omit<DocumentRow, 'server_updated_at' | 'occurrences_hash'> {
+): Omit<
+  DocumentRow,
+  | 'server_updated_at'
+  | 'occurrences_hash'
+  | 'last_opened_at'
+  | 'content_updated_at'
+  | 'occurrences_updated_at'
+  | 'char_count'
+> {
   return {
     id: doc.id,
     user_id: userId,
