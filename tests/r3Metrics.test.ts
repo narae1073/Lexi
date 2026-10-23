@@ -46,6 +46,7 @@ describe('r3 metrics snapshot', () => {
     const snapshot = JSON.parse(result.stdout) as Record<string, unknown>
     expect(snapshot.readOnly).toBe(true)
     expect(snapshot.kind).toBe('metrics')
+    expect(snapshot.incomplete).toBe(false)
 
     for (const key of [
       'refresh',
@@ -57,9 +58,17 @@ describe('r3 metrics snapshot', () => {
       'firstSync',
       'egressPerNewDevice',
       'database',
+      'sources',
+      'windows',
+      'loadRun',
+      'alerts',
     ]) {
       expect(snapshot).toHaveProperty(key)
     }
+
+    const pull = snapshot.pull as Record<string, unknown>
+    expect(pull.window).toBe('24h')
+    expect((snapshot.egressPerNewDevice as Record<string, unknown>).window).toBe('24h')
 
     const measured = numbers(snapshot)
     expect(measured.length).toBeGreaterThan(20)
@@ -72,5 +81,30 @@ describe('r3 metrics snapshot', () => {
     for (const percentile of ['p50Ms', 'p95Ms', 'p99Ms']) {
       expect(refresh).toHaveProperty(percentile)
     }
+  })
+
+  it('marks failed sources and dependent alerts unknown instead of green', () => {
+    const result = run(['--self-test-incomplete'])
+    expect(result.status).toBe(0)
+
+    const snapshot = JSON.parse(result.stdout) as {
+      incomplete: boolean
+      sources: Record<string, { ok: boolean; stale?: boolean; used?: boolean }>
+      alerts: Array<{ name: string; status: string; ok: boolean | null }>
+    }
+
+    expect(snapshot.incomplete).toBe(true)
+    expect(snapshot.sources.storage.ok).toBe(false)
+    expect(snapshot.sources.refresh.ok).toBe(false)
+    expect(snapshot.sources.loadResult.ok).toBe(false)
+    expect(snapshot.sources.loadResult.stale).toBe(true)
+    expect(snapshot.sources.loadResult.used).toBe(false)
+
+    const byName = new Map(snapshot.alerts.map((alert) => [alert.name, alert]))
+    expect(byName.get('sources-complete')?.status).toBe('fail')
+    expect(byName.get('projection-present')?.status).toBe('unknown')
+    expect(byName.get('projection-present')?.ok).toBeNull()
+    expect(byName.get('refresh-p95')?.status).toBe('unknown')
+    expect(byName.get('noop-suppression')?.status).toBe('unknown')
   })
 })

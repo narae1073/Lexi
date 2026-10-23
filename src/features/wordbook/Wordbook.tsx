@@ -126,6 +126,7 @@ export function Wordbook() {
   const localSource = presentation.source === 'local'
   const preparation = preparationProgress(completeByLanguage, enrolled)
   const quotaPaused = presentation.showPaused && pausedReason === 'quota'
+  const statePaused = presentation.showPaused && pausedReason === 'state'
   const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
 
   /**
@@ -330,13 +331,15 @@ export function Wordbook() {
         >
           <span className="text-status-unsure min-w-0 flex-1">
             <strong className="font-medium">
-              {t(quotaPaused ? 'wordbook.quotaPaused' : 'wordbook.paused')}
+              {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
             </strong>{' '}
             {quotaPaused
               ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
-              : t('wordbook.pausedHint')}
+              : statePaused
+                ? t('wordbook.statePausedHint')
+                : t('wordbook.pausedHint')}
           </span>
-          {presentation.showContinue && !quotaPaused && (
+          {presentation.showContinue && !quotaPaused && !statePaused && (
             <button
               type="button"
               data-wordbook-continue

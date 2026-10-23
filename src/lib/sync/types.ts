@@ -122,7 +122,7 @@ export type ProjectionPull = {
    */
   paused: string[]
   /** Why {@link paused} is non-empty, or null when every pass finished. */
-  pauseReason: 'bytes' | 'quota' | null
+  pauseReason: 'bytes' | 'quota' | 'state' | null
   /** Denied quota bucket and backoff when `pauseReason` is `quota`. */
   quota: { bucket: ProjectionQuotaBucket; retryAfterSeconds: number } | null
   /** Server snapshot this cycle's projection passes were bounded by. */
@@ -174,7 +174,7 @@ export type SyncReport = {
    */
   projectionPaused: string[]
   /** Why `projectionPaused` is non-empty; null when nothing was paused. */
-  projectionPausedReason: 'bytes' | 'quota' | null
+  projectionPausedReason: 'bytes' | 'quota' | 'state' | null
   /** Denied quota bucket when the pause was a rate/daily limit. */
   projectionQuotaBucket: ProjectionQuotaBucket | null
   /** Seconds the client should wait before the next projection retry. */

@@ -285,6 +285,9 @@ export const en = {
     quotaPaused: 'Wordbook download paused by the server limit',
     quotaPausedHint:
       'The server allows a limited number of wordbook downloads per account. It continues automatically in about {minutes} min.',
+    statePaused: 'Wordbook download state was reset',
+    statePausedHint:
+      'The server could not resume this wordbook from the saved position. It restarts from the beginning automatically.',
     group: {
       unmarked: 'Not marked',
       known: 'Know it',

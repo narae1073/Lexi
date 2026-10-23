@@ -15,16 +15,18 @@
  *   - pg_stat_database       deadlocks
  *   - pg_stat_activity       connections
  *   - pg_class / pg_stats    projection table and index bytes, row width
- *   - projection_usage      pull pages, resumes, 429s, finished full passes
+ *   - projection_usage       pull pages/rows, resumes, 429s, finished passes (24h)
  *   - projection_sync_passes complete-sync starts (2/day limit, first-sync)
- *   - the newest /tmp/opencode/r3-load-*.json (when present) for true
- *     refresh p50/p95/p99 and no-op suppression, which pg_stat_statements
- *     cannot provide as percentiles
+ *   - the newest /tmp/opencode/r3-load-*.json only when it is < 24h old, for
+ *     true refresh p50/p95/p99 and no-op suppression. Stale artifacts are
+ *     reported but never used, so an old green run cannot mask a regression.
  *
  * Pre-public dashboard (one row per run; keep 30 days)
  *   refresh p50/p95/p99 ms | no-op attempts/writes | rows touched |
- *   deadlocks | projection table/index bytes | pull pages/bytes/resumes/429s |
- *   first-sync completion | egress per new device | DB CPU/connections
+ *   deadlocks | projection table/index bytes | 24h pull pages/bytes/resumes/429s |
+ *   24h first-sync completion | 24h egress per new device | DB CPU/connections.
+ *   Every section names its window; cumulative statistics are labelled
+ *   `since stats reset` rather than mixed with the 24h counters.
  *
  * Alerts (all are published in the JSON `alerts` array)
  *   1. refresh p95 >= 100 ms or p99 >= 250 ms        (R3 load gate)
@@ -35,11 +37,17 @@
  *   6. first-sync completion < 90% (once >= 20 started users)
  *   7. egress per new device > 64 MB                   (soft projection budget)
  *   8. DB CPU >= 80% or connections >= 80% of max_connections
- *   9. projection has no rows while documents exist    (refresh/backfill stuck)
+ *   9. projection has no rows while documents exist    (row count, not size)
+ *
+ * Fail-closed reporting: each source is recorded in `sources`; a failed or
+ * missing required source sets `incomplete: true` and makes every dependent
+ * alert `status: "unknown"`, `ok: null` instead of a green pass. `sources-
+ * complete` fails explicitly. Sample-size gates report `insufficient`.
  *
  * The limits this snapshot watches: 60 projection pages per user per minute
  * and 2 complete projection syncs per user per UTC day
- * (supabase/migrations/20261028000001_projection_quota.sql).
+ * (supabase/migrations/20261028000001_projection_quota.sql and
+ * 20261028000002_projection_quota_state.sql).
  *
  * A non-loopback URL is refused unless `--allow-remote` is passed explicitly.
  * Remote runs also need `--database-url` (and a psql client); the local default
@@ -73,7 +81,8 @@ Read-only R3 metrics snapshot. Defaults to the local Supabase stack.
   --allow-remote       explicitly allow a non-loopback target
   --result-dir DIR     where r3-load-*.json runs are read (default ${DEFAULT_RESULT_DIR})
   --out FILE           also write the JSON snapshot to FILE
-  --self-test          emit a synthetic snapshot without touching any database
+  --self-test          emit a synthetic healthy snapshot without touching any database
+  --self-test-incomplete  emit a snapshot with failed sources + a stale load result
   --help               print this help
 
 Read-only guarantee
@@ -101,7 +110,12 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (!arg.startsWith('--')) throw new Error(`Unexpected argument: ${arg}`)
     const key = arg.slice(2)
-    if (key === 'help' || key === 'allow-remote' || key === 'self-test') {
+    if (
+      key === 'help' ||
+      key === 'allow-remote' ||
+      key === 'self-test' ||
+      key === 'self-test-incomplete'
+    ) {
       flags[key] = true
       continue
     }
@@ -292,8 +306,20 @@ function latestLoadResult(resultDir) {
       .map((name) => ({ name, path: join(resultDir, name), at: statSync(join(resultDir, name)).mtimeMs }))
       .sort((a, b) => b.at - a.at)
     if (files.length === 0) return null
-    const parsed = JSON.parse(readFileSync(files[0].path, 'utf8'))
-    return { ...parsed, path: files[0].path }
+
+    // Prefer the newest non-smoke run: smoke checks structure only and is not
+    // a performance gate. Fall back to the newest smoke run, labelled as such.
+    let fallback = null
+    for (const file of files) {
+      try {
+        const parsed = JSON.parse(readFileSync(file.path, 'utf8'))
+        if (parsed.smoke !== true) return { ...parsed, path: file.path }
+        fallback ??= { ...parsed, path: file.path }
+      } catch {
+        // Ignore an unreadable artifact and try the next one.
+      }
+    }
+    return fallback
   } catch {
     return null
   }
@@ -357,10 +383,14 @@ export function collectRaw(target, resultDir = DEFAULT_RESULT_DIR) {
     `select json_build_object(
        'projectionBytes', coalesce(pg_total_relation_size('public.wordbook_entries'), 0),
        'projectionIndexBytes', coalesce(pg_indexes_size('public.wordbook_entries'), 0),
-       'rowWidthBytes', coalesce((
-         select sum(avg_width) from pg_stats
-         where schemaname = 'public' and tablename = 'wordbook_entries'
-       ), 0),
+       'rowWidthBytes', coalesce(
+         (select sum(avg_width) from pg_stats
+          where schemaname = 'public' and tablename = 'wordbook_entries'),
+         (select coalesce(avg(pg_column_size(t)), 0)::bigint
+          from public.wordbook_entries t),
+         0
+       ),
+       'projectionRows', coalesce((select count(*) from public.wordbook_entries), 0),
        'documents', coalesce((select count(*) from public.documents), 0)
      ) as value`,
     'projection storage',
@@ -370,18 +400,21 @@ export function collectRaw(target, resultDir = DEFAULT_RESULT_DIR) {
     target,
     `select json_build_object(
        'pages', coalesce(sum(count) filter (where bucket = 'projection_page'), 0),
+       'rows', coalesce(sum(count) filter (where bucket = 'projection_rows'), 0),
        'resumes', coalesce(sum(count) filter (where bucket = 'projection_page_resume'), 0),
        'denied', coalesce(sum(count) filter (where bucket = 'projection_quota_denied'), 0),
        'deniedSync', coalesce(sum(count) filter (where bucket = 'projection_quota_denied_sync'), 0),
-       'completeSyncs', coalesce(sum(count) filter (where bucket = 'projection_sync'), 0),
+       'completeSyncs', 0,
        'completedPasses', coalesce(sum(count) filter (where bucket = 'projection_sync_complete'), 0),
        'startedUsers', coalesce((
          select count(distinct user_id) from public.projection_usage
          where bucket = 'projection_page'
+           and window_start >= now() - interval '24 hours'
        ), 0),
        'completedUsers', coalesce((
          select count(distinct user_id) from public.projection_usage
          where bucket = 'projection_sync_complete'
+           and window_start >= now() - interval '24 hours'
        ), 0)
      ) as value
      from public.projection_usage
@@ -393,7 +426,7 @@ export function collectRaw(target, resultDir = DEFAULT_RESULT_DIR) {
     target,
     `select json_build_object(
        'completeSyncs', coalesce((
-         select count(*) from public.projection_sync_passes
+         select count(distinct snapshot) from public.projection_sync_passes
          where started_at >= now() - interval '24 hours'
        ), 0),
        'startedUsers', coalesce((
@@ -450,15 +483,11 @@ function rounded(value) {
   return Math.round(nonNegative(value) * 100) / 100
 }
 
-function refreshPercentiles(raw) {
+function refreshPercentiles(raw, loadUsable) {
   const loadSummary = raw.load?.effective?.summary
-  if (
-    loadSummary !== null &&
-    loadSummary !== undefined &&
-    typeof loadSummary.p50 === 'number' &&
-    Number.isFinite(loadSummary.p50)
-  ) {
+  if (loadUsable && typeof loadSummary?.p50 === 'number' && Number.isFinite(loadSummary.p50)) {
     return {
+      available: true,
       p50Ms: rounded(loadSummary.p50),
       p95Ms: rounded(loadSummary.p95),
       p99Ms: rounded(loadSummary.p99),
@@ -466,7 +495,7 @@ function refreshPercentiles(raw) {
       meanMs: rounded(loadSummary.mean),
       maxMs: rounded(loadSummary.max),
       estimated: false,
-      source: `load result ${String(raw.load?.path ?? '')}`,
+      source: `fresh load result ${String(raw.load?.path ?? '')}${raw.load?.smoke === true ? ' (smoke; not a gate)' : ''}`,
     }
   }
 
@@ -477,6 +506,7 @@ function refreshPercentiles(raw) {
   const p95 = Math.min(max > 0 ? max : Number.POSITIVE_INFINITY, mean + 1.645 * stddev)
   const p99 = Math.min(max > 0 ? max : Number.POSITIVE_INFINITY, mean + 2.326 * stddev)
   return {
+    available: calls > 0,
     p50Ms: rounded(mean),
     p95Ms: rounded(p95 === Number.POSITIVE_INFINITY ? mean : p95),
     p99Ms: rounded(p99 === Number.POSITIVE_INFINITY ? mean : p99),
@@ -484,21 +514,89 @@ function refreshPercentiles(raw) {
     meanMs: rounded(mean),
     maxMs: rounded(max),
     estimated: true,
-    source: calls > 0 ? 'pg_stat_statements (mean/stddev/max; run r3:load for true percentiles)' : 'unavailable',
+    source:
+      calls > 0
+        ? 'pg_stat_statements (mean/stddev/max; run r3:load for true percentiles)'
+        : 'unavailable (no fresh load result and no refresh samples)',
   }
 }
 
+function sectionStatus(raw, name) {
+  const value = raw[name]
+  if (value === null || value === undefined) return { ok: false, error: `${name} missing` }
+  if (typeof value.__error === 'string') return { ok: false, error: value.__error }
+  return { ok: true, error: null }
+}
+
 export function buildSnapshot(raw, target) {
-  const refresh = refreshPercentiles(raw)
-  const calls = nonNegative(raw.statements?.calls)
-  const rows = nonNegative(raw.statements?.rows)
-  const rowWidth = nonNegative(raw.storage?.rowWidthBytes)
+  const sources = {}
+  const addSource = (name, { required = true, ok = true, error = null } = {}) => {
+    sources[name] = { ok: Boolean(ok), required, error }
+    return sources[name]
+  }
+
+  for (const name of [
+    'refresh',
+    'statements',
+    'rowsTouched',
+    'deadlocks',
+    'storage',
+    'usage',
+    'syncPasses',
+    'users',
+    'connections',
+  ]) {
+    const status = sectionStatus(raw, name)
+    addSource(name, status)
+  }
+
+  const cpuAvailable = typeof raw.cpuPercent === 'number' && Number.isFinite(raw.cpuPercent)
+  addSource('cpu', {
+    required: false,
+    ok: cpuAvailable,
+    error: cpuAvailable ? null : 'CPU unavailable (remote target or docker stats failed)',
+  })
+
+  const load = raw.load ?? null
+  const loadAt = load ? Date.parse(load.completedAt ?? load.startedAt ?? '') : Number.NaN
+  const loadAgeHours = Number.isFinite(loadAt) ? (Date.now() - loadAt) / 3_600_000 : null
+  const loadStale = load === null || loadAgeHours === null || loadAgeHours > 24
+  const loadSummary = load?.effective?.summary
+  const loadUsable =
+    load !== null &&
+    !loadStale &&
+    typeof loadSummary?.p50 === 'number' &&
+    Number.isFinite(loadSummary.p50)
+  const loadSource = addSource('loadResult', {
+    required: false,
+    ok: loadUsable,
+    error:
+      load === null
+        ? 'no r3-load result'
+        : loadStale
+          ? 'stale r3-load result (>24h); ignored for percentiles and no-op checks'
+          : 'r3-load result has no percentile summary',
+  })
+  loadSource.stale = load === null ? false : loadStale
+  loadSource.used = loadUsable
+  loadSource.path = load?.path ?? null
+  loadSource.ageHours = loadAgeHours === null ? null : rounded(loadAgeHours)
+
+  const refresh = refreshPercentiles(raw, loadUsable)
+  if (!refresh.available) {
+    sources.refresh.ok = false
+    sources.refresh.error =
+      'no refresh samples (pg_stat_statements empty and no fresh load result)'
+  }
+
+  const storage = raw.storage ?? {}
   const usage = raw.usage ?? {}
-  const usagePages = nonNegative(usage.pages)
-  const pages = usagePages > 0 ? usagePages : calls
-  const pullRows = rows
+  const rowWidth = nonNegative(storage.rowWidthBytes)
+  const pages = nonNegative(usage.pages)
+  const pullRows = nonNegative(usage.rows)
   const pullBytes = rounded(pullRows * rowWidth)
   const bytesPerPage = pages > 0 ? rounded(pullBytes / pages) : 0
+  const resumes = nonNegative(usage.resumes)
   const denied = nonNegative(usage.denied) + nonNegative(usage.deniedSync)
   const startedUsers =
     nonNegative(raw.syncPasses?.startedUsers) || nonNegative(usage.startedUsers)
@@ -508,104 +606,159 @@ export function buildSnapshot(raw, target) {
   const totalUsers = nonNegative(raw.users?.total)
   const newDevices = completedUsers
   const egressPerNewDevice = newDevices > 0 ? rounded(pullBytes / newDevices) : 0
-  const noopAttempts = nonNegative(raw.load?.noop?.attempts)
-  const noopProjectionWrites = nonNegative(raw.load?.noop?.writes?.projectionWrites)
-  const noopDocumentWrites = nonNegative(raw.load?.noop?.writes?.documentsWrites)
-  const loadDeadlocks =
-    nonNegative(raw.load?.effective?.deadlocks) + nonNegative(raw.load?.noop?.deadlocks)
+
+  const noopAttempts = nonNegative(load?.noop?.attempts)
+  const noopProjectionWrites = nonNegative(load?.noop?.writes?.projectionWrites)
+  const noopDocumentWrites = nonNegative(load?.noop?.writes?.documentsWrites)
+  const loadDeadlocks = loadUsable
+    ? nonNegative(load?.effective?.deadlocks) + nonNegative(load?.noop?.deadlocks)
+    : 0
   const databaseDeadlocks = nonNegative(raw.deadlocks?.database)
-  const maxConnections = nonNegative(raw.connections?.maxConnections)
   const connections = nonNegative(raw.connections?.connections)
-  const projectionBytes = nonNegative(raw.storage?.projectionBytes)
-  const projectionIndexBytes = nonNegative(raw.storage?.projectionIndexBytes)
-  const documents = nonNegative(raw.storage?.documents)
-  const documentWrites = nonNegative(raw.rowsTouched?.documents)
+  const activeConnections = nonNegative(raw.connections?.activeConnections)
+  const maxConnections = nonNegative(raw.connections?.maxConnections)
+  const projectionBytes = nonNegative(storage.projectionBytes)
+  const projectionIndexBytes = nonNegative(storage.projectionIndexBytes)
+  const projectionRows = nonNegative(storage.projectionRows)
+  const documents = nonNegative(storage.documents)
+
+  const incomplete = Object.values(sources).some((source) => !source.ok)
+  const incompleteCount = Object.values(sources).filter((source) => !source.ok).length
 
   const alerts = []
-  const alert = (name, ok, value, threshold, message) =>
-    alerts.push({ name, ok, value, threshold, message })
+  const addAlert = (name, dependsOn, compute, message) => {
+    const missing = dependsOn.filter((source) => !sources[source]?.ok)
+    if (missing.length > 0) {
+      alerts.push({
+        name,
+        status: 'unknown',
+        ok: null,
+        dependsOn,
+        missing,
+        message,
+      })
+      return
+    }
+    const result = compute()
+    alerts.push({
+      name,
+      status: result.status ?? (result.ok ? 'pass' : 'fail'),
+      ok: result.ok,
+      value: result.value,
+      threshold: result.threshold,
+      note: result.note,
+      dependsOn,
+      message,
+    })
+  }
 
-  alert(
+  addAlert(
+    'sources-complete',
+    [],
+    () => ({ ok: !incomplete, value: incompleteCount, threshold: 0 }),
+    'every metrics source responded (optional failures also make the snapshot incomplete)',
+  )
+  addAlert(
     'refresh-p95',
-    refresh.p95Ms < REFRESH_P95_LIMIT_MS,
-    refresh.p95Ms,
-    REFRESH_P95_LIMIT_MS,
-    `refresh p95 ${refresh.p95Ms} ms (limit ${REFRESH_P95_LIMIT_MS})`,
+    ['refresh'],
+    () => ({ ok: refresh.p95Ms < REFRESH_P95_LIMIT_MS, value: refresh.p95Ms, threshold: REFRESH_P95_LIMIT_MS }),
+    `refresh p95 stays below ${REFRESH_P95_LIMIT_MS} ms`,
   )
-  alert(
+  addAlert(
     'refresh-p99',
-    refresh.p99Ms < REFRESH_P99_LIMIT_MS,
-    refresh.p99Ms,
-    REFRESH_P99_LIMIT_MS,
-    `refresh p99 ${refresh.p99Ms} ms (limit ${REFRESH_P99_LIMIT_MS})`,
+    ['refresh'],
+    () => ({ ok: refresh.p99Ms < REFRESH_P99_LIMIT_MS, value: refresh.p99Ms, threshold: REFRESH_P99_LIMIT_MS }),
+    `refresh p99 stays below ${REFRESH_P99_LIMIT_MS} ms`,
   )
-  alert(
+  addAlert(
     'deadlocks',
-    databaseDeadlocks === 0 && loadDeadlocks === 0,
-    databaseDeadlocks + loadDeadlocks,
-    0,
-    'no deadlocks in the database snapshot or the newest load run',
+    ['deadlocks'],
+    () => ({
+      ok: databaseDeadlocks === 0 && loadDeadlocks === 0,
+      value: databaseDeadlocks + loadDeadlocks,
+      threshold: 0,
+      note: loadUsable ? undefined : 'load-run deadlocks unavailable (no fresh load result)',
+    }),
+    'no deadlocks in the database snapshot or a fresh load run',
   )
-  alert(
+  addAlert(
     'noop-suppression',
-    noopAttempts === 0 || (noopProjectionWrites === 0 && noopDocumentWrites === 0),
-    noopProjectionWrites + noopDocumentWrites,
-    0,
-    'a no-op phase must not write projection or document rows',
+    ['loadResult'],
+    () => ({
+      ok: noopAttempts > 0 && noopProjectionWrites === 0 && noopDocumentWrites === 0,
+      value: noopProjectionWrites + noopDocumentWrites,
+      threshold: 0,
+      note: noopAttempts === 0 ? 'no no-op attempts in the fresh load run' : undefined,
+    }),
+    'a fresh no-op phase must not write projection or document rows',
   )
-  alert(
+  addAlert(
     'page-bytes',
-    bytesPerPage <= PAGE_BYTE_TARGET,
-    bytesPerPage,
-    PAGE_BYTE_TARGET,
+    ['usage', 'storage'],
+    () =>
+      pages === 0
+        ? { status: 'insufficient', ok: null, value: 0, threshold: PAGE_BYTE_TARGET, note: 'no pages in the 24h window' }
+        : { ok: bytesPerPage <= PAGE_BYTE_TARGET, value: bytesPerPage, threshold: PAGE_BYTE_TARGET },
     'pull bytes per page stays within the 1 MB page target',
   )
-  alert(
+  addAlert(
     'rate-limit-share',
-    pages < 100 || denied / pages <= 0.01,
-    pages > 0 ? denied / pages : 0,
-    0.01,
+    ['usage'],
+    () =>
+      pages < 100
+        ? { status: 'insufficient', ok: null, value: pages > 0 ? denied / pages : 0, threshold: 0.01, note: 'fewer than 100 pages in the 24h window' }
+        : { ok: denied / pages <= 0.01, value: denied / pages, threshold: 0.01 },
     '429s stay below 1% of pages',
   )
-  alert(
+  addAlert(
     'first-sync-completion',
-    startedUsers < 20 || completedUsers / startedUsers >= 0.9,
-    startedUsers > 0 ? completedUsers / startedUsers : 0,
-    0.9,
+    ['usage', 'syncPasses', 'users'],
+    () =>
+      startedUsers < 20
+        ? { status: 'insufficient', ok: null, value: startedUsers > 0 ? completedUsers / startedUsers : 0, threshold: 0.9, note: 'fewer than 20 started users in the 24h window' }
+        : { ok: completedUsers / startedUsers >= 0.9, value: completedUsers / startedUsers, threshold: 0.9 },
     'at least 90% of started accounts finish a first projection',
   )
-  alert(
+  addAlert(
     'egress-per-new-device',
-    egressPerNewDevice <= PROJECTION_EGRESS_BUDGET,
-    egressPerNewDevice,
-    PROJECTION_EGRESS_BUDGET,
+    ['usage', 'storage'],
+    () =>
+      newDevices === 0
+        ? { status: 'insufficient', ok: null, value: 0, threshold: PROJECTION_EGRESS_BUDGET, note: 'no completed first syncs in the 24h window' }
+        : { ok: egressPerNewDevice <= PROJECTION_EGRESS_BUDGET, value: egressPerNewDevice, threshold: PROJECTION_EGRESS_BUDGET },
     'a new device stays within the 64 MB projection budget',
   )
-  alert(
+  addAlert(
     'database-cpu',
-    nonNegative(raw.cpuPercent) < 80,
-    nonNegative(raw.cpuPercent),
-    80,
+    ['cpu'],
+    () => ({ ok: nonNegative(raw.cpuPercent) < 80, value: nonNegative(raw.cpuPercent), threshold: 80 }),
     'DB container CPU stays below 80%',
   )
-  alert(
+  addAlert(
     'connections',
-    maxConnections === 0 || connections / maxConnections < 0.8,
-    maxConnections > 0 ? connections / maxConnections : 0,
-    0.8,
+    ['connections'],
+    () =>
+      maxConnections === 0
+        ? { status: 'unknown', ok: null, value: connections, threshold: 0, note: 'max_connections unavailable' }
+        : { ok: connections / maxConnections < 0.8, value: connections / maxConnections, threshold: 0.8 },
     'connections stay below 80% of max_connections',
   )
-  alert(
+  addAlert(
     'projection-present',
-    !(documents > 0 && projectionBytes === 0),
-    projectionBytes,
-    1,
-    'documents exist but the projection table is empty',
+    ['storage'],
+    () => ({
+      ok: !(documents > 0 && projectionRows === 0),
+      value: projectionRows,
+      threshold: 1,
+      note: documents === 0 ? 'no documents to project' : undefined,
+    }),
+    'every account with documents has projection rows',
   )
 
   return {
     kind: 'metrics',
     readOnly: true,
+    incomplete,
     generatedAt: String(raw.capturedAt ?? new Date().toISOString()),
     target: {
       url: target.url,
@@ -614,68 +767,102 @@ export function buildSnapshot(raw, target) {
       local: target.local,
       allowRemote: target.allowRemote,
     },
+    windows: {
+      refresh: 'fresh load result (<24h), else pg_stat_statements since reset',
+      pull: '24h projection_usage counters',
+      firstSync: '24h',
+      rowsTouched: 'since pg_stat_statements/user-table stats reset',
+      deadlocks: 'since stats reset',
+      storage: 'current',
+      database: 'current gauge',
+    },
+    sources,
     limits: {
       pagesPerMinute: PAGE_LIMIT_PER_MINUTE,
       completeSyncsPerDay: COMPLETE_SYNCS_PER_DAY,
     },
     refresh,
+    loadRun: {
+      available: load !== null,
+      path: load?.path ?? null,
+      ageHours: loadAgeHours === null ? null : rounded(loadAgeHours),
+      stale: load !== null ? loadStale : false,
+      used: loadUsable,
+    },
     noopSuppression: {
       attempts: noopAttempts,
       projectionWrites: noopProjectionWrites,
       documentWrites: noopDocumentWrites,
       suppressed: Math.max(0, noopAttempts - noopProjectionWrites),
-      source: raw.load === null ? 'unavailable (no r3-load result)' : String(raw.load?.path ?? 'load result'),
+      source: loadUsable
+        ? String(load?.path ?? 'fresh load result')
+        : 'unavailable (no fresh r3-load result)',
+      window: 'fresh load run (<24h)',
     },
     rowsTouched: {
-      documents: documentWrites,
+      documents: nonNegative(raw.rowsTouched?.documents),
       wordOccurrences: nonNegative(raw.rowsTouched?.wordOccurrences),
       wordbookEntries: nonNegative(raw.rowsTouched?.wordbookEntries),
       total:
-        documentWrites +
+        nonNegative(raw.rowsTouched?.documents) +
         nonNegative(raw.rowsTouched?.wordOccurrences) +
         nonNegative(raw.rowsTouched?.wordbookEntries),
+      window: 'since stats reset',
     },
     deadlocks: {
       database: databaseDeadlocks,
       loadRun: loadDeadlocks,
       total: databaseDeadlocks + loadDeadlocks,
+      window: 'database since stats reset; load run fresh (<24h)',
     },
     storage: {
       projectionBytes,
       projectionIndexBytes,
       projectionTableBytes: Math.max(0, projectionBytes - projectionIndexBytes),
+      projectionRows,
+      documents,
       rowWidthBytes: rowWidth,
+      window: 'current',
     },
     pull: {
+      window: '24h',
       bytes: pullBytes,
       pages,
       rows: pullRows,
-      resumes: nonNegative(usage.resumes),
+      resumes,
       rateLimited429: denied,
       completeSyncs,
       completedPasses: nonNegative(usage.completedPasses),
       bytesPerPage,
       bytesEstimated: true,
-      source: usagePages > 0 ? 'projection_usage + pg_stat_statements' : 'pg_stat_statements',
+      source: 'projection_usage (24h) x pg_stats row width; pg_stat_statements is shown separately',
+      statements: {
+        window: 'since pg_stat_statements reset',
+        calls: nonNegative(raw.statements?.calls),
+        rows: nonNegative(raw.statements?.rows),
+      },
     },
     firstSync: {
+      window: '24h',
       completedUsers,
       startedUsers,
       totalUsers,
       ratio: startedUsers > 0 ? Math.min(1, completedUsers / startedUsers) : 0,
     },
     egressPerNewDevice: {
+      window: '24h',
       bytesPerNewDevice: egressPerNewDevice,
       newDevices,
       basis:
-        'projection row bytes returned (pg_stat_statements rows x pg_stats row width) divided by accounts that completed a full pass in the last 24h',
+        '24h projection row bytes (projection_rows x pg_stats row width) divided by accounts that completed a full pass in the same 24h window',
     },
     database: {
       cpuPercent: rounded(raw.cpuPercent),
       connections,
-      activeConnections: nonNegative(raw.connections?.activeConnections),
+      activeConnections,
       maxConnections,
       connectionUtilization: maxConnections > 0 ? rounded(connections / maxConnections) : 0,
+      window: 'current gauge',
     },
     alerts,
   }
@@ -692,10 +879,12 @@ function syntheticRaw() {
       projectionBytes: 113 * 1024 * 1024,
       projectionIndexBytes: 20 * 1024 * 1024,
       rowWidthBytes: 830,
+      projectionRows: 100_000,
       documents: 1000,
     },
     usage: {
       pages: 1000,
+      rows: 200_000,
       resumes: 100,
       denied: 2,
       deniedSync: 0,
@@ -708,13 +897,59 @@ function syntheticRaw() {
     users: { total: 4 },
     connections: { connections: 10, activeConnections: 2, maxConnections: 100 },
     cpuPercent: 12,
-    load: null,
+    load: {
+      path: 'self-test-load',
+      completedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+      effective: {
+        attempts: 100,
+        deadlocks: 0,
+        summary: { p50: 24, p95: 65, p99: 68, mean: 26, max: 70 },
+      },
+      noop: {
+        attempts: 100,
+        deadlocks: 0,
+        writes: { projectionWrites: 0, documentsWrites: 0 },
+      },
+    },
   }
 }
 
 function saveOut(path, snapshot) {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(snapshot, null, 2)}\n`)
+}
+
+function syntheticIncompleteRaw() {
+  return {
+    ...syntheticRaw(),
+    refresh: { __error: 'permission denied for table pg_stat_statements' },
+    storage: { __error: 'relation "public.wordbook_entries" does not exist' },
+    cpuPercent: null,
+    load: {
+      path: 'self-test-stale-load',
+      completedAt: new Date(Date.now() - 48 * 60 * 60_000).toISOString(),
+      effective: {
+        attempts: 100,
+        deadlocks: 0,
+        summary: { p50: 24, p95: 65, p99: 68, mean: 26, max: 70 },
+      },
+      noop: {
+        attempts: 100,
+        deadlocks: 0,
+        writes: { projectionWrites: 0, documentsWrites: 0 },
+      },
+    },
+  }
+}
+
+function selfTestTarget() {
+  return {
+    url: DEFAULT_URL,
+    local: true,
+    allowRemote: false,
+    databaseUrl: null,
+    dbContainer: 'self-test',
+  }
 }
 
 function main(argv) {
@@ -725,13 +960,13 @@ function main(argv) {
   }
 
   if (flags['self-test']) {
-    const snapshot = buildSnapshot(syntheticRaw(), {
-      url: DEFAULT_URL,
-      local: true,
-      allowRemote: false,
-      databaseUrl: null,
-      dbContainer: 'self-test',
-    })
+    const snapshot = buildSnapshot(syntheticRaw(), selfTestTarget())
+    process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`)
+    return 0
+  }
+
+  if (flags['self-test-incomplete']) {
+    const snapshot = buildSnapshot(syntheticIncompleteRaw(), selfTestTarget())
     process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`)
     return 0
   }

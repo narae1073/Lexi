@@ -80,6 +80,35 @@ function quotaErrorFrom(error: unknown): ProjectionQuotaError | null {
 }
 
 /**
+ * The server rejected the client's projection cursor state (SQLSTATE `PT409`).
+ *
+ * This is recoverable but not a rate limit: the local projection state was
+ * lost or rewound beyond the one-page retry window, so the client must start
+ * the language over from a new snapshot instead of retrying forever.
+ */
+export class ProjectionPassError extends Error {
+  readonly recoverable = true
+  readonly reason: 'cursor' | 'start' | 'complete'
+
+  constructor(reason: 'cursor' | 'start' | 'complete') {
+    super('The server rejected the projection resume position.')
+    this.name = 'ProjectionPassError'
+    this.reason = reason
+  }
+}
+
+const PASS_DETAIL = /reason=(cursor|start|complete)/
+
+function passErrorFrom(error: unknown): ProjectionPassError | null {
+  if (typeof error !== 'object' || error === null) return null
+  const record = error as { code?: unknown; details?: unknown }
+  if (record.code !== 'PT409' || typeof record.details !== 'string') return null
+  const match = PASS_DETAIL.exec(record.details)
+  if (match === null) return null
+  return new ProjectionPassError(match[1] as 'cursor' | 'start' | 'complete')
+}
+
+/**
  * Records a denial in the metrics bucket, best effort.
  *
  * A denied page request raises, so PostgreSQL rolls its own counter increment
@@ -150,7 +179,11 @@ function assertPage(
  *   watermark). Soft-deleted rows are included and only rows with
  *   `server_updated_at > updatedSince` are returned, so deletions and
  *   revivals propagate without scanning the language.
- * - Both null: unbounded enumeration. Only for a manual rebuild.
+ *
+ * At least one bound is required. The old unbounded mode (both null) is
+ * rejected by the server for authenticated clients; the page RPC is the only
+ * read path, and an unbounded read would bypass the daily complete-sync
+ * charge.
  *
  * Passing both bounds is an error on the server (SQLSTATE 22023).
  *
@@ -182,6 +215,8 @@ export async function pullProjectionPage(
   if (error) {
     const quota = quotaErrorFrom(error)
     if (quota !== null) throw quota
+    const pass = passErrorFrom(error)
+    if (pass !== null) throw pass
     throw error
   }
 

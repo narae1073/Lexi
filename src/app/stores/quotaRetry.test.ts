@@ -31,4 +31,12 @@ describe('quota retry backoff', () => {
       quotaRetryDelayMs(report({ projectionQuotaRetryAfterSeconds: Number.NaN })),
     ).toBeNull()
   })
+
+  it('retries soon after a server cursor-state reset, without a quota window', () => {
+    expect(
+      quotaRetryDelayMs(
+        report({ projectionPausedReason: 'state', projectionQuotaRetryAfterSeconds: null }),
+      ),
+    ).toBe(5_000)
+  })
 })

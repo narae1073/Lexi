@@ -186,4 +186,49 @@ describe('quota-aware projection pulls', () => {
     expect(failure).toBeInstanceOf(ProjectionQuotaError)
     expect((failure as ProjectionQuotaError).recoverable).toBe(true)
   })
+
+  it('resets a language whose server cursor state no longer matches', async () => {
+    const server = memoryServer()
+    for (let index = 1; index <= 1500; index += 1) {
+      server.add('wordbook_entries', projectionRow(lemma(index)))
+    }
+
+    const base = server.client as unknown as {
+      rpc: (name: string, args: Record<string, unknown>) => Promise<unknown>
+    }
+    let pageCalls = 0
+    const client = {
+      ...(server.client as unknown as Record<string, unknown>),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        if (name === 'get_wordbook_projection_page') {
+          pageCalls += 1
+          if (pageCalls === 2) {
+            return {
+              data: null,
+              error: {
+                code: 'PT409',
+                details: 'reason=cursor',
+                message: 'projection cursor does not match this pass',
+              },
+            }
+          }
+        }
+        return base.rpc(name, args)
+      },
+    }
+
+    const result = await pull(USER_ID, client as never, {}, { languages: ['fr'] })
+
+    expect(result.projection.pauseReason).toBe('state')
+    expect(result.projection.paused).toContain('fr')
+    expect(result.projection.quota).toBeNull()
+    // Reset to "not started": the next cycle takes a new snapshot and starts
+    // the language over instead of retrying the rejected cursor forever.
+    expect(result.projection.next.fr).toEqual({
+      complete: false,
+      snapshot: null,
+      cursor: null,
+      hydratedAt: null,
+    })
+  })
 })

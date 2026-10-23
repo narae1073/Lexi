@@ -101,6 +101,16 @@ from generate_series(1, 1005) as g;
 
 alter table public.wordbook_entries enable trigger wordbook_entries_server_updated_at;
 
+-- Test-only reset for the server pass/counter state. Only reachable as the
+-- database owner (the test calls it after `reset role`).
+create or replace function pg_temp.reset_projection(p_user_id uuid)
+returns void
+language sql
+as $$
+  delete from public.projection_sync_passes where user_id = p_user_id;
+  delete from public.projection_usage where user_id = p_user_id;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Function shape and grants
 -- ---------------------------------------------------------------------------
@@ -120,13 +130,22 @@ begin
       'touch_document'
     )
     and (
-      p.prosecdef
+      -- The page RPC is the only read path and is definer-owned; the other
+      -- read/touch endpoints remain invoker-owned.
+      (p.proname = 'get_wordbook_projection_page' and not p.prosecdef)
+      or (p.proname <> 'get_wordbook_projection_page' and p.prosecdef)
       or not (p.proconfig @> array['search_path=public, pg_temp'])
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
       or has_function_privilege('anon', p.oid, 'EXECUTE')
     );
   if v_bad is not null then
     raise exception 'projection read functions are missing, definer-based, or wrongly granted: %', v_bad;
+  end if;
+
+  -- The page RPC is now the only read path; a direct PostgREST range request
+  -- must not reach wordbook_entries.
+  if has_table_privilege('authenticated', 'public.wordbook_entries', 'SELECT') then
+    raise exception 'authenticated still has direct SELECT on wordbook_entries';
   end if;
 end $$;
 
@@ -144,6 +163,7 @@ declare
   v_row public.wordbook_entries%rowtype;
   v_previous text;
   v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_user uuid := current_setting('test.user_id')::uuid;
 begin
   select array_agg(lemma order by lemma) into v_lemmas
   from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100);
@@ -153,7 +173,8 @@ begin
       v_lemmas;
   end if;
 
-  -- The output order itself, not just the aggregated set.
+  -- The output order itself, not just the aggregated set. This is a replay of
+  -- the first (and final) page; the server allows it idempotently.
   v_previous := null;
   for v_row in
     select * from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100)
@@ -165,23 +186,35 @@ begin
     v_previous := v_row.lemma;
   end loop;
 
-  -- Keyset resume: strictly after the cursor.
+  if exists (
+    select 1 from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100)
+    where language_code <> 'fr'
+       or user_id <> v_user
+       or deleted_at is not null
+  ) then
+    raise exception 'full fr page leaked another language, account, or a soft-deleted row';
+  end if;
+
+  -- Keyset resume: seed the server state a first page would have left, then
+  -- continue strictly after the cursor.
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  insert into public.projection_sync_passes
+    (user_id, snapshot, language_code, started_at, last_cursor, previous_cursor, complete)
+  values (v_user, v_snapshot, 'fr', clock_timestamp(), 'beta', 'alpha', false);
+  set role authenticated;
+
   select array_agg(lemma order by lemma) into v_after
   from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 100);
   if v_after is distinct from array['edge', 'zulu'] then
     raise exception 'page after beta is %, expected {edge,zulu}', v_after;
   end if;
 
-  if exists (
-    select 1 from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100)
-    where language_code <> 'fr'
-       or user_id <> current_setting('test.user_id')::uuid
-       or deleted_at is not null
-  ) then
-    raise exception 'full fr page leaked another language, account, or a soft-deleted row';
-  end if;
-
   -- A snapshot exactly on a row includes that row (<=, not <).
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
+
   select array_agg(lemma order by lemma) into v_lemmas
   from public.get_wordbook_projection_page('fr', null, v_snapshot - interval '1 second', null, 100);
   if v_lemmas is distinct from array['alpha', 'beta', 'zulu'] then
@@ -190,6 +223,11 @@ begin
 end $$;
 
 -- Other language rows are theirs alone.
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
 do $$
 declare
   v_lemmas text[];
@@ -201,7 +239,9 @@ begin
   end if;
 
   if exists (
-    select 1 from public.get_wordbook_projection_page('fr', null, null, null, 1000)
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, null, '1970-01-01'::timestamptz, 1000
+    )
     where user_id = current_setting('test.other_user_id')::uuid
        or lemma = 'otherword'
   ) then
@@ -213,20 +253,25 @@ end $$;
 -- 2. Incremental page: includes soft-deleted rows
 -- ---------------------------------------------------------------------------
 
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
 do $$
 declare
   v_lemmas text[];
   v_deleted int;
 begin
   select array_agg(lemma order by lemma) into v_lemmas
-  from public.get_wordbook_projection_page('fr', null, null, null, 100);
+  from public.get_wordbook_projection_page('fr', null, null, '1970-01-01'::timestamptz, 100);
 
   if v_lemmas is distinct from array['alpha', 'beta', 'edge', 'far', 'gone', 'mid', 'revived', 'zulu'] then
     raise exception 'incremental fr page is %, expected {alpha,beta,edge,far,gone,mid,revived,zulu}', v_lemmas;
   end if;
 
   select count(*) into v_deleted
-  from public.get_wordbook_projection_page('fr', null, null, null, 100)
+  from public.get_wordbook_projection_page('fr', null, null, '1970-01-01'::timestamptz, 100)
   where deleted_at is not null;
   if v_deleted <> 2 then
     raise exception 'incremental page carried % soft-deleted rows, expected 2', v_deleted;
@@ -304,6 +349,7 @@ declare
   v_count int;
   v_lemmas text[];
   v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_user uuid := current_setting('test.user_id')::uuid;
 begin
   select count(*) into v_count
   from public.get_wordbook_projection_page('es', null, v_snapshot, null, 5000);
@@ -311,11 +357,19 @@ begin
     raise exception 'oversized p_limit returned % rows, expected the 1000-row ceiling', v_count;
   end if;
 
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
+
   select count(*) into v_count
   from public.get_wordbook_projection_page('es', null, v_snapshot, null, null);
   if v_count <> 1000 then
     raise exception 'NULL p_limit returned % rows, expected 1000', v_count;
   end if;
+
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
 
   select count(*) into v_count
   from public.get_wordbook_projection_page('es', null, v_snapshot, null, 3);
@@ -323,11 +377,23 @@ begin
     raise exception 'p_limit 3 returned % rows', v_count;
   end if;
 
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  set role authenticated;
+
   select count(*) into v_count
   from public.get_wordbook_projection_page('es', null, v_snapshot, null, 0);
   if v_count <> 1 then
     raise exception 'p_limit 0 returned % rows, expected the 1-row floor', v_count;
   end if;
+
+  -- Seed the server cursor a previous page would have left, then continue.
+  reset role;
+  perform pg_temp.reset_projection(v_user);
+  insert into public.projection_sync_passes
+    (user_id, snapshot, language_code, started_at, last_cursor, previous_cursor, complete)
+  values (v_user, v_snapshot, 'es', clock_timestamp(), 'w1000', 'w0999', false);
+  set role authenticated;
 
   select array_agg(lemma order by lemma) into v_lemmas
   from public.get_wordbook_projection_page('es', 'w1000', v_snapshot, null, 10);

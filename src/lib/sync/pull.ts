@@ -24,6 +24,7 @@ import {
 } from './projectionState'
 import {
   PROJECTION_PAGE_MAX,
+  ProjectionPassError,
   ProjectionQuotaError,
   projectionPageLimit,
   pullProjectionPage,
@@ -208,6 +209,8 @@ type ProjectionPass = {
   done: boolean
   /** Rows read so far; 0 means no page of this pass has been read yet. */
   received: number
+  /** The server rejected this pass's cursor state; start over next cycle. */
+  restart: boolean
 }
 
 /**
@@ -281,12 +284,13 @@ async function pullProjection(
       previous,
       done: false,
       received: 0,
+      restart: false,
     })
   }
 
   let bytes = 0
   let index = 0
-  let pauseReason: 'bytes' | 'quota' | null = null
+  let pauseReason: 'bytes' | 'quota' | 'state' | null = null
   let quota: { bucket: ProjectionQuotaBucket; retryAfterSeconds: number } | null = null
   while (passes.some((pass) => !pass.done)) {
     const pass = passes[index % passes.length]
@@ -313,6 +317,18 @@ async function pullProjection(
             pass.bound,
           )
     } catch (error) {
+      if (error instanceof ProjectionPassError) {
+        // The server cursor state and this device's state disagree beyond the
+        // one-page retry window. Do not retry the rejected cursor: reset the
+        // language to "not started" so the next cycle takes a new snapshot and
+        // clears/rebuilds it once it can actually download.
+        pauseReason = 'state'
+        pass.restart = true
+        for (const pending of passes) {
+          if (!pending.done) paused.push(pending.language)
+        }
+        break
+      }
       if (!(error instanceof ProjectionQuotaError)) throw error
       // A quota denial is a temporary pause, not a failed sync. Keep the rows
       // read so far; the loop below stores them and their cursors, and the next
@@ -361,6 +377,16 @@ async function pullProjection(
   const next: Record<string, ProjectionState> = {}
   const complete: Partial<Record<string, boolean>> = {}
   for (const pass of passes) {
+    if (pass.restart) {
+      // The server rejected this pass; the next cycle must start it over.
+      // Do not clear the local language now (nothing was downloaded).
+      const resetIndex = resetLanguages.indexOf(pass.language)
+      if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
+      next[pass.language] = emptyProjectionState()
+      complete[pass.language] = false
+      continue
+    }
+
     // A brand-new pass that never read a page (a quota denial on its first
     // request) must stay "not started": snapshot null makes the next cycle
     // clear the language only when it can actually download it.

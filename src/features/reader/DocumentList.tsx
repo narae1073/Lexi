@@ -231,6 +231,7 @@ export function DocumentList() {
     enrolled.includes(language as LanguageCode),
   )
   const quotaPaused = projectionPaused && pausedReason === 'quota'
+  const statePaused = projectionPaused && pausedReason === 'state'
   const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
 
   /** Reads persisted completeness; this is what keeps an R2 upgrade on local data. */
@@ -491,14 +492,16 @@ export function DocumentList() {
           {projectionPaused && (
             <span role="status" data-list-paused className="text-status-unsure min-w-0 flex-1">
               <strong className="font-medium">
-                {t(quotaPaused ? 'wordbook.quotaPaused' : 'wordbook.paused')}
+                {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
               </strong>{' '}
               {quotaPaused
                 ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
-                : t('wordbook.pausedHint')}
+                : statePaused
+                  ? t('wordbook.statePausedHint')
+                  : t('wordbook.pausedHint')}
             </span>
           )}
-          {projectionPaused && !quotaPaused && (
+          {projectionPaused && !quotaPaused && !statePaused && (
             <button
               type="button"
               data-list-continue

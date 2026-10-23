@@ -1,24 +1,30 @@
--- Projection pull quotas: per-user buckets, RLS, and the page RPC boundary.
+-- Projection quotas and the server-side pass state machine (R3, task 13
+-- review).
 --
 -- Run after `npx supabase db reset` (or after applying all migrations):
 --   docker exec -i supabase_db_translator psql -U postgres -d postgres \
 --     -v ON_ERROR_STOP=1 < supabase/tests/projection_quota.sql
 --
--- The page RPC uses the production defaults (60 pages per minute, 2 complete
--- syncs per UTC day). To stay deterministic without issuing 60 requests, the
--- fixture pre-seeds the current fixed window's counter as the database owner
--- and then lets the real consume path move it across the limit. Counter rows
--- are seeded and asserted as postgres; every page request runs as
--- `authenticated` with request.jwt.claim.sub set, exactly like a client.
+-- The page RPC uses the production defaults: 60 pages per user per minute,
+-- 2 complete syncs per user per UTC day, and a server cursor per
+-- (user, snapshot, language). The fixture pre-seeds window counters / pass
+-- rows as the database owner, then exercises the real functions as
+-- `authenticated` with request.jwt.claim.sub set.
+--
+-- A separate integration test, `supabase/tests/projection_quota_concurrency.mjs`,
+-- fires two real PostgREST first-page requests at once to prove the per-user
+-- advisory lock lets exactly one take the last daily unit.
 
 \set user_id '00000000-0000-4000-8000-00000000f001'
 \set other_user_id '00000000-0000-4000-8000-00000000f002'
 \set third_user_id '00000000-0000-4000-8000-00000000f003'
+\set fourth_user_id '00000000-0000-4000-8000-00000000f004'
 \set snapshot '2026-10-28 12:00:00+00'
 
 select set_config('test.user_id', :'user_id', false);
 select set_config('test.other_user_id', :'other_user_id', false);
 select set_config('test.third_user_id', :'third_user_id', false);
+select set_config('test.fourth_user_id', :'fourth_user_id', false);
 select set_config('test.snapshot', :'snapshot', false);
 
 -- Fail with a readable message while the migration is still missing.
@@ -27,13 +33,23 @@ begin
   if to_regprocedure('public.consume_projection_quota(text, int, int)') is null then
     raise exception 'consume_projection_quota(text, int, int) is missing';
   end if;
-  if to_regclass('public.projection_usage') is null then
-    raise exception 'public.projection_usage is missing';
+  if to_regprocedure('public.consume_projection_sync(timestamp with time zone, text)') is null then
+    raise exception 'consume_projection_sync(timestamptz, text) is missing';
+  end if;
+  if to_regclass('public.projection_sync_passes') is null then
+    raise exception 'public.projection_sync_passes is missing';
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'projection_sync_passes'
+      and column_name = 'last_cursor'
+  ) then
+    raise exception 'projection_sync_passes has no cursor state';
   end if;
 end $$;
 
 -- ---------------------------------------------------------------------------
--- Function shape and grants
+-- Shape and grants
 -- ---------------------------------------------------------------------------
 
 do $$
@@ -47,19 +63,25 @@ begin
     and p.proname in (
       'get_wordbook_projection_page',
       'consume_projection_quota',
-      'consume_projection_sync'
+      'consume_projection_sync',
+      'record_projection_usage',
+      'prune_projection_usage'
     )
     and (
-      -- The page function reads rows as the caller; only the quota writers are
-      -- definer-owned. None may run with an unpinned search_path.
-      (p.proname = 'get_wordbook_projection_page' and p.prosecdef)
-      or (p.proname <> 'get_wordbook_projection_page' and not p.prosecdef)
+      -- The page RPC is the only read path now, so it must be definer-owned
+      -- with a pinned search_path. Every internal helper is definer-owned too.
+      not p.prosecdef
       or not (p.proconfig @> array['search_path=public, pg_temp'])
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
+        and p.proname = 'get_wordbook_projection_page'
+      or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
+        and p.proname = 'consume_projection_quota'
+      or has_function_privilege('authenticated', p.oid, 'EXECUTE')
+        and p.proname in ('consume_projection_sync', 'record_projection_usage', 'prune_projection_usage')
       or has_function_privilege('anon', p.oid, 'EXECUTE')
     );
   if v_bad is not null then
-    raise exception 'projection quota functions are missing, definer-based, or wrongly granted: %',
+    raise exception 'projection quota functions are missing, invoker-based, or wrongly granted: %',
       v_bad;
   end if;
 
@@ -70,8 +92,12 @@ begin
     raise exception 'projection_sync_passes does not have RLS enabled';
   end if;
 
-  -- No client role may touch the counters directly: the consumable API is the
-  -- function, and every read is a metrics/owner concern.
+  -- The page RPC is the only way a client reads wordbook rows. A direct
+  -- PostgREST range request must fail before RLS is even considered.
+  if has_table_privilege('authenticated', 'public.wordbook_entries', 'SELECT') then
+    raise exception 'authenticated still has direct SELECT on wordbook_entries';
+  end if;
+
   if has_table_privilege('authenticated', 'public.projection_usage', 'SELECT')
      or has_table_privilege('authenticated', 'public.projection_usage', 'INSERT')
      or has_table_privilege('authenticated', 'public.projection_usage', 'UPDATE')
@@ -89,15 +115,24 @@ end $$;
 -- ---------------------------------------------------------------------------
 
 delete from public.projection_usage
-where user_id in (:'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid);
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
+delete from public.projection_sync_passes
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
 delete from auth.users
-where id in (:'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid);
+where id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
 
 insert into auth.users (id, aud, role, email, email_confirmed_at, created_at, updated_at)
 values
   (:'user_id'::uuid, 'authenticated', 'authenticated', 'quota-a@example.test', now(), now(), now()),
   (:'other_user_id'::uuid, 'authenticated', 'authenticated', 'quota-b@example.test', now(), now(), now()),
-  (:'third_user_id'::uuid, 'authenticated', 'authenticated', 'quota-c@example.test', now(), now(), now());
+  (:'third_user_id'::uuid, 'authenticated', 'authenticated', 'quota-c@example.test', now(), now(), now()),
+  (:'fourth_user_id'::uuid, 'authenticated', 'authenticated', 'quota-d@example.test', now(), now(), now());
 
 alter table public.wordbook_entries disable trigger wordbook_entries_server_updated_at;
 
@@ -105,8 +140,12 @@ insert into public.wordbook_entries (user_id, language_code, lemma, server_updat
 values
   (:'user_id'::uuid, 'fr', 'alpha', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
   (:'user_id'::uuid, 'fr', 'beta', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
+  (:'user_id'::uuid, 'fr', 'gamma', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
+  (:'user_id'::uuid, 'fr', 'delta', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
   (:'other_user_id'::uuid, 'fr', 'alpha', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
-  (:'other_user_id'::uuid, 'fr', 'beta', current_setting('test.snapshot')::timestamptz - interval '1 minute');
+  (:'other_user_id'::uuid, 'fr', 'beta', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
+  (:'third_user_id'::uuid, 'fr', 'alpha', current_setting('test.snapshot')::timestamptz - interval '1 minute'),
+  (:'fourth_user_id'::uuid, 'fr', 'alpha', current_setting('test.snapshot')::timestamptz - interval '1 minute');
 
 alter table public.wordbook_entries enable trigger wordbook_entries_server_updated_at;
 
@@ -119,8 +158,18 @@ as $$
   select to_timestamp(floor(extract(epoch from clock_timestamp()) / p_seconds) * p_seconds);
 $$;
 
+-- Test-only reset. Only reachable as the database owner (the test calls it
+-- after `reset role`); it is not granted to any client role.
+create or replace function pg_temp.reset_projection(p_user_id uuid)
+returns void
+language sql
+as $$
+  delete from public.projection_sync_passes where user_id = p_user_id;
+  delete from public.projection_usage where user_id = p_user_id;
+$$;
+
 -- ---------------------------------------------------------------------------
--- 1. RLS: a client cannot read or forge counters, but can consume its own
+-- 1. RLS: direct table access is gone; the RPC still works
 -- ---------------------------------------------------------------------------
 
 set role authenticated;
@@ -129,20 +178,47 @@ select set_config('request.jwt.claim.sub', :'user_id', false);
 do $$
 begin
   begin
+    perform 1 from public.wordbook_entries limit 1;
+    raise exception 'authenticated read wordbook_entries directly';
+  exception
+    when insufficient_privilege then null;
+  end;
+  begin
     perform 1 from public.projection_usage limit 1;
     raise exception 'authenticated read projection_usage directly';
   exception
     when insufficient_privilege then null;
   end;
   begin
-    insert into public.projection_usage (user_id, bucket, window_start, count)
-    values (current_setting('test.user_id')::uuid, 'projection_page', now(), 0);
-    raise exception 'authenticated wrote projection_usage directly';
+    perform 1 from public.projection_sync_passes limit 1;
+    raise exception 'authenticated read projection_sync_passes directly';
+  exception
+    when insufficient_privilege then null;
+  end;
+  begin
+    perform public.record_projection_usage('projection_rows', 1, 86400);
+    raise exception 'authenticated executed record_projection_usage';
+  exception
+    when insufficient_privilege then null;
+  end;
+  begin
+    perform public.prune_projection_usage(14);
+    raise exception 'authenticated executed prune_projection_usage';
   exception
     when insufficient_privilege then null;
   end;
 
-  if not public.consume_projection_quota('projection_page', 5, 60) then
+  -- The page RPC is the permitted read path and returns only this account.
+  if exists (
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, current_setting('test.snapshot')::timestamptz, null, 100
+    )
+    where user_id <> current_setting('test.user_id')::uuid
+  ) then
+    raise exception 'the page RPC returned another account row';
+  end if;
+
+  if not public.consume_projection_quota('projection_page', 60, 60) then
     raise exception 'the caller''s own quota could not be consumed';
   end if;
 end $$;
@@ -153,7 +229,7 @@ set role anon;
 do $$
 begin
   begin
-    perform public.consume_projection_quota('projection_page', 1, 60);
+    perform public.consume_projection_quota('projection_page', 60, 60);
     raise exception 'anon executed consume_projection_quota';
   exception
     when insufficient_privilege then null;
@@ -167,21 +243,14 @@ begin
 end $$;
 reset role;
 
--- The direct consume above was a real count for the owner.
-delete from public.projection_usage
-where user_id = :'user_id'::uuid and bucket = 'projection_page';
+select pg_temp.reset_projection(:'user_id'::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 2. Page budget: under the limit passes, the next request is a typed 429
 -- ---------------------------------------------------------------------------
 
 insert into public.projection_usage (user_id, bucket, window_start, count)
-values (
-  :'user_id'::uuid,
-  'projection_page',
-  pg_temp.window_start(60),
-  59
-);
+values (:'user_id'::uuid, 'projection_page', pg_temp.window_start(60), 59);
 
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_id', false);
@@ -193,18 +262,17 @@ declare
   v_detail text;
   v_hint text;
 begin
-  -- The 60th page of this window is allowed.
+  -- The 60th page of this window is allowed (this also starts the pass).
   select count(*) into v_count
-  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100);
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
   if v_count <> 2 then
     raise exception 'allowed page returned % rows, expected 2', v_count;
   end if;
 
-  -- The 61st is denied before any row is returned, with a machine-readable
-  -- bucket and a positive retry window.
+  -- The 61st is denied before any row is returned.
   begin
     perform 1
-    from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100);
+    from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
     raise exception 'page 61 of the minute was allowed';
   exception
     when sqlstate 'PT429' then
@@ -225,7 +293,6 @@ end $$;
 
 -- Another user is untouched by the first user's exhaustion.
 select set_config('request.jwt.claim.sub', :'other_user_id', false);
-
 do $$
 declare
   v_count int;
@@ -240,41 +307,171 @@ begin
 end $$;
 
 reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
 
 -- ---------------------------------------------------------------------------
--- 3. Daily complete-sync budget: one unit per new snapshot, per UTC day
+-- 3. Server cursor state: start, resume, replay, arbitrary cursor
 -- ---------------------------------------------------------------------------
-
-delete from public.projection_usage where user_id = :'other_user_id'::uuid;
-delete from public.projection_sync_passes where user_id = :'other_user_id'::uuid;
-
--- One complete pass was already started today.
-insert into public.projection_sync_passes (user_id, snapshot, started_at)
-values (:'other_user_id'::uuid, '2026-10-27 00:00:00+00', clock_timestamp());
 
 set role authenticated;
-select set_config('request.jwt.claim.sub', :'other_user_id', false);
+select set_config('request.jwt.claim.sub', :'user_id', false);
 
 do $$
 declare
   v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
-  v_other_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '1 hour';
-  v_detail text;
+  v_lemmas text[];
 begin
-  -- The second complete pass of the day: allowed.
-  perform 1
-  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100);
+  -- Page 1: alpha, beta. The pass stores beta and no previous cursor yet.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+  if v_lemmas is distinct from array['alpha', 'beta'] then
+    raise exception 'first page is %, expected {alpha,beta}', v_lemmas;
+  end if;
 
-  -- A second language (or a retry) under the same snapshot is the same pass,
-  -- not a third daily unit.
-  perform 1
-  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 100);
+  -- Page 2 matches the stored cursor and stores delta.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
+  if v_lemmas is distinct from array['delta', 'gamma'] then
+    raise exception 'second page is %, expected {delta,gamma}', v_lemmas;
+  end if;
 
-  -- A distinct snapshot is a third complete sync: denied.
+  -- Final page (0 rows) completes the pass with final_cursor = gamma.
+  perform 1
+  from public.get_wordbook_projection_page('fr', 'gamma', v_snapshot, null, 2);
+
+  -- Replaying the final page is idempotent: a crash after the server stored
+  -- completion but before the client stored the rows must still get them.
+  perform 1
+  from public.get_wordbook_projection_page('fr', 'gamma', v_snapshot, null, 2);
+
+  -- Any other cursor is rejected: it could skip rows.
   begin
     perform 1
-    from public.get_wordbook_projection_page('fr', null, v_other_snapshot, null, 100);
-    raise exception 'a third complete projection sync in one day was allowed';
+    from public.get_wordbook_projection_page('fr', 'delta', v_snapshot, null, 2);
+    raise exception 'a completed pass accepted another cursor';
+  exception
+    when sqlstate 'PT409' then null;
+  end;
+end $$;
+
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+set role authenticated;
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_lemmas text[];
+begin
+  perform 1
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+
+  -- The empty cursor used to be accepted as a "resume" and bypassed the daily
+  -- charge. It is now a typed client error.
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('fr', '', v_snapshot, null, 2);
+    raise exception 'an empty cursor was accepted';
+  exception
+    when sqlstate 'PT400' then null;
+  end;
+
+  -- An arbitrary cursor on an incomplete pass is rejected.
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('fr', 'zzz', v_snapshot, null, 2);
+    raise exception 'an arbitrary cursor was accepted';
+  exception
+    when sqlstate 'PT409' then null;
+  end;
+
+  -- A retry of page 1 (null cursor with previous_cursor still null) is
+  -- accepted. It re-reads the same rows and cannot skip anything.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+  if v_lemmas is distinct from array['alpha', 'beta'] then
+    raise exception 'page 1 retry is %, expected {alpha,beta}', v_lemmas;
+  end if;
+
+  -- The normal next cursor still works after the retry.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
+  if v_lemmas is distinct from array['delta', 'gamma'] then
+    raise exception 'next page after retry is %, expected {delta,gamma}', v_lemmas;
+  end if;
+end $$;
+
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+set role authenticated;
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+begin
+  -- A brand-new pass cannot start in the middle of a language.
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('fr', 'alpha', v_snapshot, null, 2);
+    raise exception 'a new pass started with a non-null cursor';
+  exception
+    when sqlstate 'PT409' then null;
+  end;
+
+  -- Unbounded enumeration is no longer a client mode.
+  begin
+    perform 1
+    from public.get_wordbook_projection_page('fr', null, null, null, 2);
+    raise exception 'the unbounded mode was accepted';
+  exception
+    when sqlstate 'PT400' then null;
+  end;
+
+  -- Incremental pages remain allowed and do not need pass state.
+  if not exists (
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, null, current_setting('test.snapshot')::timestamptz - interval '1 day', 2
+    )
+  ) then
+    raise exception 'an incremental page returned no rows';
+  end if;
+end $$;
+
+reset role;
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+do $$
+begin
+  if exists (
+    select 1 from public.projection_sync_passes
+    where user_id = current_setting('test.user_id')::uuid
+  ) then
+    raise exception 'a rejected first page still created pass state';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Daily budget: two snapshots, resumes/languages are free, a third is 429
+-- ---------------------------------------------------------------------------
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_s4 timestamptz := current_setting('test.snapshot')::timestamptz + interval '1 hour';
+  v_s5 timestamptz := current_setting('test.snapshot')::timestamptz + interval '2 hours';
+  v_detail text;
+begin
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+  perform 1 from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2); -- resume
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_s4, null, 2);        -- pass 2
+  perform 1 from public.get_wordbook_projection_page('de', null, v_snapshot, null, 2);   -- another language, pass 1
+
+  begin
+    perform 1 from public.get_wordbook_projection_page('fr', null, v_s5, null, 2);
+    raise exception 'a third complete sync in one day was allowed';
   exception
     when sqlstate 'PT429' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -286,48 +483,160 @@ begin
     raise exception 'daily sync denial has no positive retry window: %', v_detail;
   end if;
 
-  -- A resumed pass carries a cursor and reuses its snapshot.
-  perform 1
-  from public.get_wordbook_projection_page('fr', 'alpha', v_snapshot, null, 100);
+  -- The already-charged pass resumes even though the daily bucket is full.
+  perform 1 from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2);
 
-  -- An incremental pass is not a complete sync either.
-  perform 1
-  from public.get_wordbook_projection_page('fr', null, null, v_snapshot, 100);
+  -- A second language under the same snapshot is the same charge.
+  perform 1 from public.get_wordbook_projection_page('es', null, v_snapshot, null, 2);
 end $$;
 
 reset role;
 
 do $$
 declare
-  v_sync_count int;
-  v_complete_count int;
+  v_snapshots int;
+  v_languages int;
 begin
-  -- The denied pass was rolled back with its exception; the allowed snapshot
-  -- and the seeded prior pass remain.
-  select count(*) into v_sync_count
+  select count(distinct snapshot) into v_snapshots
   from public.projection_sync_passes
-  where user_id = current_setting('test.other_user_id')::uuid
+  where user_id = current_setting('test.user_id')::uuid
     and started_at >= (
       date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
     );
-  if v_sync_count <> 2 then
-    raise exception 'the daily pass count is %, expected 2 after one denial', v_sync_count;
+  if v_snapshots <> 2 then
+    raise exception 'daily pass count is %, expected 2 after one denial', v_snapshots;
   end if;
 
-  -- A finished full language pass is recorded for first-sync metrics.
-  select coalesce(sum(count), 0) into v_complete_count
-  from public.projection_usage
-  where user_id = current_setting('test.other_user_id')::uuid
-    and bucket = 'projection_sync_complete';
-  if v_complete_count < 1 then
-    raise exception 'a completed full pass was not recorded for first-sync metrics';
+  select count(*) into v_languages
+  from public.projection_sync_passes
+  where user_id = current_setting('test.user_id')::uuid
+    and language_code in ('fr', 'de', 'es');
+  if v_languages < 4 then
+    raise exception 'expected the charged pass to carry multiple language rows, got %', v_languages;
+  end if;
+
+  if not exists (
+    select 1 from public.projection_usage
+    where user_id = current_setting('test.user_id')::uuid
+      and bucket = 'projection_sync_complete'
+  ) then
+    raise exception 'completed full passes were not recorded for first-sync metrics';
+  end if;
+end $$;
+
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+-- ---------------------------------------------------------------------------
+-- 5. Cross-day behavior: a previous-day pass is charged once for today
+-- ---------------------------------------------------------------------------
+
+insert into public.projection_sync_passes
+  (user_id, snapshot, language_code, started_at, last_cursor, previous_cursor, complete)
+values (
+  :'user_id'::uuid,
+  current_setting('test.snapshot')::timestamptz,
+  'fr',
+  clock_timestamp() - interval '1 day',
+  null,
+  null,
+  false
+);
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_yesterday timestamptz := current_setting('test.snapshot')::timestamptz;
+  v_today2 timestamptz := current_setting('test.snapshot')::timestamptz + interval '4 hours';
+  v_today3 timestamptz := current_setting('test.snapshot')::timestamptz + interval '5 hours';
+  v_detail text;
+begin
+  -- Resuming yesterday's snapshot is today's first complete sync.
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_yesterday, null, 2);
+  -- A new snapshot is today's second.
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_today2, null, 2);
+  -- A third distinct snapshot is denied.
+  begin
+    perform 1 from public.get_wordbook_projection_page('fr', null, v_today3, null, 2);
+    raise exception 'a third cross-day snapshot was allowed';
+  exception
+    when sqlstate 'PT429' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+  end;
+  if v_detail is null or v_detail not like 'bucket=sync;retry_after_seconds=%' then
+    raise exception 'cross-day denial detail is %', v_detail;
   end if;
 end $$;
 
 reset role;
 
+do $$
+declare
+  v_snapshots int;
+begin
+  select count(distinct snapshot) into v_snapshots
+  from public.projection_sync_passes
+  where user_id = current_setting('test.user_id')::uuid
+    and started_at >= (
+      date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
+    );
+  if v_snapshots <> 2 then
+    raise exception 'cross-day daily count is %, expected 2', v_snapshots;
+  end if;
+end $$;
+
+select pg_temp.reset_projection(:'user_id'::uuid);
+
+-- A completed pass from a previous day can replay its final page without a
+-- new daily charge (it is not a new complete download).
+insert into public.projection_sync_passes
+  (user_id, snapshot, language_code, started_at, last_cursor, previous_cursor, final_cursor, complete)
+values (
+  :'user_id'::uuid,
+  current_setting('test.snapshot')::timestamptz + interval '6 hours',
+  'fr',
+  clock_timestamp() - interval '1 day',
+  null,
+  null,
+  null,
+  true
+);
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '6 hours';
+  v_count int;
+begin
+  select count(*) into v_count
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
+  if v_count <> 2 then
+    raise exception 'completed-pass replay returned % rows, expected 2', v_count;
+  end if;
+end $$;
+
+reset role;
+
+do $$
+begin
+  if exists (
+    select 1 from public.projection_sync_passes
+    where user_id = current_setting('test.user_id')::uuid
+      and started_at >= (
+        date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
+      )
+  ) then
+    raise exception 'a completed-pass replay was charged as a new daily sync';
+  end if;
+end $$;
+
+select pg_temp.reset_projection(:'user_id'::uuid);
+
 -- ---------------------------------------------------------------------------
--- 4. Fixed windows reset, and the reset belongs to one user
+-- 6. Bucket allowlist, fixed windows, and retention
 -- ---------------------------------------------------------------------------
 
 set role authenticated;
@@ -335,43 +644,103 @@ select set_config('request.jwt.claim.sub', :'third_user_id', false);
 
 do $$
 begin
-  -- Align to a 2-second boundary so the two calls cannot straddle it.
-  perform pg_sleep(
-    greatest(
-      0,
-      2 - (extract(epoch from clock_timestamp())::numeric % 2) + 0.05
-    )
+  begin
+    perform public.consume_projection_quota('evil_bucket', 60, 60);
+    raise exception 'an arbitrary bucket was accepted';
+  exception
+    when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.consume_projection_quota('projection_page', 59, 60);
+    raise exception 'a caller-chosen limit was accepted';
+  exception
+    when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.consume_projection_quota('projection_page', 60, 1);
+    raise exception 'a caller-chosen window was accepted';
+  exception
+    when sqlstate '22023' then null;
+  end;
+
+  -- A full previous-minute window does not affect the current minute.
+  reset role;
+  insert into public.projection_usage (user_id, bucket, window_start, count)
+  values (
+    current_setting('test.third_user_id')::uuid,
+    'projection_page',
+    pg_temp.window_start(60) - interval '60 seconds',
+    60
   );
-  if not public.consume_projection_quota('projection_page', 1, 2) then
-    raise exception 'the first request of a fresh window was denied';
-  end if;
-  if public.consume_projection_quota('projection_page', 1, 2) then
-    raise exception 'the second request of the same window was allowed';
+  set role authenticated;
+
+  if not public.consume_projection_quota('projection_page', 60, 60) then
+    raise exception 'the fixed window did not reset at the minute boundary';
   end if;
 
-  perform pg_sleep(2.05);
-
-  if not public.consume_projection_quota('projection_page', 1, 2) then
-    raise exception 'the counter did not reset at the window boundary';
+  -- A previous-day window does not affect today's counter either.
+  reset role;
+  insert into public.projection_usage (user_id, bucket, window_start, count)
+  values (
+    current_setting('test.third_user_id')::uuid,
+    'projection_page_resume',
+    pg_temp.window_start(86400) - interval '1 day',
+    2147483647
+  );
+  set role authenticated;
+  if not public.consume_projection_quota('projection_page_resume', 2147483647, 86400) then
+    raise exception 'the fixed window did not reset at the day boundary';
   end if;
 end $$;
 
 reset role;
 
+-- Retention: old counter and pass rows are removed; recent ones stay.
+insert into public.projection_usage (user_id, bucket, window_start, count)
+values
+  (:'fourth_user_id'::uuid, 'projection_page', clock_timestamp() - interval '30 days', 1),
+  (:'fourth_user_id'::uuid, 'projection_page', pg_temp.window_start(60), 1);
+
+insert into public.projection_sync_passes
+  (user_id, snapshot, language_code, started_at, complete)
+values
+  (:'fourth_user_id'::uuid, clock_timestamp() - interval '40 days', 'fr', clock_timestamp() - interval '40 days', true),
+  (:'fourth_user_id'::uuid, clock_timestamp(), 'fr', clock_timestamp(), false);
+
 do $$
 declare
-  v_count int;
+  v_result jsonb;
+  v_usage bigint;
+  v_passes bigint;
 begin
-  select coalesce(sum(count), 0) into v_count
-  from public.projection_usage
-  where user_id = current_setting('test.third_user_id')::uuid
-    and bucket = 'projection_page';
-  if v_count <> 3 then
-    raise exception 'window counters summed to %, expected 3 (1 + 1 + 1 in fresh windows)', v_count;
+  v_result := public.prune_projection_usage(14);
+  if (v_result->>'usage')::bigint < 1 or (v_result->>'passes')::bigint < 1 then
+    raise exception 'prune reported %', v_result;
+  end if;
+
+  select count(*) into v_usage from public.projection_usage
+  where user_id = current_setting('test.fourth_user_id')::uuid;
+  if v_usage <> 1 then
+    raise exception 'retention kept % usage rows, expected 1', v_usage;
+  end if;
+
+  select count(*) into v_passes from public.projection_sync_passes
+  where user_id = current_setting('test.fourth_user_id')::uuid;
+  if v_passes <> 1 then
+    raise exception 'retention kept % pass rows, expected 1', v_passes;
   end if;
 end $$;
 
--- A subject-less call returns no rows instead of sharing a null-user bucket.
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    if not exists (select 1 from cron.job where jobname = 'prune-projection-usage') then
+      raise exception 'the projection usage retention job is not scheduled';
+    end if;
+  end if;
+end $$;
+
+-- A subject-less call reads nothing and consumes nothing.
 set role authenticated;
 select set_config('request.jwt.claim.sub', '', false);
 
@@ -386,8 +755,7 @@ begin
   if v_count <> 0 then
     raise exception 'a no-subject page request returned % rows', v_count;
   end if;
-
-  if public.consume_projection_quota('projection_page', 1, 60) then
+  if public.consume_projection_quota('projection_page', 60, 60) then
     raise exception 'a no-subject quota consume succeeded';
   end if;
 end $$;
@@ -395,10 +763,18 @@ end $$;
 reset role;
 
 -- ---------------------------------------------------------------------------
--- 5. Cleanup
+-- 7. Cleanup
 -- ---------------------------------------------------------------------------
 
 delete from public.projection_usage
-where user_id in (:'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid);
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
+delete from public.projection_sync_passes
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
 delete from auth.users
-where id in (:'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid);
+where id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);

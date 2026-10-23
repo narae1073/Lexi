@@ -59,7 +59,13 @@ const MAX_QUOTA_RETRY_MS = 6 * 60 * 60 * 1000
  * quota pause (or has no usable retry window), so no timer is scheduled.
  */
 export function quotaRetryDelayMs(report: SyncReport | null): number | null {
-  if (report === null || report.projectionPausedReason !== 'quota') return null
+  if (report === null) return null
+  if (report.projectionPausedReason === 'state') {
+    // A rejected cursor is local state loss, not a server window: retry soon
+    // with a fresh snapshot.
+    return 5_000
+  }
+  if (report.projectionPausedReason !== 'quota') return null
   const seconds = report.projectionQuotaRetryAfterSeconds
   if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return null
   return Math.min(seconds * 1000 + 1_000, MAX_QUOTA_RETRY_MS)
