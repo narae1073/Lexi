@@ -638,11 +638,16 @@ grant execute on function public.delete_document(uuid) to authenticated;
 -- ---------------------------------------------------------------------------
 -- replace_word_occurrences: refresh once after a real diff
 --
--- Same hash short-circuit and document lock as Task 1. The only additions are:
---   * collect the old (language, lemma) pairs before the diff;
---   * collect the new pairs after it;
---   * refresh their union once, before returning;
+-- Same hash short-circuit and document lock as Task 1. The additions are:
+--   * one statement diffs the document and returns only the (language, lemma)
+--     pairs whose rows were actually deleted, inserted, or updated;
+--   * refresh that affected set once, before returning;
 --   * advance occurrences_updated_at only when occurrence rows really changed.
+--
+-- Refreshing only the affected lemmas matters: a one-row sentence/span/count
+-- edit must recompute one projection entry, not every entry of a 160-word
+-- document. The old implementation collected both copies of the whole document
+-- lemma set, which turned every edit into a whole-document refresh.
 --
 -- The function is now SECURITY DEFINER so it can call the internal refresh
 -- functions, which are not executable by clients. Every statement is still
@@ -665,12 +670,8 @@ declare
   v_existing_hash text;
   v_incoming_hash text;
   v_rows jsonb;
-  v_old_pairs jsonb;
-  v_new_pairs jsonb;
   v_pairs jsonb;
-  v_deleted int;
-  v_upserted int;
-  v_real_change boolean;
+  v_written int;
 begin
   if v_user_id is null then
     raise exception 'not authenticated';
@@ -697,124 +698,135 @@ begin
     return;
   end if;
 
-  -- Old lemmas must be read before the diff removes them.
-  select coalesce(
-           jsonb_agg(
-             jsonb_build_object(
-               'languageCode', p.language_code,
-               'lemma', p.lemma
-             )
-             order by p.language_code, p.lemma
-           ),
-           '[]'::jsonb
-         )
-  into v_old_pairs
-  from (
-    select distinct o.language_code, o.lemma
-    from public.word_occurrences o
-    where o.user_id = v_user_id
-      and o.document_id = p_document_id
-  ) p;
-
   v_rows := public.word_occurrence_canonical(p_rows);
 
-  -- New lemmas come from the canonical payload (already deduplicated).
-  select coalesce(
-           jsonb_agg(
-             jsonb_build_object(
-               'languageCode', p.language_code,
-               'lemma', p.lemma
-             )
-             order by p.language_code, p.lemma
-           ),
-           '[]'::jsonb
-         )
-  into v_new_pairs
-  from (
-    select distinct
+  -- One statement diffs the document and returns the affected set.
+  --
+  --   removed     rows gone from the incoming set (DELETE ... RETURNING);
+  --   changed_old the old (language, lemma) of a row about to be updated; the
+  --               upsert key has no language_code, so a language-only change
+  --               must also refresh the language the row leaves;
+  --   upserted    rows actually inserted or updated (the ON CONFLICT WHERE
+  --               skips unchanged rows, so they are not returned).
+  --
+  -- Their union is exactly the (language, lemma) pairs whose projection may
+  -- change. A one-row edit produces one pair even when the document has
+  -- hundreds of lemmas.
+  with incoming as (
+    select
       entry->>'language_code' as language_code,
-      entry->>'lemma' as lemma
+      entry->>'lemma' as lemma,
+      entry->>'surface' as surface,
+      (entry->>'char_start')::int as char_start,
+      (entry->>'char_end')::int as char_end,
+      entry->>'sentence' as sentence,
+      (entry->>'occurrences_count')::int as occurrences_count
     from jsonb_array_elements(v_rows) as entry
-  ) p;
-
-  -- Only rows that are gone from the incoming set. A changed row stays and is
-  -- updated by the upsert below, so its identity and id are preserved.
-  delete from public.word_occurrences o
-  where o.user_id = v_user_id
-    and o.document_id = p_document_id
-    and not exists (
-      select 1
-      from jsonb_array_elements(v_rows) as entry
-      where entry->>'lemma' = o.lemma
-        and entry->>'surface' = o.surface
-    );
-  get diagnostics v_deleted = row_count;
-
-  insert into public.word_occurrences (
-    user_id, document_id, language_code, lemma, surface,
-    char_start, char_end, sentence, occurrences_count
+  ),
+  removed as (
+    delete from public.word_occurrences o
+    where o.user_id = v_user_id
+      and o.document_id = p_document_id
+      and not exists (
+        select 1
+        from incoming i
+        where i.lemma = o.lemma
+          and i.surface = o.surface
+      )
+    returning o.language_code, o.lemma
+  ),
+  changed_old as (
+    select o.language_code, o.lemma
+    from public.word_occurrences o
+    join incoming i
+      on i.lemma = o.lemma
+     and i.surface = o.surface
+    where o.user_id = v_user_id
+      and o.document_id = p_document_id
+      and (
+        o.language_code,
+        o.char_start,
+        o.char_end,
+        o.sentence,
+        o.occurrences_count
+      ) is distinct from (
+        i.language_code,
+        i.char_start,
+        i.char_end,
+        i.sentence,
+        i.occurrences_count
+      )
+  ),
+  upserted as (
+    insert into public.word_occurrences (
+      user_id, document_id, language_code, lemma, surface,
+      char_start, char_end, sentence, occurrences_count
+    )
+    select
+      v_user_id,
+      p_document_id,
+      i.language_code,
+      i.lemma,
+      i.surface,
+      i.char_start,
+      i.char_end,
+      i.sentence,
+      i.occurrences_count
+    from incoming i
+    on conflict (user_id, document_id, lemma, surface) do update
+    set language_code = excluded.language_code,
+        char_start = excluded.char_start,
+        char_end = excluded.char_end,
+        sentence = excluded.sentence,
+        occurrences_count = excluded.occurrences_count
+    where (
+      public.word_occurrences.language_code,
+      public.word_occurrences.char_start,
+      public.word_occurrences.char_end,
+      public.word_occurrences.sentence,
+      public.word_occurrences.occurrences_count
+    ) is distinct from (
+      excluded.language_code,
+      excluded.char_start,
+      excluded.char_end,
+      excluded.sentence,
+      excluded.occurrences_count
+    )
+    returning language_code, lemma
+  ),
+  affected as (
+    select language_code, lemma from removed
+    union
+    select language_code, lemma from changed_old
+    union
+    select language_code, lemma from upserted
   )
   select
-    v_user_id,
-    p_document_id,
-    entry->>'language_code',
-    entry->>'lemma',
-    entry->>'surface',
-    (entry->>'char_start')::int,
-    (entry->>'char_end')::int,
-    entry->>'sentence',
-    (entry->>'occurrences_count')::int
-  from jsonb_array_elements(v_rows) as entry
-  on conflict (user_id, document_id, lemma, surface) do update
-  set language_code = excluded.language_code,
-      char_start = excluded.char_start,
-      char_end = excluded.char_end,
-      sentence = excluded.sentence,
-      occurrences_count = excluded.occurrences_count
-  where (
-    public.word_occurrences.language_code,
-    public.word_occurrences.char_start,
-    public.word_occurrences.char_end,
-    public.word_occurrences.sentence,
-    public.word_occurrences.occurrences_count
-  ) is distinct from (
-    excluded.language_code,
-    excluded.char_start,
-    excluded.char_end,
-    excluded.sentence,
-    excluded.occurrences_count
-  );
-  get diagnostics v_upserted = row_count;
-
-  -- A real occurrence change is whatever the two writes actually wrote. A
-  -- NULL hash on a document whose rows already equal the payload (the first
-  -- push after Task 1 added the column) initializes the hash without being an
-  -- occurrence change: nothing was deleted or updated, so it must not refresh
-  -- the projection or claim occurrences_updated_at.
-  v_real_change := (v_deleted + v_upserted) > 0;
-
-  if v_real_change then
-    -- One set-based refresh for the union of old and new (language, lemma)
-    -- pairs. This is the only refresh call on the occurrence path.
-    select coalesce(
-             jsonb_agg(
-               jsonb_build_object(
-                 'userId', v_user_id,
-                 'languageCode', p.language_code,
-                 'lemma', p.lemma
+    (select count(*) from removed) + (select count(*) from upserted),
+    coalesce(
+      (
+        select jsonb_agg(
+                 jsonb_build_object(
+                   'userId', v_user_id,
+                   'languageCode', a.language_code,
+                   'lemma', a.lemma
+                 )
+                 order by a.language_code, a.lemma
                )
-               order by p.language_code, p.lemma
-             ),
-             '[]'::jsonb
-           )
-    into v_pairs
-    from (
-      select distinct
-        pair->>'languageCode' as language_code,
-        pair->>'lemma' as lemma
-      from jsonb_array_elements(v_old_pairs || v_new_pairs) as pair
-    ) p;
+        from affected a
+      ),
+      '[]'::jsonb
+    )
+  into v_written, v_pairs;
 
+  -- A real occurrence change is whatever the diff actually wrote. A NULL hash
+  -- on a document whose rows already equal the payload (the first push after
+  -- Task 1 added the column) initializes the hash without being an occurrence
+  -- change: nothing was deleted or updated, so it must not refresh the
+  -- projection or claim occurrences_updated_at.
+  if v_written > 0 then
+    -- This is the only refresh call on the occurrence path: one set-based call
+    -- for the changed (language, lemma) pairs, in deterministic order.
     if v_pairs <> '[]'::jsonb then
       perform public.refresh_wordbook_pairs(v_pairs);
     end if;
@@ -827,7 +839,7 @@ begin
   update public.documents d
   set occurrences_hash = v_incoming_hash,
       occurrences_updated_at = case
-        when v_real_change then clock_timestamp()
+        when v_written > 0 then clock_timestamp()
         else d.occurrences_updated_at
       end
   where d.user_id = v_user_id

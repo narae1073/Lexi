@@ -1015,7 +1015,138 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 9. Concurrent shared-lemma updates: no deadlock, deterministic lock order.
+-- 9. Affected-only refresh: a one-row edit touches only that lemma.
+--
+-- A document with four lemmas is edited in one row. A test-only BEFORE INSERT
+-- trigger on wordbook_entries records every entry the refresh attempts to
+-- write (INSERT ... ON CONFLICT fires the BEFORE INSERT trigger before the
+-- conflict is resolved, even when the update is later skipped), so it measures
+-- the refresh set, not just the rows the no-op guard happens to update. It
+-- must contain exactly the edited lemma.
+-- ---------------------------------------------------------------------------
+
+insert into public.documents (user_id, title, language_code, raw_text)
+values (:'user_id'::uuid, 'affected only', 'fr', 'Phrase un. Phrase deux. Phrase trois. Phrase quatre.')
+returning id as d_aff \gset
+select set_config('test.d_aff', :'d_aff', false);
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+select public.replace_word_occurrences(:'d_aff', '[
+  {"language_code":"fr","lemma":"un","surface":"un","char_start":0,"char_end":2,"sentence":"Phrase un.","occurrences_count":1},
+  {"language_code":"fr","lemma":"deux","surface":"deux","char_start":3,"char_end":7,"sentence":"Phrase deux.","occurrences_count":1},
+  {"language_code":"fr","lemma":"trois","surface":"trois","char_start":8,"char_end":13,"sentence":"Phrase trois.","occurrences_count":1},
+  {"language_code":"fr","lemma":"quatre","surface":"quatre","char_start":14,"char_end":20,"sentence":"Phrase quatre.","occurrences_count":1}
+]'::jsonb);
+
+reset role;
+
+create temp table aff_before as
+select lemma, to_jsonb(w) as j
+from public.wordbook_entries w
+where w.user_id = current_setting('test.user_id')::uuid
+  and w.language_code = 'fr'
+  and w.lemma in ('un', 'deux', 'trois', 'quatre');
+
+drop trigger if exists _test_log_wordbook_refresh_set on public.wordbook_entries;
+drop function if exists public._test_log_wordbook_refresh_set();
+drop table if exists public._test_wordbook_refresh_set;
+
+create table public._test_wordbook_refresh_set (
+  id bigint generated always as identity primary key,
+  txid bigint not null default txid_current(),
+  lemma text not null
+);
+alter table public._test_wordbook_refresh_set enable row level security;
+revoke all on table public._test_wordbook_refresh_set from public, anon, authenticated;
+
+create or replace function public._test_log_wordbook_refresh_set()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into public._test_wordbook_refresh_set (lemma) values (new.lemma);
+  return new;
+end;
+$$;
+revoke all on function public._test_log_wordbook_refresh_set()
+  from public, anon, authenticated;
+
+create trigger _test_log_wordbook_refresh_set
+  before insert on public.wordbook_entries
+  for each row execute function public._test_log_wordbook_refresh_set();
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+-- The whole document payload is sent; one sentence differs.
+select public.replace_word_occurrences(:'d_aff', '[
+  {"language_code":"fr","lemma":"un","surface":"un","char_start":0,"char_end":2,"sentence":"Phrase un.","occurrences_count":1},
+  {"language_code":"fr","lemma":"deux","surface":"deux","char_start":3,"char_end":7,"sentence":"Phrase deux modifiee.","occurrences_count":1},
+  {"language_code":"fr","lemma":"trois","surface":"trois","char_start":8,"char_end":13,"sentence":"Phrase trois.","occurrences_count":1},
+  {"language_code":"fr","lemma":"quatre","surface":"quatre","char_start":14,"char_end":20,"sentence":"Phrase quatre.","occurrences_count":1}
+]'::jsonb);
+
+reset role;
+
+do $$
+declare
+  v_lemmas text[];
+  v_changed public.wordbook_entries%rowtype;
+  v_before record;
+  v_untouched text;
+begin
+  -- Exactly one projection entry was requested from the refresh.
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public._test_wordbook_refresh_set;
+  if v_lemmas is distinct from array['deux'] then
+    raise exception 'one-row edit refreshed %, expected exactly {deux}', v_lemmas;
+  end if;
+
+  -- Untouched entries are byte-identical, watermark included.
+  for v_untouched in select unnest(array['un', 'trois', 'quatre'])
+  loop
+    if (select to_jsonb(w) from public.wordbook_entries w
+        where w.user_id = current_setting('test.user_id')::uuid
+          and w.lemma = v_untouched)
+       is distinct from
+       (select j from aff_before where lemma = v_untouched) then
+      raise exception 'one-row edit rewrote untouched lemma %', v_untouched;
+    end if;
+  end loop;
+
+  -- The changed entry updated, and only its context changed.
+  select * into v_changed from public.wordbook_entries
+  where user_id = current_setting('test.user_id')::uuid
+    and language_code = 'fr'
+    and lemma = 'deux';
+  select * into v_before from aff_before where lemma = 'deux';
+  if v_changed.server_updated_at <= (v_before.j->>'server_updated_at')::timestamptz then
+    raise exception 'one-row edit did not advance the changed entry watermark';
+  end if;
+  if v_changed.occurrence_count <> 1 or v_changed.document_count <> 1 then
+    raise exception 'one-row edit changed counts to %/%',
+      v_changed.occurrence_count, v_changed.document_count;
+  end if;
+  if v_changed.contexts <> jsonb_build_array(
+       jsonb_build_object(
+         'documentId', current_setting('test.d_aff')::uuid,
+         'sentence', 'Phrase deux modifiee.'
+       )
+     ) then
+    raise exception 'one-row edit did not update the changed context: %', v_changed.contexts;
+  end if;
+end $$;
+
+drop trigger _test_log_wordbook_refresh_set on public.wordbook_entries;
+drop function public._test_log_wordbook_refresh_set();
+drop table public._test_wordbook_refresh_set;
+
+-- ---------------------------------------------------------------------------
+-- 10. Concurrent shared-lemma updates: no deadlock, deterministic lock order.
 --
 -- Two sessions replace occurrences in different documents that share the same
 -- 30 lemmas, with the lemma order in the two payloads reversed. A test-only
@@ -1243,7 +1374,7 @@ drop extension if exists dblink;
 \endif
 
 -- ---------------------------------------------------------------------------
--- 10. Deleting a user cascades its projection without a refresh race.
+-- 11. Deleting a user cascades its projection without a refresh race.
 -- ---------------------------------------------------------------------------
 
 delete from auth.users where id = :'cascade_user_id'::uuid;
