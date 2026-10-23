@@ -1,0 +1,484 @@
+-- Projection read path: page bounds, keyset resume, RLS, payload, and touch.
+--
+-- Run after `npx supabase db reset` (or after applying all migrations):
+--   docker exec -i supabase_db_translator psql -U postgres -d postgres \
+--     -v ON_ERROR_STOP=1 < supabase/tests/projection_reads.sql
+--
+-- Fixtures are seeded as the database owner so server_updated_at can be set to
+-- exact values (the projection trigger is disabled for the seed inserts).
+-- Every read then runs as `authenticated` with request.jwt.claim.sub set, so
+-- the grant and RLS boundaries are exercised exactly as a client hits them.
+
+\set user_id '00000000-0000-4000-8000-00000000c001'
+\set other_user_id '00000000-0000-4000-8000-00000000c002'
+
+select set_config('test.user_id', :'user_id', false);
+select set_config('test.other_user_id', :'other_user_id', false);
+select set_config('test.snapshot', '2026-10-27 12:00:00+00', false);
+
+-- Clean any leftover run. Deleting users cascades documents, occurrences,
+-- states, and projection rows.
+delete from public.documents where user_id in (:'user_id'::uuid, :'other_user_id'::uuid);
+delete from auth.users where id in (:'user_id'::uuid, :'other_user_id'::uuid);
+
+insert into auth.users (id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values
+  (:'user_id'::uuid, 'authenticated', 'authenticated', 'reads-a@example.test', now(), now(), now()),
+  (:'other_user_id'::uuid, 'authenticated', 'authenticated', 'reads-b@example.test', now(), now(), now());
+
+insert into public.documents (user_id, title, language_code, raw_text)
+values (:'user_id'::uuid, 'payload test', 'fr', 'Le chat dort. Le chat mange.')
+returning id as document_id \gset
+
+insert into public.documents (user_id, title, language_code, raw_text)
+values (:'other_user_id'::uuid, 'other tenant', 'fr', 'Le chien dort.')
+returning id as other_document_id \gset
+
+select set_config('test.document_id', :'document_id', false);
+select set_config('test.other_document_id', :'other_document_id', false);
+
+insert into public.word_occurrences
+  (user_id, document_id, language_code, lemma, surface, char_start, char_end, sentence, occurrences_count)
+values
+  (:'user_id'::uuid, :'document_id'::uuid, 'fr', 'chat', 'chat', 3, 7, 'Le chat dort.', 3),
+  (:'user_id'::uuid, :'document_id'::uuid, 'fr', 'chat', 'chats', 19, 24, 'Le chat mange.', 3),
+  (:'other_user_id'::uuid, :'other_document_id'::uuid, 'fr', 'chien', 'chien', 3, 8, 'Le chien dort.', 1);
+
+-- A fixed occurrence version, so the payload assertions compare against known
+-- stamps rather than whatever the insert triggers happened to write.
+update public.documents
+set occurrences_updated_at = current_setting('test.snapshot')::timestamptz - interval '10 minutes'
+where id = :'document_id'::uuid;
+
+-- ---------------------------------------------------------------------------
+-- Projection fixture. server_updated_at is set explicitly; the BEFORE trigger
+-- would otherwise overwrite it with clock_timestamp().
+--
+-- Relative to the snapshot (S = 2026-10-27 12:00:00+00):
+--   alpha, beta, zulu  live, before the snapshot          -> full page
+--   edge               live, exactly at the snapshot      -> full page (<=)
+--   far                live, after the snapshot           -> incremental only
+--   mid                soft-deleted before the snapshot   -> incremental only
+--   gone               live at the snapshot, deleted after-> excluded (changed
+--                      after S; the incremental pull starts at S)
+--   de/alpha           other language                     -> never in fr pages
+--   other/fr           other tenant                       -> never visible
+-- ---------------------------------------------------------------------------
+
+alter table public.wordbook_entries disable trigger wordbook_entries_server_updated_at;
+
+insert into public.wordbook_entries (user_id, language_code, lemma, server_updated_at, deleted_at)
+values
+  (:'user_id'::uuid, 'fr', 'alpha', current_setting('test.snapshot')::timestamptz - interval '3 minutes', null),
+  (:'user_id'::uuid, 'fr', 'beta', current_setting('test.snapshot')::timestamptz - interval '2 minutes', null),
+  (:'user_id'::uuid, 'fr', 'edge', current_setting('test.snapshot')::timestamptz, null),
+  (:'user_id'::uuid, 'fr', 'zulu', current_setting('test.snapshot')::timestamptz - interval '4 minutes', null),
+  (:'user_id'::uuid, 'fr', 'far', current_setting('test.snapshot')::timestamptz + interval '1 minute', null),
+  (:'user_id'::uuid, 'fr', 'mid', current_setting('test.snapshot')::timestamptz - interval '30 seconds',
+   current_setting('test.snapshot')::timestamptz - interval '30 seconds'),
+  (:'user_id'::uuid, 'fr', 'gone', current_setting('test.snapshot')::timestamptz + interval '30 seconds',
+   current_setting('test.snapshot')::timestamptz + interval '30 seconds'),
+  (:'user_id'::uuid, 'de', 'alpha', current_setting('test.snapshot')::timestamptz - interval '1 minute', null),
+  (:'other_user_id'::uuid, 'fr', 'otherword', current_setting('test.snapshot')::timestamptz - interval '1 minute', null);
+
+-- Page-size fixture: more live rows than the 1000-row ceiling.
+insert into public.wordbook_entries (user_id, language_code, lemma, server_updated_at)
+select
+  :'user_id'::uuid,
+  'es',
+  'w' || lpad(g::text, 4, '0'),
+  current_setting('test.snapshot')::timestamptz - interval '1 minute'
+from generate_series(1, 1005) as g;
+
+alter table public.wordbook_entries enable trigger wordbook_entries_server_updated_at;
+
+-- ---------------------------------------------------------------------------
+-- Function shape and grants
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_bad text[];
+begin
+  select array_agg(p.proname) into v_bad
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and p.proname in (
+      'get_wordbook_projection_page',
+      'get_document_payload',
+      'touch_document'
+    )
+    and (
+      p.prosecdef
+      or not (p.proconfig @> array['search_path=public, pg_temp'])
+      or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
+      or has_function_privilege('anon', p.oid, 'EXECUTE')
+    );
+  if v_bad is not null then
+    raise exception 'projection read functions are missing, definer-based, or wrongly granted: %', v_bad;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 1. Full page: snapshot bound, live rows only, ordered, keyset by lemma
+-- ---------------------------------------------------------------------------
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_lemmas text[];
+  v_after text[];
+  v_row public.wordbook_entries%rowtype;
+  v_previous text;
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+begin
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, 100);
+
+  if v_lemmas is distinct from array['alpha', 'beta', 'edge', 'zulu'] then
+    raise exception 'full projection page for fr is %, expected {alpha,beta,edge,zulu}',
+      v_lemmas;
+  end if;
+
+  -- The output order itself, not just the aggregated set.
+  v_previous := null;
+  for v_row in
+    select * from public.get_wordbook_projection_page('fr', null, v_snapshot, 100)
+  loop
+    if v_previous is not null and v_row.lemma <= v_previous then
+      raise exception 'full projection page is not ordered by lemma: % after %',
+        v_row.lemma, v_previous;
+    end if;
+    v_previous := v_row.lemma;
+  end loop;
+
+  -- Keyset resume: strictly after the cursor.
+  select array_agg(lemma order by lemma) into v_after
+  from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, 100);
+  if v_after is distinct from array['edge', 'zulu'] then
+    raise exception 'page after beta is %, expected {edge,zulu}', v_after;
+  end if;
+
+  if exists (
+    select 1 from public.get_wordbook_projection_page('fr', null, v_snapshot, 100)
+    where language_code <> 'fr'
+       or user_id <> current_setting('test.user_id')::uuid
+       or deleted_at is not null
+  ) then
+    raise exception 'full fr page leaked another language, account, or a soft-deleted row';
+  end if;
+
+  -- A snapshot exactly on a row includes that row (<=, not <).
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', null, v_snapshot - interval '1 second', 100);
+  if v_lemmas is distinct from array['alpha', 'beta', 'zulu'] then
+    raise exception 'edge row was not bound by <= the snapshot: %', v_lemmas;
+  end if;
+end $$;
+
+-- Other language rows are theirs alone.
+do $$
+declare
+  v_lemmas text[];
+begin
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('de', null, current_setting('test.snapshot')::timestamptz, 100);
+  if v_lemmas is distinct from array['alpha'] then
+    raise exception 'de page is %, expected {alpha}', v_lemmas;
+  end if;
+
+  if exists (
+    select 1 from public.get_wordbook_projection_page('fr', null, null, 1000)
+    where user_id = current_setting('test.other_user_id')::uuid
+       or lemma = 'otherword'
+  ) then
+    raise exception 'projection page read another tenant''s row';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 2. Incremental page: includes soft-deleted rows
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_lemmas text[];
+  v_deleted int;
+begin
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('fr', null, null, 100);
+
+  if v_lemmas is distinct from array['alpha', 'beta', 'edge', 'far', 'gone', 'mid', 'zulu'] then
+    raise exception 'incremental fr page is %, expected {alpha,beta,edge,far,gone,mid,zulu}', v_lemmas;
+  end if;
+
+  select count(*) into v_deleted
+  from public.get_wordbook_projection_page('fr', null, null, 100)
+  where deleted_at is not null;
+  if v_deleted <> 2 then
+    raise exception 'incremental page carried % soft-deleted rows, expected 2', v_deleted;
+  end if;
+
+  -- A full page never includes a soft deletion, even one made before the
+  -- snapshot.
+  if exists (
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, current_setting('test.snapshot')::timestamptz, 100
+    )
+    where lemma in ('mid', 'gone')
+  ) then
+    raise exception 'full page included a soft-deleted row';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 3. Page ceiling and clamping
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_count int;
+  v_lemmas text[];
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
+begin
+  select count(*) into v_count
+  from public.get_wordbook_projection_page('es', null, v_snapshot, 5000);
+  if v_count <> 1000 then
+    raise exception 'oversized p_limit returned % rows, expected the 1000-row ceiling', v_count;
+  end if;
+
+  select count(*) into v_count
+  from public.get_wordbook_projection_page('es', null, v_snapshot, null);
+  if v_count <> 1000 then
+    raise exception 'NULL p_limit returned % rows, expected 1000', v_count;
+  end if;
+
+  select count(*) into v_count
+  from public.get_wordbook_projection_page('es', null, v_snapshot, 3);
+  if v_count <> 3 then
+    raise exception 'p_limit 3 returned % rows', v_count;
+  end if;
+
+  select count(*) into v_count
+  from public.get_wordbook_projection_page('es', null, v_snapshot, 0);
+  if v_count <> 1 then
+    raise exception 'p_limit 0 returned % rows, expected the 1-row floor', v_count;
+  end if;
+
+  select array_agg(lemma order by lemma) into v_lemmas
+  from public.get_wordbook_projection_page('es', 'w1000', v_snapshot, 10);
+  if v_lemmas is distinct from array['w1001', 'w1002', 'w1003', 'w1004', 'w1005'] then
+    raise exception 'late keyset page is %, expected w1001..w1005', v_lemmas;
+  end if;
+
+  -- A NULL language is not a wildcard.
+  select count(*) into v_count
+  from public.get_wordbook_projection_page(null, null, v_snapshot, 100);
+  if v_count <> 0 then
+    raise exception 'a NULL language returned % rows', v_count;
+  end if;
+end $$;
+
+-- An authenticated request with no subject sees no rows.
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+begin
+  if exists (
+    select 1 from public.get_wordbook_projection_page(
+      'fr', null, current_setting('test.snapshot')::timestamptz, 100
+    )
+  ) then
+    raise exception 'an unauthenticated subject read projection rows';
+  end if;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+reset role;
+
+-- ---------------------------------------------------------------------------
+-- 4. get_document_payload
+-- ---------------------------------------------------------------------------
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_payload jsonb;
+  v_document public.documents%rowtype;
+  v_occurrences jsonb;
+  v_expected jsonb;
+begin
+  select * into v_document from public.documents
+  where id = current_setting('test.document_id')::uuid;
+
+  v_payload := public.get_document_payload(v_document.id);
+
+  if v_payload is null then
+    raise exception 'get_document_payload returned NULL for the owner';
+  end if;
+  if v_payload->>'rawText' is distinct from v_document.raw_text then
+    raise exception 'payload rawText is %, expected %', v_payload->>'rawText', v_document.raw_text;
+  end if;
+  if (v_payload->>'contentUpdatedAt')::timestamptz
+     is distinct from v_document.content_updated_at then
+    raise exception 'payload contentUpdatedAt is %, expected %',
+      v_payload->>'contentUpdatedAt', v_document.content_updated_at;
+  end if;
+  if (v_payload->>'occurrencesUpdatedAt')::timestamptz
+     is distinct from v_document.occurrences_updated_at then
+    raise exception 'payload occurrencesUpdatedAt is %, expected %',
+      v_payload->>'occurrencesUpdatedAt', v_document.occurrences_updated_at;
+  end if;
+
+  v_occurrences := v_payload->'occurrences';
+  if jsonb_typeof(v_occurrences) <> 'array' or jsonb_array_length(v_occurrences) <> 2 then
+    raise exception 'payload occurrences are %, expected 2 rows', v_occurrences;
+  end if;
+
+  v_expected := jsonb_build_array(
+    jsonb_build_object(
+      'languageCode', 'fr', 'lemma', 'chat', 'surface', 'chat',
+      'charStart', 3, 'charEnd', 7, 'sentence', 'Le chat dort.', 'occurrencesCount', 3
+    ),
+    jsonb_build_object(
+      'languageCode', 'fr', 'lemma', 'chat', 'surface', 'chats',
+      'charStart', 19, 'charEnd', 24, 'sentence', 'Le chat mange.', 'occurrencesCount', 3
+    )
+  );
+  if v_occurrences is distinct from v_expected then
+    raise exception 'payload occurrences are not ordered rows: %', v_occurrences;
+  end if;
+
+  -- Another tenant's document is indistinguishable from a missing one.
+  if public.get_document_payload(current_setting('test.other_document_id')::uuid) is not null then
+    raise exception 'get_document_payload returned another tenant''s document';
+  end if;
+  if public.get_document_payload(gen_random_uuid()) is not null then
+    raise exception 'get_document_payload returned a missing document';
+  end if;
+end $$;
+
+reset role;
+
+-- ---------------------------------------------------------------------------
+-- 5. touch_document
+-- ---------------------------------------------------------------------------
+
+create temp table touch_other_before as
+select to_jsonb(d) as j
+from public.documents d
+where d.id = current_setting('test.other_document_id')::uuid;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+do $$
+declare
+  v_document_id uuid := current_setting('test.document_id')::uuid;
+  v_before public.documents%rowtype;
+  v_after public.documents%rowtype;
+  v_opened timestamptz := now() + interval '1 hour';
+  v_later timestamptz := now() + interval '2 hours';
+begin
+  select * into v_before from public.documents where id = v_document_id;
+
+  perform public.touch_document(v_document_id, v_opened);
+
+  select * into v_after from public.documents where id = v_document_id;
+
+  if v_after.last_opened_at is distinct from v_opened then
+    raise exception 'touch_document set last_opened_at to %, expected %',
+      v_after.last_opened_at, v_opened;
+  end if;
+
+  -- Only last_opened_at and the server watermark may differ. Content, versions,
+  -- title, folder, trash state, and updated_at must be untouched.
+  if (to_jsonb(v_after) - 'last_opened_at' - 'server_updated_at')
+     is distinct from (to_jsonb(v_before) - 'last_opened_at' - 'server_updated_at') then
+    raise exception 'touch_document changed fields other than last_opened_at: % -> %',
+      to_jsonb(v_before), to_jsonb(v_after);
+  end if;
+  if v_after.content_updated_at is distinct from v_before.content_updated_at
+     or v_after.occurrences_updated_at is distinct from v_before.occurrences_updated_at
+     or v_after.raw_text is distinct from v_before.raw_text
+     or v_after.updated_at is distinct from v_before.updated_at then
+    raise exception 'touch_document claimed a content or occurrence change';
+  end if;
+  if v_after.server_updated_at < v_before.server_updated_at then
+    raise exception 'touch_document moved the metadata watermark backwards';
+  end if;
+
+  -- An older client clock cannot undo a later open.
+  perform public.touch_document(v_document_id, v_later);
+  perform public.touch_document(v_document_id, v_opened);
+  select * into v_after from public.documents where id = v_document_id;
+  if v_after.last_opened_at is distinct from v_later then
+    raise exception 'touch_document moved last_opened_at backwards to %', v_after.last_opened_at;
+  end if;
+
+  -- Another tenant's document is rejected and untouched.
+  begin
+    perform public.touch_document(current_setting('test.other_document_id')::uuid, v_opened);
+    raise exception 'touch_document accepted another tenant''s document';
+  exception
+    when sqlstate 'P0002' then null;
+  end;
+
+  begin
+    perform public.touch_document(gen_random_uuid(), v_opened);
+    raise exception 'touch_document accepted a missing document';
+  exception
+    when sqlstate 'P0002' then null;
+  end;
+end $$;
+
+reset role;
+
+do $$
+declare
+  v_other public.documents%rowtype;
+  v_before jsonb;
+begin
+  select j into v_before from touch_other_before;
+  select * into v_other from public.documents
+  where id = current_setting('test.other_document_id')::uuid;
+  if to_jsonb(v_other) is distinct from v_before then
+    raise exception 'a rejected touch changed the other tenant''s document';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. anon is denied on every endpoint
+-- ---------------------------------------------------------------------------
+
+set role anon;
+
+do $$
+begin
+  begin
+    perform public.get_wordbook_projection_page('fr', null, null, 1);
+    raise exception 'anon executed get_wordbook_projection_page';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    perform public.get_document_payload(gen_random_uuid());
+    raise exception 'anon executed get_document_payload';
+  exception
+    when insufficient_privilege then null;
+  end;
+
+  begin
+    perform public.touch_document(gen_random_uuid(), now());
+    raise exception 'anon executed touch_document';
+  exception
+    when insufficient_privilege then null;
+  end;
+end $$;
+
+reset role;

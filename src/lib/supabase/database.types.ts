@@ -381,6 +381,46 @@ export type Database = {
         Args: { p_document_id: string; p_rows: Json }
         Returns: undefined
       }
+      get_wordbook_projection_page: {
+        Args: {
+          p_language_code: string
+          p_after_lemma: string | null
+          p_snapshot: string | null
+          p_limit: number | null
+        }
+        Returns: {
+          user_id: string
+          language_code: string
+          lemma: string
+          surfaces: string[]
+          contexts: Json
+          occurrence_count: number
+          document_count: number
+          status: Database['public']['Enums']['word_status'] | null
+          is_favorite: boolean
+          star_angle: number
+          star_color: string
+          seen_count: number
+          first_seen_at: string | null
+          last_seen_at: string | null
+          favorite_updated_at: string | null
+          known_presses: number
+          unsure_presses: number
+          unknown_presses: number
+          note: string | null
+          note_updated_at: string | null
+          deleted_at: string | null
+          server_updated_at: string
+        }[]
+      }
+      get_document_payload: {
+        Args: { p_document_id: string }
+        Returns: Json
+      }
+      touch_document: {
+        Args: { p_document_id: string; p_opened_at: string | null }
+        Returns: undefined
+      }
     }
     Enums: { word_status: 'known' | 'unsure' | 'unknown' }
     CompositeTypes: Record<never, never>
