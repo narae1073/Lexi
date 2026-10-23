@@ -376,6 +376,8 @@ export const ko: Dictionary = {
       '끄면 받기 전에 항상 확인합니다. 데이터 절약 모드나 느린 연결에서는 켜 두어도 확인합니다.',
     dictionaryDownload: '내려받기 ({size})',
     dictionaryDownloaded: '받음 — 오프라인에서 동작',
+    dictionaryDeclined: '내려받기를 취소했습니다 — 사전을 받지 않았습니다.',
+    dictionaryFailed: '사전을 내려받지 못했습니다. 연결을 확인하고 다시 시도하세요.',
     close: '닫기',
   },
 

@@ -34,8 +34,18 @@ export type CachedResponse<T> = {
   size?: number
 }
 
-/** 아무리 오래돼도 이 기간 안의 응답은 지우지 않는다 */
+/** 마지막으로 읽은 뒤 이 기간이 지난 응답은 버린다 */
 export const CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
+
+/**
+ * 회계를 DB 에서 다시 읽는 기준선 (20 MB).
+ *
+ * 회계는 탭마다 따로 산다. 두 탭이 각자 24 MB 를 쓰면 서로의 쓰기를 몰라
+ * 합계 48 MB 가 될 수 있다. 자기 회계가 이 선을 넘으면 결정을 내리기 전에
+ * IndexedDB 전체를 다시 세어 다른 탭의 몫까지 포함한다. 20 MB 위에서는 쓰기마다
+ * 다시 세지만, 캐시가 그만큼 큰 경우는 드물고 상한이 지켜지는 편이 낫다.
+ */
+const CACHE_RECHECK_BYTES = 20 * 1024 * 1024
 
 /**
  * 응답 캐시 전체 상한 (25 MB).
@@ -46,6 +56,10 @@ export const CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
  *
  * 사전 zip(10.5 MB + 7.25 MB)은 OPFS 에 따로 있고 이 상한에 들어가지 않는다 —
  * 서로 다른 저장소이고, 사전은 학습 데이터처럼 다시 받으려면 큰 비용이 든다.
+ *
+ * 상한은 한 탭의 회계가 아니라 IndexedDB 전체의 합이다. 20 MB 를 넘는 쓰기는
+ * 결정 전에 DB 에서 다시 세고, 탭 사이의 쓰기는 BroadcastChannel 로 알려
+ * 상대 탭도 상한을 다시 확인한다 (CACHE_RECHECK_BYTES, cacheChannel 참고).
  */
 export const CACHE_MAX_BYTES = 25 * 1024 * 1024
 
@@ -104,15 +118,24 @@ async function loadAccounting(): Promise<void> {
  *
  * 회계가 아직 안 읽혔다면 저장 뒤에 DB 를 훑으므로, 이 시점의 값이 곧 정답이다
  * (덮어쓴 예전 크기를 이중으로 세지 않는다).
+ *
+ * 다른 탭의 쓰기는 이 탭의 증분에 들어 있지 않다. 20 MB 를 넘으면 결정 전에
+ * DB 에서 다시 세어, 두 탭이 각자 24 MB 를 써서 합계가 상한을 넘는 경우를 잡는다.
  */
 async function accountWrite(key: string, nextBytes: number): Promise<void> {
   if (!accountingLoaded) {
     await loadAccounting()
     return
   }
+
   const previousBytes = knownSizes.get(key) ?? 0
   accountedBytes += nextBytes - previousBytes
   knownSizes.set(key, nextBytes)
+
+  if (accountedBytes >= CACHE_RECHECK_BYTES) {
+    // 결정 전에 DB 에서 다시 센다 — 다른 탭이 방금 쓴 것까지 포함해서.
+    await loadAccounting()
+  }
 }
 
 /**
@@ -148,6 +171,44 @@ async function evictOverflow(): Promise<number> {
   return removed
 }
 
+/**
+ * 다른 탭에 "캐시가 바뀌었다" 고 알리는 채널.
+ *
+ * 상한은 결국 하나의 IndexedDB 를 나눠 쓰는 여러 탭의 합이다. 자기 회계가
+ * 20 MB 를 넘을 때만 다시 세면, 작은 몫을 가진 탭은 다른 탭이 키운 것을
+ * 모를 수 있다. 쓰기가 있을 때마다 알려 상대 탭의 회계를 무효화하고,
+ * 상대 탭은 지금 캐시 전체를 다시 세어 상한을 넘었으면 즉시 줄인다.
+ * 브라우저에 BroadcastChannel 이 없으면 조용히 넘어간다 — 다음 쓰기의
+ * 재확인이 안전망이다.
+ */
+const CACHE_CHANNEL = 'lexi.responseCache'
+
+let channel: BroadcastChannel | null = null
+
+function cacheChannel(): BroadcastChannel | null {
+  if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return null
+  if (!channel) {
+    channel = new BroadcastChannel(CACHE_CHANNEL)
+    channel.onmessage = () => {
+      // 이 탭의 증분은 다른 탭의 쓰기를 모른다 — 다음 결정 전에 다시 센다
+      accountingLoaded = false
+      void serial(async () => {
+        const removed = await evictOverflow().catch(() => 0)
+        if (removed > 0) notifyCacheChanged()
+      })
+    }
+  }
+  return channel
+}
+
+function notifyCacheChanged(): void {
+  try {
+    cacheChannel()?.postMessage('changed')
+  } catch {
+    // 알림 실패는 캐시 동작에 영향이 없다
+  }
+}
+
 export function cacheKey(...parts: (string | number)[]): string {
   return parts.join('\u0000')
 }
@@ -172,7 +233,17 @@ export async function readCached<T>(key: string): Promise<CachedResponse<T> | un
     const now = Date.now()
     if (Number.isFinite(row.cachedAt) && now - row.cachedAt > TOUCH_INTERVAL_MS) {
       void serial(async () => {
-        await idbPut<CachedResponse<T>>(STORES.responseCache, { ...row, cachedAt: now })
+        // 큐에서 기다리는 사이 다른 쓰기(또는 다른 탭)가 행을 바꿨을 수 있다.
+        // 처음 읽은 스냅숏을 되쓰면 새 값을 덮어쓴다 — 지금 행을 다시 읽는다.
+        const current = await idbGet<CachedResponse<T>>(STORES.responseCache, key)
+        if (!current) return
+        const touchedAt = Date.now()
+        if (Number.isFinite(current.cachedAt) && touchedAt - current.cachedAt > TOUCH_INTERVAL_MS) {
+          await idbPut<CachedResponse<T>>(STORES.responseCache, {
+            ...current,
+            cachedAt: touchedAt,
+          })
+        }
       }).catch(() => {
         // 최근 사용 표시 실패는 캐시 읽기 자체를 망치지 않는다
       })
@@ -206,6 +277,7 @@ export async function writeCached<T>(key: string, value: T): Promise<void> {
       await accountWrite(key, size)
       if (accountedBytes > CACHE_MAX_BYTES) await evictOverflow()
     })
+    notifyCacheChanged()
   } catch {
     // 조용히 넘긴다 — 캐시는 부가 기능이다
   }
@@ -235,6 +307,7 @@ export async function pruneCache(now = Date.now()): Promise<number> {
       // 캐시 정리 실패는 앱 시작을 막지 않는다
     }
 
+    if (removed > 0) notifyCacheChanged()
     return removed
   }).catch(() => 0)
 }

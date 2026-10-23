@@ -52,6 +52,7 @@ export function StoragePanel() {
   const [busy, setBusy] = useState(false)
   const [dictionaries, setDictionaries] = useState<DictionaryState | null>(null)
   const [downloading, setDownloading] = useState<LinderaDict | null>(null)
+  const [notice, setNotice] = useState<{ dict: LinderaDict; declined: boolean } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -92,16 +93,21 @@ export function StoragePanel() {
 
   const download = async (dict: LinderaDict) => {
     setDownloading(dict)
+    setNotice(null)
     try {
       // The language module asks for confirmation with the exact zip size.
-      if (dict === 'ja') await downloadJapaneseDictionary()
-      else await downloadChineseDictionary()
+      const result =
+        dict === 'ja' ? await downloadJapaneseDictionary() : await downloadChineseDictionary()
 
       const downloaded = await downloadedDictionaries()
       setDictionaries({
         ja: downloaded.includes('ja'),
         zh: downloaded.includes('zh'),
       })
+      // A cancel or a failure must not look like nothing happened.
+      if (result !== 'downloaded') {
+        setNotice({ dict, declined: result === 'declined' })
+      }
     } finally {
       setDownloading(null)
     }
@@ -175,6 +181,16 @@ export function StoragePanel() {
           </div>
         ))}
       </div>
+
+      {notice && (
+        <p className="text-ink-muted mt-1 text-xs" role="status">
+          {t(
+            notice.declined
+              ? 'settings.dictionaryDeclined'
+              : 'settings.dictionaryFailed',
+          )}
+        </p>
+      )}
     </div>
   )
 }

@@ -380,6 +380,8 @@ export const en = {
       'When off, the app asks before each download. It asks anyway on a metered or slow connection.',
     dictionaryDownload: 'Download ({size})',
     dictionaryDownloaded: 'Downloaded — works offline',
+    dictionaryDeclined: 'Download cancelled — the dictionary was not downloaded.',
+    dictionaryFailed: 'The dictionary download failed. Check your connection and try again.',
     close: 'Close',
   },
 

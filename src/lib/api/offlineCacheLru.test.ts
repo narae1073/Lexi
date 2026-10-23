@@ -142,6 +142,80 @@ describe('responseCache 상한', () => {
     expect(db.rows.has('big-new')).toBe(true)
   })
 
+  it('두 탭이 각자 써도 상한을 넘기 전에 DB 에서 다시 센다', async () => {
+    // 두 모듈 인스턴스 = 두 탭. 같은 IndexedDB(row Map)를 공유한다.
+    const tabB = await loadCache()
+    const tabA = await loadCache()
+
+    // B 가 먼저 회계를 읽어 둔다 — 이후 A 의 쓰기를 모르는 상태가 된다
+    await tabB.writeCached('b1', payload(6))
+
+    // A 는 B 의 몫을 모른 채 자기 18 MB 를 더 쓴다
+    await tabA.writeCached('a1', payload(6))
+    await tabA.writeCached('a2', payload(6))
+    await tabA.writeCached('a3', payload(6))
+
+    // B 의 증분만 보면 6 + 18 = 24 MB 로 상한 아래지만 실제 합계는 42 MB 다.
+    // B 가 20 MB 를 넘는 순간 DB 를 다시 세어 상한까지 지워야 한다.
+    await tabB.writeCached('b2', payload(6))
+    await tabB.writeCached('b3', payload(6))
+    await tabB.writeCached('b4', payload(6))
+
+    const total = [...db.rows.values()].reduce(
+      (sum, row) => sum + (row.size ?? 0),
+      0,
+    )
+    expect(total).toBeLessThanOrEqual(25 * MB)
+    expect(db.rows.size).toBeLessThan(7)
+  })
+
+  it('읽기 touch 는 큐 안에서 다시 읽어 새 값을 덮어쓰지 않는다', async () => {
+    vi.useRealTimers()
+    const { readCached } = await loadCache()
+
+    const staleAt = Date.now() - 2 * 60 * 60 * 1000
+    db.rows.set('k', {
+      key: 'k',
+      value: { version: 1 },
+      cachedAt: staleAt,
+      size: 10,
+    })
+
+    // touch 의 재읽기를 붙잡아 두고, 그 사이 새 값이 저장되는 상황을 만든다
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const original = db.idbGet.getMockImplementation()!
+    let calls = 0
+    db.idbGet.mockImplementation(async (store: string, key: string) => {
+      calls += 1
+      if (calls === 2) await gate
+      return original(store, key)
+    })
+
+    try {
+      const reading = readCached<{ version: number }>('k')
+      await vi.waitFor(() => expect(calls).toBe(2))
+
+      // touch 가 기다리는 사이 다른 쓰기가 새 값을 저장했다
+      db.rows.set('k', {
+        key: 'k',
+        value: { version: 2 },
+        cachedAt: Date.now(),
+        size: 10,
+      })
+      release()
+      await reading
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      // 옛 스냅숏을 되썼다면 version 1 이 살아난다
+      expect(db.rows.get('k')?.value).toEqual({ version: 2 })
+    } finally {
+      db.idbGet.mockImplementation(original)
+    }
+  })
+
   it('학습 데이터 저장소는 건드리지 않는다', async () => {
     const { writeCached } = await loadCache()
 

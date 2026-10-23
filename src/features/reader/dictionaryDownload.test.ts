@@ -4,8 +4,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { en } from '../../i18n/locales/en'
 import { ko } from '../../i18n/locales/ko'
+import { useSettingsStore } from '../../app/stores/settings'
 import {
   DICTIONARY_DOWNLOADS,
+  dictionaryDownloadResult,
+  dictionaryPromptLanguage,
   dictionaryPromptMessage,
   loadLinderaWith,
   shouldAutoDownload,
@@ -142,6 +145,37 @@ describe('loadLinderaWith', () => {
     expect(d.downloadDictionary).not.toHaveBeenCalled()
     expect(result).toBe(tokenizer)
   })
+
+  it('forcePrompt 는 자동 다운로드가 켜져 있어도 반드시 묻는다', async () => {
+    const d = deps()
+    const confirm = vi.fn(async () => false)
+
+    const result = await loadLinderaWith(
+      'ja',
+      d,
+      { ...askEnv, autoDownload: true },
+      confirm,
+      { forcePrompt: true },
+    )
+
+    expect(confirm).toHaveBeenCalledWith('ja')
+    expect(d.downloadDictionary).not.toHaveBeenCalled()
+    expect(result).toBeNull()
+  })
+
+  it('forcePrompt 에서 허락하면 자동 설정과 무관하게 받는다', async () => {
+    const d = deps()
+    const result = await loadLinderaWith(
+      'ja',
+      d,
+      { ...askEnv, autoDownload: true },
+      async () => true,
+      { forcePrompt: true },
+    )
+
+    expect(d.downloadDictionary).toHaveBeenCalledTimes(1)
+    expect(result).toBe(tokenizer)
+  })
 })
 
 describe('사전 크기와 안내 문구', () => {
@@ -156,6 +190,29 @@ describe('사전 크기와 안내 문구', () => {
     expect(dictionaryPromptMessage('zh', 'en')).toContain('Chinese')
     expect(dictionaryPromptMessage('zh', 'en')).toContain('7.25 MB')
     expect(dictionaryPromptMessage('ja', 'ko')).toContain('10.5 MB')
+  })
+})
+
+describe('안내 언어와 다운로드 결과', () => {
+  it('document.lang 이 아니라 저장된 앱 언어 설정을 따른다', () => {
+    const previous = useSettingsStore.getState().appLanguage
+    try {
+      useSettingsStore.setState({ appLanguage: 'ko' })
+      expect(dictionaryPromptLanguage()).toBe('ko')
+      expect(dictionaryPromptMessage('ja', dictionaryPromptLanguage())).toContain('사전')
+
+      useSettingsStore.setState({ appLanguage: 'en' })
+      expect(dictionaryPromptLanguage()).toBe('en')
+      expect(dictionaryPromptMessage('ja', dictionaryPromptLanguage())).toContain('dictionary')
+    } finally {
+      useSettingsStore.setState({ appLanguage: previous })
+    }
+  })
+
+  it('설정 화면이 취소와 실패를 구분할 수 있다', () => {
+    expect(dictionaryDownloadResult(true, false)).toBe('downloaded')
+    expect(dictionaryDownloadResult(false, true)).toBe('declined')
+    expect(dictionaryDownloadResult(false, false)).toBe('failed')
   })
 })
 
@@ -207,6 +264,8 @@ describe('사전 키 parity', () => {
       'settings.dictionaryAutoDownloadHint',
       'settings.dictionaryDownload',
       'settings.dictionaryDownloaded',
+      'settings.dictionaryDeclined',
+      'settings.dictionaryFailed',
       'settings.storageResponseCache',
     ]
 

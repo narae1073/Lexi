@@ -12,6 +12,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 
+import { useSettingsStore } from '../../app/stores/settings'
 import { createTranslator, type AppLanguage } from '../../i18n'
 
 export type LinderaDict = 'ja' | 'zh'
@@ -125,9 +126,19 @@ export function dictionaryPromptMessage(
   return t('dictionary.downloadPrompt', { language: name, size: DICTIONARY_DOWNLOADS[dict].label })
 }
 
-function appLanguage(): AppLanguage {
-  if (typeof document === 'undefined') return 'en'
-  return document.documentElement.lang === 'ko' ? 'ko' : 'en'
+/**
+ * 확인 창에 쓸 앱 언어.
+ *
+ * `document.documentElement.lang` 은 화면이 그려진 뒤에나 맞는다 — 설정에서
+ * 언어를 고르고 곧바로 사전을 받는 경우엔 아직 옛 값일 수 있다. 저장된 설정을
+ * 직접 읽어 사용자가 고른 언어를 쓴다.
+ */
+export function dictionaryPromptLanguage(): AppLanguage {
+  try {
+    return useSettingsStore.getState().resolvedAppLanguage()
+  } catch {
+    return 'en'
+  }
 }
 
 /**
@@ -140,7 +151,9 @@ function confirmDownload(dict: LinderaDict): Promise<boolean> {
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
     return Promise.resolve(false)
   }
-  return Promise.resolve(window.confirm(dictionaryPromptMessage(dict, appLanguage())))
+  return Promise.resolve(
+    window.confirm(dictionaryPromptMessage(dict, dictionaryPromptLanguage())),
+  )
 }
 
 /**
@@ -159,7 +172,23 @@ async function promptOnce(dict: LinderaDict): Promise<boolean> {
   return allowed
 }
 
-/** 사전을 실제로 읽고 토크나이저를 만드는 부분 — 테스트에서 갈아끼울 수 있다. */
+/**
+ * 설정 화면의 명시적 다운로드에서 거절된 사전.
+ *
+ * 세션 거절(`declinedThisSession`)과 따로 둔다 — 설정에서 누른 다운로드는
+ * 이전 거절과 무관하게 항상 묻지만, 그 대화상자에서 취소한 것은 사용자에게
+ * "취소됨" 으로 알려야 한다.
+ */
+const forcedPromptDenied = new Set<LinderaDict>()
+
+async function confirmForced(dict: LinderaDict): Promise<boolean> {
+  forcedPromptDenied.delete(dict)
+  const allowed = await confirmDownload(dict)
+  if (!allowed) forcedPromptDenied.add(dict)
+  return allowed
+}
+
+/** 사전 다운로드를 실제로 읽고 토크나이저를 만드는 부분 — 테스트에서 갈아끼울 수 있다. */
 export type LinderaLoadDeps = {
   hasDictionary: (name: string) => Promise<boolean>
   downloadDictionary: (url: string, name: string) => Promise<void>
@@ -170,19 +199,25 @@ export type LinderaLoadDeps = {
  * 사전 확보 + 로딩의 핵심 경로.
  *
  * 이미 OPFS 에 있으면 그냥 연다. 없으면 자동 다운로드가 허락된 경우에만
- * 묻지 않고 받고, 아니면 확인을 받는다. 거절하면 null — 호출부는 기존
- * Intl 분절로 폴백한다.
+ * 묻지 않고 받고, 아니면 확인을 받는다. `forcePrompt` 는 설정 화면의 명시적
+ * 다운로드용이라 자동 다운로드가 켜져 있어도 반드시 확인을 받는다. 거절하면
+ * null — 호출부는 기존 Intl 분절로 폴백한다.
  */
 export async function loadLinderaWith(
   dict: LinderaDict,
   deps: LinderaLoadDeps,
   env: DictionaryDownloadEnvironment,
   confirm: (dict: LinderaDict) => Promise<boolean>,
+  options: { forcePrompt?: boolean } = {},
 ): Promise<LinderaTokenizer | null> {
   const { name, url } = DICTIONARY_DOWNLOADS[dict]
 
   if (!(await deps.hasDictionary(name))) {
-    const allowed = shouldAutoDownload(env) || (await confirm(dict))
+    // forcePrompt 는 자동 다운로드보다 우선한다 — 사용자가 직접 누른 다운로드는
+    // 자동 설정과 무관하게 크기를 보고 허락해야 시작한다.
+    const allowed = options.forcePrompt
+      ? await confirm(dict)
+      : shouldAutoDownload(env) || (await confirm(dict))
     if (!allowed) return null
     await deps.downloadDictionary(url, name)
   }
@@ -309,25 +344,41 @@ async function loadLindera(
 
     const env = currentDownloadEnvironment()
     // 명시적 다운로드는 자동 설정과 무관하게 항상 크기를 보여 주고 묻는다
-    const confirm = options.forcePrompt
-      ? confirmDownload
-      : promptOnce
-    return await loadLinderaWith(dict, deps, env, confirm)
+    const confirm = options.forcePrompt ? confirmForced : promptOnce
+    return await loadLinderaWith(dict, deps, env, confirm, {
+      forcePrompt: options.forcePrompt === true,
+    })
   } catch {
     return null
   }
+}
+
+/** 설정 화면의 다운로드 결과 — 사용자에게 취소/실패를 구분해 보여 주려고 쓴다. */
+export type DictionaryDownloadResult = 'downloaded' | 'declined' | 'failed'
+
+/** 로딩 성공 여부와 '사용자가 취소했는가' 를 결과로 가른다. */
+export function dictionaryDownloadResult(
+  loaded: boolean,
+  declined: boolean,
+): DictionaryDownloadResult {
+  if (loaded) return 'downloaded'
+  return declined ? 'declined' : 'failed'
 }
 
 /**
  * 설정 화면에서 사전을 명시적으로 받는다.
  *
  * 세션 거절 기록을 지우고 다시 확인을 받는다 — 사용자가 직접 누른 것이므로
- * 이전 거절을 이유로 막지 않는다.
+ * 이전 거절을 이유로 막지 않는다. 결과를 돌려주어 설정 화면이 '취소됨' 과
+ * '실패' 를 조용히 삼키지 않게 한다.
  */
-export async function requestDictionaryDownload(dict: LinderaDict): Promise<boolean> {
+export async function requestDictionaryDownload(
+  dict: LinderaDict,
+): Promise<DictionaryDownloadResult> {
   declinedThisSession.delete(dict)
+  forcedPromptDenied.delete(dict)
   const tokenizer = await ensureLindera(dict, { forcePrompt: true })
-  return tokenizer !== null
+  return dictionaryDownloadResult(tokenizer !== null, forcedPromptDenied.has(dict))
 }
 
 /** OPFS 에 이미 있는 사전 목록. 설정 화면 표시용이며, 실패하면 빈 배열이다. */
