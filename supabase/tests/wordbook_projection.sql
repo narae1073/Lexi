@@ -37,6 +37,7 @@ select set_config('test.document_id', :'document_id', false);
 select set_config('test.second_document_id', :'second_document_id', false);
 select set_config('test.other_document_id', :'other_document_id', false);
 select set_config('test.user_id', :'user_id', false);
+select set_config('test.other_user_id', :'other_user_id', false);
 
 -- Same lemma twice in one document with two surfaces: occurrences_count is the
 -- per-(document, lemma) count and is repeated on every surface row.
@@ -76,6 +77,8 @@ declare
   v_document_id uuid := current_setting('test.document_id')::uuid;
   v_before timestamptz;
   v_after timestamptz;
+  v_server timestamptz;
+  v_folder timestamptz;
   v_row public.documents%rowtype;
 begin
   select count(*) into v_columns
@@ -160,6 +163,80 @@ begin
   if v_row.char_count <> char_length(v_row.raw_text) then
     raise exception 'backfill did not set char_count (% vs %)',
       v_row.char_count, char_length(v_row.raw_text);
+  end if;
+
+  -- Re-running is per-column idempotent: real values survive even when a repair
+  -- (char_count) forces the row to be touched, and the helper does not advance
+  -- the server watermark or folder timestamp out of band.
+  update public.documents
+  set last_opened_at = timestamptz '2026-01-01 00:00:00+00',
+      content_updated_at = timestamptz '2026-01-02 00:00:00+00',
+      occurrences_updated_at = timestamptz '2026-01-03 00:00:00+00'
+  where id = v_document_id;
+
+  alter table public.documents disable trigger documents_set_versions;
+  update public.documents set char_count = 0 where id = v_document_id;
+  alter table public.documents enable trigger documents_set_versions;
+
+  select * into v_row from public.documents where id = v_document_id;
+  v_server := v_row.server_updated_at;
+  v_folder := v_row.folder_updated_at;
+
+  perform public.backfill_document_metadata();
+
+  select * into v_row from public.documents where id = v_document_id;
+  if v_row.last_opened_at is distinct from timestamptz '2026-01-01 00:00:00+00'
+     or v_row.content_updated_at is distinct from timestamptz '2026-01-02 00:00:00+00'
+     or v_row.occurrences_updated_at is distinct from timestamptz '2026-01-03 00:00:00+00' then
+    raise exception 're-running backfill overwrote real version timestamps: %', v_row;
+  end if;
+  if v_row.char_count <> char_length(v_row.raw_text) then
+    raise exception 're-running backfill did not repair char_count';
+  end if;
+  if v_row.server_updated_at is distinct from v_server then
+    raise exception 'out-of-band backfill advanced server_updated_at';
+  end if;
+  if v_row.folder_updated_at is distinct from v_folder then
+    raise exception 'out-of-band backfill bumped folder_updated_at';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Incremental metadata-pull indexes (documents/folders/word_states/tombstones)
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_found int;
+  v_bad text[];
+begin
+  select count(*) into v_found
+  from (values
+    ('documents_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('folders_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('word_states_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('document_tombstones_user_server_updated_idx', '(user_id, server_updated_at, document_id)')
+  ) as expected(index_name, columns)
+  join pg_indexes i
+    on i.schemaname = 'public'
+   and i.indexname = expected.index_name;
+  if v_found <> 4 then
+    raise exception 'incremental metadata-pull indexes are missing (found % of 4)', v_found;
+  end if;
+
+  select array_agg(expected.index_name) into v_bad
+  from (values
+    ('documents_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('folders_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('word_states_user_server_updated_idx', '(user_id, server_updated_at, id)'),
+    ('document_tombstones_user_server_updated_idx', '(user_id, server_updated_at, document_id)')
+  ) as expected(index_name, columns)
+  join pg_indexes i
+    on i.schemaname = 'public'
+   and i.indexname = expected.index_name
+  where i.indexdef not like '%' || expected.columns || '%';
+  if v_bad is not null then
+    raise exception 'incremental metadata-pull indexes have wrong columns: %', v_bad;
   end if;
 end $$;
 
@@ -305,6 +382,69 @@ begin
     where user_id = v_user_id and language_code = 'fr' and lemma = 'ours'
   ) then
     raise exception 'a word state without an occurrence leaked into the projection';
+  end if;
+
+  -- The other tenant does have a projection row. The RLS block below proves it
+  -- is not visible to this user.
+  if not exists (
+    select 1 from public.wordbook_entries
+    where user_id = current_setting('test.other_user_id')::uuid
+      and language_code = 'fr'
+      and lemma = 'chien'
+  ) then
+    raise exception 'backfill did not create the other tenant''s row';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Backfill is an upsert: re-running dedupes contexts, refreshes state, revives
+-- a soft-deleted entry, and does not add a second surface count.
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_row public.wordbook_entries%rowtype;
+  v_user_id uuid := current_setting('test.user_id')::uuid;
+  v_document_id uuid := current_setting('test.document_id')::uuid;
+begin
+  -- Same sentence and the same document as an existing row, but a new surface.
+  -- The new surface is distinct, the context is not.
+  insert into public.word_occurrences
+    (user_id, document_id, language_code, lemma, surface, char_start, char_end, sentence, occurrences_count)
+  values (v_user_id, v_document_id, 'fr', 'chat', 'chattes', 9, 14, 'Le chat dort.', 3);
+
+  update public.word_states
+  set status = 'unsure', note = 'updated'
+  where user_id = v_user_id and language_code = 'fr' and lemma = 'chat';
+
+  -- Emulate a stale soft-deleted projection row that the backfill must revive.
+  update public.wordbook_entries
+  set deleted_at = now()
+  where user_id = v_user_id and language_code = 'fr' and lemma = 'chat';
+
+  perform public.backfill_wordbook_entries();
+
+  select * into v_row
+  from public.wordbook_entries
+  where user_id = v_user_id and language_code = 'fr' and lemma = 'chat';
+  if not found then
+    raise exception 're-running backfill removed the (fr, chat) entry';
+  end if;
+  if v_row.deleted_at is not null then
+    raise exception 're-running backfill did not revive a soft-deleted entry';
+  end if;
+  if v_row.surfaces is distinct from array['chat', 'chats', 'chattes'] then
+    raise exception 'backfill did not refresh surfaces: %', v_row.surfaces;
+  end if;
+  if jsonb_array_length(v_row.contexts) <> 3 then
+    raise exception 'backfill duplicated a (document, sentence) context: %', v_row.contexts;
+  end if;
+  if v_row.occurrence_count <> 5 or v_row.document_count <> 2 then
+    raise exception 'backfill changed deduped counts on re-run: %/%',
+      v_row.occurrence_count, v_row.document_count;
+  end if;
+  if v_row.status <> 'unsure' or v_row.note <> 'updated' then
+    raise exception 'backfill did not refresh state fields on conflict: %', v_row;
   end if;
 end $$;
 

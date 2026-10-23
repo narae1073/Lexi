@@ -33,17 +33,23 @@ alter table public.documents
   add column char_count int not null default 0;
 
 comment on column public.documents.last_opened_at is
-  '마지막으로 연 시각. 내용 변경과 무관하다.';
+  'Last time the document was opened. Unrelated to content changes.';
 comment on column public.documents.content_updated_at is
-  'raw_text 또는 language_code 가 바뀐 시각. 열람·제목 변경과 무관하다.';
+  'Last time raw_text or language_code changed. Unrelated to opens or title edits.';
 comment on column public.documents.occurrences_updated_at is
-  '문서의 등장 기록이 바뀐 시각. 열람·내용 변경과 무관하다.';
+  'Last time the document occurrence rows changed. Unrelated to opens or content edits.';
 comment on column public.documents.char_count is
-  'char_length(raw_text). 내용을 내려받지 않고도 길이 표시·정렬에 쓴다.';
+  'char_length(raw_text), so lists can show and sort by length without the text.';
 
--- Backfill legacy rows without firing the R2 document triggers. Firing
--- documents_server_updated_at here would advance every document watermark and
--- make every device re-download every document just because a migration ran.
+-- Backfill legacy rows per column. Each column keeps its existing value and
+-- only falls back to the R2 source when it was never filled in, so re-running
+-- this helper cannot overwrite a real last_opened_at/content_updated_at.
+-- char_count is always recomputed from raw_text.
+--
+-- The helper disables the watermark and updated_at triggers around its UPDATE:
+-- an out-of-band call must not advance every document watermark (a metadata
+-- re-download per device) or bump folder_updated_at through the R2 folder
+-- branch. The DDL is transactional, so a failure rolls back and re-enables them.
 create or replace function public.backfill_document_metadata()
 returns void
 language plpgsql
@@ -51,25 +57,27 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
-  -- Only rows that have never been filled in. Re-running this maintenance
-  -- function must not overwrite a real content_updated_at with created_at.
+  alter table public.documents disable trigger documents_server_updated_at;
+  alter table public.documents disable trigger documents_set_updated_at;
+
   update public.documents
-  set last_opened_at = updated_at,
-      content_updated_at = created_at,
-      occurrences_updated_at = updated_at,
+  set last_opened_at = coalesce(last_opened_at, updated_at),
+      content_updated_at = coalesce(content_updated_at, created_at),
+      occurrences_updated_at = coalesce(occurrences_updated_at, updated_at),
       char_count = char_length(raw_text)
   where last_opened_at is null
      or content_updated_at is null
      or occurrences_updated_at is null
-     or char_count <> char_length(raw_text);
+     or char_count is distinct from char_length(raw_text);
+
+  alter table public.documents enable trigger documents_server_updated_at;
+  alter table public.documents enable trigger documents_set_updated_at;
 end;
 $$;
 
 revoke all on function public.backfill_document_metadata() from public, anon, authenticated;
 
-alter table public.documents disable trigger user;
 select public.backfill_document_metadata();
-alter table public.documents enable trigger user;
 
 -- Maintain the version columns on every write. Keeping this in one BEFORE
 -- trigger (rather than in client code) means R2 clients that only know
@@ -80,14 +88,19 @@ language plpgsql
 set search_path = public
 as $$
 begin
-  new.char_count := char_length(new.raw_text);
-
   if tg_op = 'INSERT' then
+    new.char_count := char_length(new.raw_text);
     -- Creating a document is also the first time it is opened. Preserve an
     -- explicit client value if one was sent.
     new.last_opened_at := coalesce(new.last_opened_at, new.updated_at, clock_timestamp());
     new.content_updated_at := coalesce(new.content_updated_at, clock_timestamp());
     return new;
+  end if;
+
+  -- Only a text edit may materialize the text. Title, folder, trash, touch,
+  -- and occurrence-only updates must not read raw_text.
+  if new.raw_text is distinct from old.raw_text then
+    new.char_count := char_length(new.raw_text);
   end if;
 
   -- A title/folder/trash-only update must not look like a content edit.
@@ -103,6 +116,24 @@ $$;
 create trigger documents_set_versions
   before insert or update on public.documents
   for each row execute function public.set_document_versions();
+
+-- ---------------------------------------------------------------------------
+-- Incremental metadata pull indexes
+--
+-- R3 pulls changed metadata with `user_id = $1 and server_updated_at > $2
+-- order by server_updated_at, id`. Without these, every incremental pull would
+-- sort or scan on server_updated_at. document_tombstones has no `id` column, so
+-- its stable tiebreaker is document_id (the tombstone identity).
+-- ---------------------------------------------------------------------------
+
+create index if not exists documents_user_server_updated_idx
+  on public.documents (user_id, server_updated_at, id);
+create index if not exists folders_user_server_updated_idx
+  on public.folders (user_id, server_updated_at, id);
+create index if not exists word_states_user_server_updated_idx
+  on public.word_states (user_id, server_updated_at, id);
+create index if not exists document_tombstones_user_server_updated_idx
+  on public.document_tombstones (user_id, server_updated_at, document_id);
 
 -- ---------------------------------------------------------------------------
 -- wordbook_entries: one derived row per (user, language, lemma)
@@ -140,13 +171,13 @@ create table public.wordbook_entries (
 );
 
 comment on table public.wordbook_entries is
-  '서버가 만드는 단어장 읽기 모델. 클라이언트는 읽기만 한다.';
+  'Server-owned wordbook read model. Clients can only read it.';
 comment on column public.wordbook_entries.occurrence_count is
-  '문서별 (document_id, lemma) 등장 횟수를 한 번씩만 더한 값. 표기 행마다 더하지 않는다.';
+  'Sum of one count per (document_id, lemma), not one count per surface row.';
 comment on column public.wordbook_entries.contexts is
-  '[{documentId, sentence}] — (문서, 문장) 단위로 중복을 제거하고 빈 문장은 뺀다.';
+  '[{documentId, sentence}] — distinct (document, sentence) pairs, empty sentences excluded.';
 comment on column public.wordbook_entries.deleted_at is
-  '마지막 등장이 사라진 시각. NULL 이면 살아 있는 단어장 항목.';
+  'When the last occurrence disappeared. NULL for a live wordbook entry.';
 
 -- Incremental projection pulls page by (language_code, lemma) after a
 -- server_updated_at watermark.

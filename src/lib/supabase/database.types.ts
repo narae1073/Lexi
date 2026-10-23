@@ -34,13 +34,13 @@ export type Database = {
           server_updated_at: string
           /** Canonical occurrence-set hash. NULL until the first occurrence push. */
           occurrences_hash: string | null
-          /** 마지막으로 연 시각 — 내용 변경과 무관하다 */
+          /** Last time the document was opened; unrelated to content changes */
           last_opened_at: string | null
-          /** raw_text 또는 language_code 가 바뀐 시각 */
+          /** Last time raw_text or language_code changed */
           content_updated_at: string | null
-          /** 문서의 등장 기록이 바뀐 시각 */
+          /** Last time the document occurrence rows changed */
           occurrences_updated_at: string | null
-          /** char_length(raw_text) — 내용 없이 길이 표시·정렬에 쓴다 */
+          /** char_length(raw_text), for showing/sorting length without the text */
           char_count: number
         }
         Insert: {
@@ -204,11 +204,11 @@ export type Database = {
           user_id: string
           language_code: string
           lemma: string
-          /** 이 lemma 의 서로 다른 표기들 */
+          /** Distinct surfaces seen for this lemma */
           surfaces: string[]
-          /** [{ documentId, sentence }] — 빈 문장은 제외 */
+          /** [{ documentId, sentence }] — empty sentences excluded */
           contexts: Json
-          /** 문서별 (document_id, lemma) 횟수를 한 번씩만 더한 값 */
+          /** Sum of one count per (document, lemma), not per surface row */
           occurrence_count: number
           document_count: number
           status: Database['public']['Enums']['word_status'] | null
@@ -224,9 +224,9 @@ export type Database = {
           unknown_presses: number
           note: string | null
           note_updated_at: string | null
-          /** 마지막 등장이 사라진 시각. NULL 이면 살아 있는 항목 */
+          /** When the last occurrence disappeared; NULL for a live entry */
           deleted_at: string | null
-          /** 서버가 찍는 동기화 워터마크 */
+          /** Server sync watermark */
           server_updated_at: string
         }
         Insert: {
