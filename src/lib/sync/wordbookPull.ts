@@ -32,6 +32,75 @@ export function projectionPageLimit(limit: number): number {
   return Math.min(whole, PROJECTION_PAGE_MAX)
 }
 
+/** Which pre-public quota denied a projection request. */
+export type ProjectionQuotaBucket = 'page' | 'sync'
+
+/**
+ * A recoverable projection-pull quota denial (server SQLSTATE `PT429`).
+ *
+ * The pull path does not treat this as a failed sync: pages read before the
+ * denial are kept, the cursor is stored, and the next cycle resumes. Callers
+ * should wait at least {@link retryAfterSeconds} before retrying.
+ */
+export class ProjectionQuotaError extends Error {
+  /** This is a temporary limit, not a corrupt or unreachable server. */
+  readonly recoverable = true
+  readonly bucket: ProjectionQuotaBucket
+  readonly retryAfterSeconds: number
+
+  constructor(bucket: ProjectionQuotaBucket, retryAfterSeconds: number) {
+    super(
+      bucket === 'sync'
+        ? 'The daily complete wordbook download limit was reached.'
+        : 'The wordbook page rate limit was reached.',
+    )
+    this.name = 'ProjectionQuotaError'
+    this.bucket = bucket
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+const QUOTA_DETAIL = /bucket=(page|sync);retry_after_seconds=(\d+)/
+
+/**
+ * Maps a PostgREST error to a quota denial, or returns null.
+ *
+ * Only the SQLSTATE and the structured detail are trusted: a plain error that
+ * happens to have a similar message is still a real error.
+ */
+function quotaErrorFrom(error: unknown): ProjectionQuotaError | null {
+  if (typeof error !== 'object' || error === null) return null
+  const record = error as { code?: unknown; details?: unknown }
+  if (record.code !== 'PT429' || typeof record.details !== 'string') return null
+  const match = QUOTA_DETAIL.exec(record.details)
+  if (match === null) return null
+  const seconds = Number.parseInt(match[2], 10)
+  if (!Number.isFinite(seconds) || seconds <= 0) return null
+  return new ProjectionQuotaError(match[1] as ProjectionQuotaBucket, seconds)
+}
+
+/**
+ * Records a denial in the metrics bucket, best effort.
+ *
+ * A denied page request raises, so PostgreSQL rolls its own counter increment
+ * back; this separate request is what makes the 429 visible to
+ * `scripts/r3-metrics.mjs`. It must never turn a quota pause into a sync error.
+ */
+export async function recordProjectionQuotaDenial(
+  client: SupabaseClient<Database>,
+  bucket: ProjectionQuotaBucket,
+): Promise<void> {
+  try {
+    await client.rpc('consume_projection_quota', {
+      p_bucket: bucket === 'sync' ? 'projection_quota_denied_sync' : 'projection_quota_denied',
+      p_limit: 2_147_483_647,
+      p_window_seconds: 86_400,
+    })
+  } catch {
+    // Metrics only. The user-visible pause already carries the backoff.
+  }
+}
+
 /**
  * Rejects a page the caller must not apply or resume from.
  *
@@ -110,7 +179,11 @@ export async function pullProjectionPage(
     p_updated_since: updatedSince,
     p_limit: projectionPageLimit(limit),
   })
-  if (error) throw error
+  if (error) {
+    const quota = quotaErrorFrom(error)
+    if (quota !== null) throw quota
+    throw error
+  }
 
   const rows = (data ?? []) as ProjectionRow[]
   assertPage(rows, userId, language)

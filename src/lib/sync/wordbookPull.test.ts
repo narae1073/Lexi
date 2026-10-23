@@ -5,6 +5,7 @@ import { STORES, idbDelete } from '../storage/localDb'
 import { projectionStateKey, readProjectionState, writeProjectionState } from './projectionState'
 import {
   PROJECTION_PAGE_MAX,
+  ProjectionQuotaError,
   projectionPageLimit,
   pullProjectionPage,
 } from './wordbookPull'
@@ -360,5 +361,50 @@ describe('projection pages', () => {
     await expect(pullProjectionPage(client, USER_ID, 'fr', SNAPSHOT, null, 10)).rejects.toThrow(
       'projection page failed',
     )
+  })
+})
+
+describe('projection quota errors', () => {
+  function quotaClient(code: string, details: string, message = 'projection quota exceeded') {
+    return {
+      rpc: async () => ({ data: null, error: { code, details, message } }),
+    } as never
+  }
+
+  it('turns a page denial into a recoverable quota error with its retry window', async () => {
+    const client = quotaClient('PT429', 'bucket=page;retry_after_seconds=17')
+
+    const failure = await pullProjectionPage(client, USER_ID, 'fr', SNAPSHOT, null, 10).catch(
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(ProjectionQuotaError)
+    const quota = failure as ProjectionQuotaError
+    expect(quota.bucket).toBe('page')
+    expect(quota.retryAfterSeconds).toBe(17)
+    expect(quota.recoverable).toBe(true)
+    // The retry delay is a positive whole number of seconds.
+    expect(Number.isInteger(quota.retryAfterSeconds)).toBe(true)
+    expect(quota.retryAfterSeconds).toBeGreaterThan(0)
+  })
+
+  it('keeps the daily complete-sync denial distinct from a page denial', async () => {
+    const client = quotaClient('PT429', 'bucket=sync;retry_after_seconds=3600')
+
+    const failure = await pullProjectionPage(client, USER_ID, 'fr', SNAPSHOT, null, 10).catch(
+      (error: unknown) => error,
+    )
+
+    expect(failure).toBeInstanceOf(ProjectionQuotaError)
+    expect((failure as ProjectionQuotaError).bucket).toBe('sync')
+    expect((failure as ProjectionQuotaError).retryAfterSeconds).toBe(3600)
+  })
+
+  it('does not classify an unrelated PT429-shaped error without quota details as a quota', async () => {
+    const client = quotaClient('PT429', '', 'something else failed')
+
+    await expect(
+      pullProjectionPage(client, USER_ID, 'fr', SNAPSHOT, null, 10),
+    ).rejects.not.toBeInstanceOf(ProjectionQuotaError)
   })
 })

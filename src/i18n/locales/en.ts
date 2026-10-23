@@ -282,6 +282,9 @@ export const en = {
     paused: 'Wordbook download paused',
     pausedHint: 'The 64 MB limit paused this download. Continue when you are ready.',
     pausedContinue: 'Continue download',
+    quotaPaused: 'Wordbook download paused by the server limit',
+    quotaPausedHint:
+      'The server allows a limited number of wordbook downloads per account. It continues automatically in about {minutes} min.',
     group: {
       unmarked: 'Not marked',
       known: 'Know it',

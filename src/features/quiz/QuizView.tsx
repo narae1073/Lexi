@@ -68,6 +68,10 @@ export function QuizView() {
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
   const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
+  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
+  const quotaRetrySeconds = useSyncStore(
+    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
+  )
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
 
@@ -117,6 +121,8 @@ export function QuizView() {
   })
   const source = presentation.source
   const preparation = preparationProgress(completeByLanguage, enrolled)
+  const quotaPaused = presentation.showPaused && pausedReason === 'quota'
+  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
 
   useEffect(() => {
     if (localOnly) return
@@ -275,10 +281,14 @@ export function QuizView() {
             className="border-status-unsure bg-status-unsure-bg mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2 text-xs"
           >
             <span className="text-status-unsure min-w-0 flex-1">
-              <strong className="font-medium">{t('wordbook.paused')}</strong>{' '}
-              {t('wordbook.pausedHint')}
+              <strong className="font-medium">
+                {t(quotaPaused ? 'wordbook.quotaPaused' : 'wordbook.paused')}
+              </strong>{' '}
+              {quotaPaused
+                ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+                : t('wordbook.pausedHint')}
             </span>
-            {presentation.showContinue && (
+            {presentation.showContinue && !quotaPaused && (
               <button
                 type="button"
                 onClick={() => void syncNow()}

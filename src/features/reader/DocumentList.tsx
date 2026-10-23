@@ -45,6 +45,10 @@ export function DocumentList() {
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
   const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
+  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
+  const quotaRetrySeconds = useSyncStore(
+    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
+  )
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
   const enrolled = useLanguagesStore((s) => s.enrolled)
@@ -226,6 +230,8 @@ export function DocumentList() {
   const projectionPaused = pausedLanguages.some((language) =>
     enrolled.includes(language as LanguageCode),
   )
+  const quotaPaused = projectionPaused && pausedReason === 'quota'
+  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
 
   /** Reads persisted completeness; this is what keeps an R2 upgrade on local data. */
   useEffect(() => {
@@ -484,11 +490,15 @@ export function DocumentList() {
           )}
           {projectionPaused && (
             <span role="status" data-list-paused className="text-status-unsure min-w-0 flex-1">
-              <strong className="font-medium">{t('wordbook.paused')}</strong>{' '}
-              {t('wordbook.pausedHint')}
+              <strong className="font-medium">
+                {t(quotaPaused ? 'wordbook.quotaPaused' : 'wordbook.paused')}
+              </strong>{' '}
+              {quotaPaused
+                ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+                : t('wordbook.pausedHint')}
             </span>
           )}
-          {projectionPaused && (
+          {projectionPaused && !quotaPaused && (
             <button
               type="button"
               data-list-continue

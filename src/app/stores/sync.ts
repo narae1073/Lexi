@@ -48,6 +48,40 @@ const SYNC_DEBOUNCE_MS = 1_200
 /** 아무리 자주 눌러도 이만큼 지나면 한 번은 보낸다 — 미루기만 하다가 끝내지 않게 */
 const SYNC_MAX_WAIT_MS = 10_000
 
+/** Cap on an automatic quota retry so a day-long window is rechecked sooner. */
+const MAX_QUOTA_RETRY_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Delay before retrying a projection paused by a server quota.
+ *
+ * A quota pause is recoverable, not a failure: the cursor is stored and the
+ * next cycle continues. Returning null means the report does not describe a
+ * quota pause (or has no usable retry window), so no timer is scheduled.
+ */
+export function quotaRetryDelayMs(report: SyncReport | null): number | null {
+  if (report === null || report.projectionPausedReason !== 'quota') return null
+  const seconds = report.projectionQuotaRetryAfterSeconds
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return null
+  return Math.min(seconds * 1000 + 1_000, MAX_QUOTA_RETRY_MS)
+}
+
+let quotaRetryTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleQuotaRetry(userId: string, report: SyncReport): void {
+  if (quotaRetryTimer !== undefined) {
+    clearTimeout(quotaRetryTimer)
+    quotaRetryTimer = undefined
+  }
+  const delay = quotaRetryDelayMs(report)
+  if (delay === null) return
+  quotaRetryTimer = setTimeout(() => {
+    quotaRetryTimer = undefined
+    // The account may have changed while the timer waited.
+    if (useAuthStore.getState().user?.id !== userId) return
+    void useSyncStore.getState().syncQuietly()
+  }, delay)
+}
+
 /**
  * Where incremental sync stands — persisted in `src/lib/sync/syncState.ts`
  * as version 2.
@@ -675,6 +709,10 @@ async function doRun(set: Setter) {
         dirty: pendingCount(pendingByStore) > 0,
         pendingByStore,
       }))
+
+      // A quota pause is recoverable: come back after the server's window
+      // instead of waiting for an unrelated user action or a reload.
+      scheduleQuotaRetry(startedUserId, report)
 
       // The full pull is what the manual request was for. A push-only failure
       // still means it completed; a failed pull must be retried from scratch.

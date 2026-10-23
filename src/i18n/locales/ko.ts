@@ -279,6 +279,9 @@ export const ko: Dictionary = {
     paused: '단어장 내려받기를 잠시 멈췄습니다',
     pausedHint: '64MB 한도에 걸려 내려받기를 멈췄습니다. 준비되면 이어서 받으세요.',
     pausedContinue: '이어서 받기',
+    quotaPaused: '서버 한도로 단어장 내려받기를 잠시 멈췄습니다',
+    quotaPausedHint:
+      '서버가 계정마다 정한 단어장 내려받기 횟수를 넘었습니다. 약 {minutes}분 뒤 자동으로 이어집니다.',
     group: {
       unmarked: '미표시',
       known: '아는 단어',

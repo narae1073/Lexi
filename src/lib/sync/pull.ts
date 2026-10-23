@@ -22,8 +22,14 @@ import {
   type ProjectionState,
   type ProjectionStateMap,
 } from './projectionState'
-import { PROJECTION_PAGE_MAX, projectionPageLimit, pullProjectionPage } from './wordbookPull'
-import type { ProjectionRow } from './wordbookPull'
+import {
+  PROJECTION_PAGE_MAX,
+  ProjectionQuotaError,
+  projectionPageLimit,
+  pullProjectionPage,
+  recordProjectionQuotaDenial,
+} from './wordbookPull'
+import type { ProjectionQuotaBucket, ProjectionRow } from './wordbookPull'
 import type { PullResult, ProjectionPull, PullWatermarks } from './types'
 
 export const SNAPSHOT_OVERLAP_MS = 5 * 60_000
@@ -200,6 +206,8 @@ type ProjectionPass = {
   cursor: string | null
   previous: ProjectionState
   done: boolean
+  /** Rows read so far; 0 means no page of this pass has been read yet. */
+  received: number
 }
 
 /**
@@ -218,10 +226,15 @@ type ProjectionPass = {
  * That is what makes a paused manual reset converge instead of re-downloading
  * from the first lemma forever.
  *
- * Incremental passes are watermark-bounded and never paused: a cursor plus a
- * watermark can skip rows that changed *behind* the cursor while a pass was
- * paused, so the pass always starts at the stored watermark and applies rows
- * idempotently.
+ * Incremental passes are watermark-bounded and never paused by the byte
+ * budget: a cursor plus a watermark can skip rows that changed *behind* the
+ * cursor while a pass was paused, so the pass always starts at the stored
+ * watermark and applies rows idempotently.
+ *
+ * A server quota denial pauses every unfinished pass instead of failing the
+ * cycle. Pages already read are returned and stored with their cursors; a
+ * brand-new pass denied before its first page stays "not started" so the next
+ * cycle does not clear a local wordbook for an empty download.
  *
  * The caller must store the rows before persisting `next`; advancing a cursor
  * over rows that were not written is the one way a correct page can lose data.
@@ -267,36 +280,64 @@ async function pullProjection(
       cursor: full ? (previous.cursor?.lemma ?? null) : null,
       previous,
       done: false,
+      received: 0,
     })
   }
 
   let bytes = 0
   let index = 0
+  let pauseReason: 'bytes' | 'quota' | null = null
+  let quota: { bucket: ProjectionQuotaBucket; retryAfterSeconds: number } | null = null
   while (passes.some((pass) => !pass.done)) {
     const pass = passes[index % passes.length]
     index += 1
     if (pass.done) continue
 
     const limit = projectionPageLimit(PROJECTION_PAGE_MAX)
-    const page = pass.full
-      ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
-      : await pullProjectionPage(
-          db,
-          userId,
-          pass.language,
-          null,
-          // The first page of an incremental pass starts at the watermark
-          // (`pass.cursor` is null), ignoring any stored cursor so rows that
-          // changed behind it are re-read. Later pages of the same pass advance
-          // by keyset, otherwise a change set of >= one page would fetch the
-          // same first page forever.
-          pass.cursor,
-          limit,
-          pass.bound,
-        )
+    let page: ProjectionRow[]
+    try {
+      page = pass.full
+        ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
+        : await pullProjectionPage(
+            db,
+            userId,
+            pass.language,
+            null,
+            // The first page of an incremental pass starts at the watermark
+            // (`pass.cursor` is null), ignoring any stored cursor so rows that
+            // changed behind it are re-read. Later pages of the same pass advance
+            // by keyset, otherwise a change set of >= one page would fetch the
+            // same first page forever.
+            pass.cursor,
+            limit,
+            pass.bound,
+          )
+    } catch (error) {
+      if (!(error instanceof ProjectionQuotaError)) throw error
+      // A quota denial is a temporary pause, not a failed sync. Keep the rows
+      // read so far; the loop below stores them and their cursors, and the next
+      // cycle resumes. Record the 429 separately for the pre-public metrics
+      // (the denied page's own counter was rolled back with its exception).
+      quota = { bucket: error.bucket, retryAfterSeconds: error.retryAfterSeconds }
+      pauseReason = 'quota'
+      await recordProjectionQuotaDenial(db, error.bucket)
+      for (const pending of passes) {
+        if (pending.done) continue
+        paused.push(pending.language)
+        if (pending.fresh && pending.received === 0) {
+          // Nothing was read for this new pass, so the local language must not
+          // be cleared for an empty download. Leave it fresh (snapshot null)
+          // so the next cycle starts it over and clears at that point.
+          const resetIndex = resetLanguages.indexOf(pending.language)
+          if (resetIndex !== -1) resetLanguages.splice(resetIndex, 1)
+        }
+      }
+      break
+    }
 
     const pageBytes = page.reduce((sum, row) => sum + projectionRowBytes(row), 0)
     rows.push(...page)
+    pass.received += page.length
     // Only full passes are byte-budgeted. The check runs after the page is
     // counted, including a final short page: the soft cap may be crossed by the
     // page that finishes a language, and the next language is then deferred.
@@ -312,6 +353,7 @@ async function pullProjection(
       for (const pending of passes) {
         if (!pending.done && pending.full) paused.push(pending.language)
       }
+      pauseReason = 'bytes'
       break
     }
   }
@@ -319,6 +361,10 @@ async function pullProjection(
   const next: Record<string, ProjectionState> = {}
   const complete: Partial<Record<string, boolean>> = {}
   for (const pass of passes) {
+    // A brand-new pass that never read a page (a quota denial on its first
+    // request) must stay "not started": snapshot null makes the next cycle
+    // clear the language only when it can actually download it.
+    const notStarted = pass.fresh && pass.received === 0
     const state: ProjectionState = pass.done
       ? {
           complete: true,
@@ -332,7 +378,7 @@ async function pullProjection(
           // A fresh pass is not complete at any stored watermark. Only a
           // resumed pass may still describe an already-complete language.
           complete: pass.fresh ? false : pass.previous.complete,
-          snapshot: pass.bound,
+          snapshot: notStarted ? null : pass.bound,
           cursor:
             pass.cursor === null
               ? null
@@ -352,6 +398,8 @@ async function pullProjection(
       next,
       complete,
       paused,
+      pauseReason,
+      quota,
       snapshot,
     },
   }

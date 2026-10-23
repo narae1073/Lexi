@@ -426,6 +426,10 @@ export type Database = {
         Args: { p_document_id: string; p_opened_at: string | null }
         Returns: undefined
       }
+      consume_projection_quota: {
+        Args: { p_bucket: string; p_limit: number; p_window_seconds: number }
+        Returns: boolean
+      }
     }
     Enums: { word_status: 'known' | 'unsure' | 'unknown' }
     CompositeTypes: Record<never, never>
