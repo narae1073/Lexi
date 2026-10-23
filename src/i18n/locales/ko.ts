@@ -51,6 +51,7 @@ export const ko: Dictionary = {
   list: {
     marked: '{percent}% 표시',
     markedLabel: '표시한 단어 비율',
+    wordbookPreparing: '단어장 준비 중… (언어 {total}개 중 {ready}개 준비됨)',
     language: '언어',
     allLanguages: '모든 언어',
     emptyForLanguage: '{language} 문서가 없습니다.',
@@ -154,6 +155,7 @@ export const ko: Dictionary = {
     pickLanguage: '퀴즈로 풀 언어를 고르세요.',
     countLabel: '개수',
     none: '아직 낼 단어가 없습니다 — 먼저 몇 단어를 헷갈림·모름으로 표시하세요.',
+    preparing: '단어장을 준비하는 중… 첫 동기화가 끝나면 퀴즈 단어가 나타납니다.',
     start: '시작',
     progress: '{done} / {total}',
     know: '앎',
@@ -271,6 +273,12 @@ export const ko: Dictionary = {
     starColorFilter: '별 색으로 즐겨찾기 좁히기',
     starFilterEmpty: '켠 색의 즐겨찾기가 없습니다. 색을 다시 눌러 끄세요.',
     noContext: '기록된 문맥이 없습니다.',
+    preparing: '단어장을 준비하는 중…',
+    preparingHint: '첫 동기화가 끝나면 단어가 나타납니다. 그동안에도 문서를 읽을 수 있습니다.',
+    preparingProgress: '언어 {total}개 중 {ready}개 준비됨',
+    paused: '단어장 내려받기를 잠시 멈췄습니다',
+    pausedHint: '64MB 한도에 걸려 내려받기를 멈췄습니다. 준비되면 이어서 받으세요.',
+    pausedContinue: '이어서 받기',
     group: {
       unmarked: '미표시',
       known: '아는 단어',

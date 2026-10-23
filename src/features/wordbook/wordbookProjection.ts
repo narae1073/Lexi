@@ -71,6 +71,84 @@ export type ProgressDocument = {
   deletedAt?: string | null
 }
 
+/** Which read model a wordbook screen should show right now. */
+export type WordbookSource = 'local' | 'projection' | 'preparing'
+
+export type WordbookPresentationInput = {
+  /** No account: Task 11 keeps this device's occurrence-built wordbook. */
+  localOnly: boolean
+  /** Projection is complete for this language and its rows are loaded. */
+  projectionReady: boolean
+  /** This language's projection pass is paused by the soft byte cap. */
+  projectionPaused: boolean
+  /** Occurrence rows for this language exist on this device (R2 upgrade). */
+  hasLocalWordbook: boolean
+}
+
+export type WordbookPresentation = {
+  source: WordbookSource
+  /** Show the "preparing your wordbook" state (no local wordbook yet). */
+  showPreparation: boolean
+  /** Show the paused/continue notice. */
+  showPaused: boolean
+  /** Offer the button that runs the next sync to resume the pass. */
+  showContinue: boolean
+}
+
+/**
+ * Picks the visible wordbook source for an account.
+ *
+ * R2 upgrade rule: until the first projection pass is complete, the local
+ * occurrence-built wordbook stays visible — the device already has it, and an
+ * empty screen would look like data loss. A new device has nothing local, so it
+ * gets a preparing state instead of an empty list. Once the projection is
+ * complete and loaded, the worker-backed projection path takes over.
+ */
+export function resolveWordbookPresentation({
+  localOnly,
+  projectionReady,
+  projectionPaused,
+  hasLocalWordbook,
+}: WordbookPresentationInput): WordbookPresentation {
+  if (localOnly) {
+    return {
+      source: 'local',
+      showPreparation: false,
+      showPaused: false,
+      showContinue: false,
+    }
+  }
+  if (projectionReady) {
+    return {
+      source: 'projection',
+      showPreparation: false,
+      showPaused: false,
+      showContinue: false,
+    }
+  }
+  const source: WordbookSource = hasLocalWordbook ? 'local' : 'preparing'
+  return {
+    source,
+    showPreparation: source === 'preparing',
+    showPaused: projectionPaused,
+    showContinue: projectionPaused,
+  }
+}
+
+/** "N of M languages ready" progress for the preparing state. */
+export function preparationProgress(
+  completeByLanguage: Readonly<Record<string, boolean>>,
+  languages: readonly string[],
+): { ready: number; total: number; percent: number } {
+  const total = languages.length
+  const ready = languages.filter((language) => completeByLanguage[language] === true).length
+  return {
+    ready,
+    total,
+    percent: total === 0 ? 0 : Math.round((ready / total) * 100),
+  }
+}
+
 /** Same shape as `documentProgress.DocumentProgress` but kept here for the worker. */
 export type DocumentProgress = {
   total: number

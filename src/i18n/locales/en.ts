@@ -52,6 +52,7 @@ export const en = {
   list: {
     marked: '{percent}% marked',
     markedLabel: 'Share of marked words',
+    wordbookPreparing: 'Preparing wordbook… ({ready}/{total} languages ready)',
     language: 'Language',
     allLanguages: 'All languages',
     emptyForLanguage: 'No documents in {language}.',
@@ -155,6 +156,7 @@ export const en = {
     pickLanguage: 'Pick the language to quiz.',
     countLabel: 'Words',
     none: 'Nothing to quiz yet — mark some words as Unsure or New first.',
+    preparing: 'Preparing your wordbook… quiz words will appear after the first sync.',
     start: 'Start',
     progress: '{done} / {total}',
     know: 'Know',
@@ -273,6 +275,13 @@ export const en = {
     starColorFilter: 'Filter favorites by star color',
     starFilterEmpty: 'No favorites with these colors. Tap the colors again to turn them off.',
     noContext: 'No context recorded.',
+    preparing: 'Preparing your wordbook…',
+    preparingHint:
+      'Your words will appear when the first sync finishes. You can keep reading in the meantime.',
+    preparingProgress: '{ready} of {total} languages ready',
+    paused: 'Wordbook download paused',
+    pausedHint: 'The 64 MB limit paused this download. Continue when you are ready.',
+    pausedContinue: 'Continue download',
     group: {
       unmarked: 'Not marked',
       known: 'Know it',

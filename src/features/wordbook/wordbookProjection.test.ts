@@ -11,10 +11,13 @@ import type { WordState, WordStatus } from '../../types'
 import { deleteLocalDatabase } from '../../lib/storage/localDb'
 import { putWordbookEntries } from '../../lib/storage/wordbookEntries'
 import type { WordbookEntryRecord } from '../../lib/storage/wordbookEntries'
+import { writeProjectionState } from '../../lib/sync/projectionState'
 import {
   computeDocumentProgress,
+  preparationProgress,
   projectionEntriesToWordbook,
   projectionEntryToWordbook,
+  resolveWordbookPresentation,
   searchProjectionEntries,
   sortWordbookEntries,
   type ProjectionEntry,
@@ -399,11 +402,142 @@ describe('document progress from projection contexts', () => {
   })
 })
 
+describe('wordbook source selection', () => {
+  const input = {
+    localOnly: false,
+    projectionReady: false,
+    projectionPaused: false,
+    hasLocalWordbook: false,
+  }
+
+  it('keeps the local wordbook visible for an R2 upgrade while the projection is incomplete', () => {
+    const presentation = resolveWordbookPresentation({
+      ...input,
+      hasLocalWordbook: true,
+    })
+    expect(presentation).toEqual({
+      source: 'local',
+      showPreparation: false,
+      showPaused: false,
+      showContinue: false,
+    })
+  })
+
+  it('shows preparation instead of an empty wordbook on a brand-new device', () => {
+    const presentation = resolveWordbookPresentation(input)
+    expect(presentation.source).toBe('preparing')
+    expect(presentation.showPreparation).toBe(true)
+    expect(preparationProgress({ en: false }, ['en'])).toEqual({
+      ready: 0,
+      total: 1,
+      percent: 0,
+    })
+  })
+
+  it('shows a paused/continue state for a projection paused by the 64 MB cap', () => {
+    const withLocal = resolveWordbookPresentation({
+      ...input,
+      projectionPaused: true,
+      hasLocalWordbook: true,
+    })
+    expect(withLocal).toMatchObject({
+      source: 'local',
+      showPaused: true,
+      showContinue: true,
+    })
+
+    const noLocal = resolveWordbookPresentation({ ...input, projectionPaused: true })
+    expect(noLocal).toMatchObject({
+      source: 'preparing',
+      showPreparation: true,
+      showPaused: true,
+      showContinue: true,
+    })
+    expect(preparationProgress({ en: true, fr: false }, ['en', 'fr'])).toEqual({
+      ready: 1,
+      total: 2,
+      percent: 50,
+    })
+  })
+
+  it('switches to the projection (worker) path once the projection is complete and loaded', () => {
+    const presentation = resolveWordbookPresentation({
+      ...input,
+      projectionReady: true,
+      hasLocalWordbook: true,
+    })
+    expect(presentation).toEqual({
+      source: 'projection',
+      showPreparation: false,
+      showPaused: false,
+      showContinue: false,
+    })
+  })
+
+  it('leaves local-only mode on the local path', () => {
+    expect(resolveWordbookPresentation({ ...input, localOnly: true })).toEqual({
+      source: 'local',
+      showPreparation: false,
+      showPaused: false,
+      showContinue: false,
+    })
+  })
+})
+
+describe('projection readiness from persisted state', () => {
+  beforeEach(async () => {
+    useWordbookStore.setState({
+      entriesByLanguage: {},
+      loadedLanguages: {},
+      projectionCompleteByLanguage: {},
+      status: 'idle',
+      error: null,
+      revision: 0,
+      dataRevision: 0,
+    })
+    await deleteLocalDatabase()
+  })
+
+  it('reads complete languages after an R2 upgrade and marks the rest incomplete', async () => {
+    await writeProjectionState('user-1', {
+      en: {
+        complete: true,
+        snapshot: '2026-01-01T00:00:00.000Z',
+        cursor: null,
+        hydratedAt: null,
+      },
+      fr: {
+        complete: false,
+        snapshot: '2026-01-01T00:00:00.000Z',
+        cursor: { languageCode: 'fr', lemma: 'a' },
+        hydratedAt: null,
+      },
+    })
+
+    await useWordbookStore.getState().refreshProjectionReadiness('user-1')
+
+    expect(useWordbookStore.getState().projectionCompleteByLanguage).toEqual({
+      en: true,
+      fr: false,
+    })
+  })
+
+  it('treats a missing account/state as incomplete', async () => {
+    await useWordbookStore.getState().refreshProjectionReadiness(null)
+    expect(useWordbookStore.getState().projectionCompleteByLanguage).toEqual({})
+
+    await useWordbookStore.getState().refreshProjectionReadiness('new-device-user')
+    expect(useWordbookStore.getState().projectionCompleteByLanguage).toEqual({})
+  })
+})
+
 describe('wordbook store', () => {
   beforeEach(async () => {
     useWordStatesStore.setState({ byKey: {}, loaded: {} })
     useWordbookStore.setState({
       entriesByLanguage: {},
+      loadedLanguages: {},
+      projectionCompleteByLanguage: {},
       status: 'idle',
       error: null,
       revision: 0,

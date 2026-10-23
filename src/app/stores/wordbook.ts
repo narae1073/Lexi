@@ -17,6 +17,7 @@
 import { create } from 'zustand'
 
 import { STORES, idbGetAll } from '../../lib/storage/localDb'
+import { readProjectionState } from '../../lib/sync/projectionState'
 import { readWordbookEntries } from '../../lib/storage/wordbookEntries'
 import type { WordState } from '../../types'
 import {
@@ -38,6 +39,16 @@ type WordStateChange = {
 type WordbookState = {
   /** Mapped rows by language, in projection/read order. */
   entriesByLanguage: Record<string, ProjectionWordbookEntry[]>
+  /** Languages whose projection rows have been read into this store. */
+  loadedLanguages: Record<string, true>
+  /**
+   * Persisted projection completeness per language.
+   *
+   * Read from the device's `documentMeta` projection state. This is what lets an
+   * R2 upgrade keep its local wordbook and lets a new device show "preparing"
+   * before the first projection pull finishes.
+   */
+  projectionCompleteByLanguage: Record<string, boolean>
   /** Load state for the latest projection read. */
   status: WordbookStoreStatus
   error: string | null
@@ -55,6 +66,8 @@ type WordbookState = {
    * progress for all languages at once).
    */
   refreshFromStore: (languageCode?: string) => Promise<void>
+  /** Reads which languages have a complete projection for this account. */
+  refreshProjectionReadiness: (userId: string | null) => Promise<void>
   /** Replaces mapped entries directly (tests and the local-only producer in Task 11). */
   setEntries: (languageCode: string, entries: ProjectionWordbookEntry[]) => void
   /** Applies local word-state changes to just the matching rows. */
@@ -90,6 +103,8 @@ function documentsTitleSignature(
 
 export const useWordbookStore = create<WordbookState>((set, get) => ({
   entriesByLanguage: {},
+  loadedLanguages: {},
+  projectionCompleteByLanguage: {},
   status: 'idle',
   error: null,
   revision: 0,
@@ -132,6 +147,9 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
         entriesByLanguage: languageCode
           ? { ...s.entriesByLanguage, [languageCode]: mapped[languageCode] ?? [] }
           : mapped,
+        loadedLanguages: languageCode
+          ? { ...s.loadedLanguages, [languageCode]: true }
+          : Object.fromEntries(Object.keys(mapped).map((code) => [code, true as const])),
         status: 'ready',
         revision: s.revision + 1,
         dataRevision: s.dataRevision + 1,
@@ -144,10 +162,31 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
     }
   },
 
+  refreshProjectionReadiness: async (userId) => {
+    if (!userId) {
+      set({ projectionCompleteByLanguage: {} })
+      return
+    }
+    try {
+      const states = await readProjectionState(userId)
+      const complete: Record<string, boolean> = {}
+      for (const [languageCode, state] of Object.entries(states)) {
+        complete[languageCode] = state.complete
+      }
+      set({ projectionCompleteByLanguage: complete })
+    } catch (error) {
+      // Unreadable state means "not complete" — the local wordbook stays
+      // visible rather than the screen claiming an empty wordbook.
+      console.error('단어장 준비 상태 읽기 실패', error)
+      set({ projectionCompleteByLanguage: {} })
+    }
+  },
+
   setEntries: (languageCode, entries) => {
     rememberEntries(languageCode, entries)
     set((s) => ({
       entriesByLanguage: { ...s.entriesByLanguage, [languageCode]: entries },
+      loadedLanguages: { ...s.loadedLanguages, [languageCode]: true },
       revision: s.revision + 1,
       dataRevision: s.dataRevision + 1,
     }))

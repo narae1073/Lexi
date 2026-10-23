@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { useAuthStore } from '../../app/stores/auth'
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
@@ -11,6 +12,10 @@ import type { LanguageCode, Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
 import { buildWordbook, type WordbookEntry } from '../wordbook/buildWordbook'
+import {
+  preparationProgress,
+  resolveWordbookPresentation,
+} from '../wordbook/wordbookProjection'
 import { QuizAnswerButtons } from './QuizAnswerButtons'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
@@ -41,6 +46,7 @@ type DictionaryTarget = {
 
 /** 사전 상자는 단어 팝오버와 같은 폭을 쓴다 — 같은 사전이 두 곳에서 달라 보이지 않게 */
 const DICTIONARY_WIDTH = 300
+const EMPTY_PAUSED: string[] = []
 
 /**
  * 단어 퀴즈.
@@ -61,13 +67,24 @@ export function QuizView() {
   const pressStatus = useWordStatesStore((s) => s.pressStatus)
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
+  const syncNow = useSyncStore((s) => s.syncNow)
+  const userId = useAuthStore((s) => s.user?.id ?? null)
 
   const [phase, setPhase] = useState<Phase>('setup')
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(enrolled[0] ?? null)
   const projectionEntries = useWordbookStore(
     (s) => s.entriesByLanguage[languageCode ?? ''] ?? [],
   )
+  const projectionComplete = useWordbookStore(
+    (s) => s.projectionCompleteByLanguage[languageCode ?? ''] === true,
+  )
+  const projectionLoaded = useWordbookStore(
+    (s) => s.loadedLanguages[languageCode ?? ''] === true,
+  )
+  const completeByLanguage = useWordbookStore((s) => s.projectionCompleteByLanguage)
   const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
+  const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
   /** 고른 개수. 아직 안 골랐으면 가장 큰 선택지로 본다 */
   const [size, setSize] = useState<number | null>(null)
 
@@ -91,27 +108,52 @@ export function QuizView() {
   })
 
   /** 이 언어의 단어장 — 퀴즈와 복습의 공통 재료 */
+  const projectionReady = projectionComplete && projectionLoaded
+  const presentation = resolveWordbookPresentation({
+    localOnly,
+    projectionReady,
+    projectionPaused: languageCode !== null && pausedLanguages.includes(languageCode),
+    hasLocalWordbook: (occurrences[languageCode ?? '']?.length ?? 0) > 0,
+  })
+  const source = presentation.source
+  const preparation = preparationProgress(completeByLanguage, enrolled)
+
   useEffect(() => {
-    if (!languageCode || localOnly) return
+    if (localOnly) return
+    void refreshReadiness(userId)
+  }, [localOnly, lastSyncedAt, refreshReadiness, userId])
+
+  useEffect(() => {
+    if (!languageCode || localOnly || !projectionComplete) return
     void refreshFromStore(languageCode)
-  }, [languageCode, localOnly, refreshFromStore, lastSyncedAt])
+  }, [languageCode, localOnly, projectionComplete, refreshFromStore, lastSyncedAt])
 
   const entries = useMemo(() => {
     // 세션·요약에서는 시작할 때 떠 둔 사본을 쓴다. 답할 때마다 byKey 가 바뀌는데
     // 그때마다 등장 기록 전체를 다시 훑으면 큰 단어장에서 화면이 멈춘다.
     if (phase !== 'setup') return sessionEntries
     if (!languageCode) return []
-    // Local-only accounts keep the occurrence builder until Task 11.
-    if (localOnly) {
+    // Local-only accounts — and an R2 upgrade until the projection completes —
+    // keep the occurrence builder. A new device has no local rows and shows the
+    // preparing state instead.
+    if (source === 'local') {
       return buildWordbook({
         languageCode,
         occurrences: occurrences[languageCode] ?? [],
         byKey,
       })
     }
-    // Account wordbooks (including quiz contexts) come from the projection.
-    return projectionEntries
-  }, [phase, languageCode, localOnly, occurrences, byKey, sessionEntries, projectionEntries])
+    if (source === 'projection') return projectionEntries
+    return []
+  }, [
+    phase,
+    languageCode,
+    source,
+    occurrences,
+    byKey,
+    sessionEntries,
+    projectionEntries,
+  ])
 
   /** 아직 확실하지 않은 단어 — 새로 배우는 재료 */
   const pool = useMemo(() => quizPool(entries), [entries])
@@ -220,8 +262,56 @@ export function QuizView() {
           ))}
         </div>
 
+        {presentation.showPaused && (
+          <div
+            role="status"
+            data-quiz-paused
+            className="border-status-unsure bg-status-unsure-bg mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2 text-xs"
+          >
+            <span className="text-status-unsure min-w-0 flex-1">
+              <strong className="font-medium">{t('wordbook.paused')}</strong>{' '}
+              {t('wordbook.pausedHint')}
+            </span>
+            {presentation.showContinue && (
+              <button
+                type="button"
+                onClick={() => void syncNow()}
+                className="border-status-unsure text-status-unsure shrink-0 rounded-md border px-2.5 py-1 font-medium hover:bg-surface"
+              >
+                {t('wordbook.pausedContinue')}
+              </button>
+            )}
+          </div>
+        )}
+
         {languageCode &&
-          (sizeOptions.length === 0 ? (
+          (source === 'preparing' ? (
+            <section role="status" data-quiz-preparing className="border-line mt-6 rounded-xl border px-4 py-5">
+              <h2 className="text-sm font-medium">{t('wordbook.preparing')}</h2>
+              <p className="text-ink-muted mt-1 text-xs leading-relaxed">
+                {t('quiz.preparing')}
+              </p>
+              <p className="text-ink-muted mt-3 text-xs">
+                {t('wordbook.preparingProgress', {
+                  ready: preparation.ready,
+                  total: preparation.total,
+                })}
+              </p>
+              <div
+                role="progressbar"
+                aria-valuenow={preparation.percent}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={t('wordbook.preparing')}
+                className="bg-line mt-2 h-1.5 w-full overflow-hidden rounded-full"
+              >
+                <span
+                  className="bg-accent block h-full rounded-full"
+                  style={{ width: `${preparation.percent}%` }}
+                />
+              </div>
+            </section>
+          ) : sizeOptions.length === 0 ? (
             <p className="text-ink-muted mt-6 text-sm">{t('quiz.none')}</p>
           ) : (
             <>
