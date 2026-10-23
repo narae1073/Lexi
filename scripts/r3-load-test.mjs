@@ -40,16 +40,26 @@ import {
 const P95_LIMIT_MS = 100
 const P99_LIMIT_MS = 250
 
+// The full gate may not run on a smaller fixture. Smoke mode is the explicit
+// non-gating escape hatch. These are the fixture's documented scale contract.
+const REQUIRED_USERS = 4
+const REQUIRED_OCCURRENCES_PER_USER = 200_000
+const REQUIRED_DOCUMENTS_PER_USER = 1_112
+const REQUIRED_WORD_STATES_PER_USER = 23_200
+
 const USAGE = `Usage: node scripts/r3-load-test.mjs [options]
-  --users N          seed users to push as (default 4)
+  --users N          seed users to push as (default 4; full mode requires >= 4)
   --edits N          effective document edits to measure (default 100)
   --concurrency N    concurrent in-flight pushes (default 4)
   --warmup N         unmeasured edits per user (default 1, 0 in --smoke)
-  --smoke            structural checks only; p95/p99 are not gated
+  --smoke            structural checks only; fixture scale, p95 and p99 are not gated
   --url URL          local Supabase API URL (loopback only)
   --db-container C   local Postgres container (default supabase_db_<project>)
   --password P       test-user password
-  --help             print this help`
+  --help             print this help
+
+Full mode requires the 4 x 200,000 fixture:
+  4 users, 800,000 occurrences, 4,448 documents, 92,800 word states.`
 
 function parseLoadFlags(argv) {
   const flags = parseFlags(argv)
@@ -497,6 +507,45 @@ function consistencySql(userIds) {
   `
 }
 
+function scaleSql(userIds) {
+  return `
+    with seed_users as (
+      select unnest(${uuidList(userIds)}) as user_id
+    ),
+    per_user as (
+      select
+        u.user_id,
+        (select count(*) from public.word_occurrences o where o.user_id = u.user_id) as occurrences,
+        (select count(*) from public.documents d where d.user_id = u.user_id) as documents,
+        (select count(*) from public.word_states ws where ws.user_id = u.user_id) as word_states
+      from seed_users u
+    )
+    select jsonb_build_object(
+      'perUser', (
+        select coalesce(
+          jsonb_agg(
+            jsonb_build_object(
+              'userId', user_id,
+              'occurrences', occurrences,
+              'documents', documents,
+              'wordStates', word_states
+            )
+            order by user_id
+          ),
+          '[]'::jsonb
+        )
+        from per_user
+      ),
+      'minOccurrencesPerUser', (select coalesce(min(occurrences), 0) from per_user),
+      'minDocumentsPerUser', (select coalesce(min(documents), 0) from per_user),
+      'minWordStatesPerUser', (select coalesce(min(word_states), 0) from per_user),
+      'totalOccurrences', (select coalesce(sum(occurrences), 0) from per_user),
+      'totalDocuments', (select coalesce(sum(documents), 0) from per_user),
+      'totalWordStates', (select coalesce(sum(word_states), 0) from per_user)
+    );
+  `
+}
+
 async function main() {
   const started = Date.now()
   const runId = newRunId()
@@ -688,6 +737,21 @@ async function main() {
 
   // ── source/projection consistency ───────────────────────────────────────
   const consistency = await psqlJson(config, consistencySql(seedUsers.map((user) => user.id)))
+  const scale = await psqlJson(config, scaleSql(seedUsers.map((user) => user.id)))
+
+  const scaleChecks = {
+    users: users >= REQUIRED_USERS,
+    occurrences:
+      scale.minOccurrencesPerUser >= REQUIRED_OCCURRENCES_PER_USER &&
+      scale.totalOccurrences >= users * REQUIRED_OCCURRENCES_PER_USER,
+    documents:
+      scale.minDocumentsPerUser >= REQUIRED_DOCUMENTS_PER_USER &&
+      scale.totalDocuments >= users * REQUIRED_DOCUMENTS_PER_USER,
+    wordStates:
+      scale.minWordStatesPerUser >= REQUIRED_WORD_STATES_PER_USER &&
+      scale.totalWordStates >= users * REQUIRED_WORD_STATES_PER_USER,
+  }
+  const scaleOk = Object.values(scaleChecks).every(Boolean)
 
   const effectiveSummary = summarize(effectiveDurations)
   const effectiveSuccessSummary = summarize(effectiveSuccessDurations)
@@ -723,6 +787,10 @@ async function main() {
   }
 
   if (!smoke) {
+    checks.fixtureUsers = scaleChecks.users
+    checks.fixtureOccurrences = scaleChecks.occurrences
+    checks.fixtureDocuments = scaleChecks.documents
+    checks.fixtureWordStates = scaleChecks.wordStates
     checks.effectiveP95 = effectiveSummary.p95 !== null && effectiveSummary.p95 < P95_LIMIT_MS
     checks.effectiveP99 = effectiveSummary.p99 !== null && effectiveSummary.p99 < P99_LIMIT_MS
   }
@@ -740,8 +808,58 @@ async function main() {
     completedAt: new Date().toISOString(),
     url: config.url,
     gate: smoke
-      ? { enforced: false, note: 'smoke mode checks structure, not p95/p99' }
-      : { p95Ms: P95_LIMIT_MS, p99Ms: P99_LIMIT_MS, enforced: true },
+      ? {
+          enforced: false,
+          mode: 'smoke',
+          steadyState: false,
+          warmupExcluded: warmup > 0,
+          scaleAsserted: false,
+          p95Ms: null,
+          p99Ms: null,
+          note: 'smoke mode checks structure only; fixture scale, p95 and p99 are not gated',
+        }
+      : {
+          enforced: true,
+          mode: 'steady-state',
+          steadyState: warmup > 0,
+          warmupExcluded: warmup > 0,
+          scaleAsserted: true,
+          p95Ms: P95_LIMIT_MS,
+          p99Ms: P99_LIMIT_MS,
+          scaleContract: {
+            usersAtLeast: REQUIRED_USERS,
+            occurrencesPerUser: REQUIRED_OCCURRENCES_PER_USER,
+            documentsPerUser: REQUIRED_DOCUMENTS_PER_USER,
+            wordStatesPerUser: REQUIRED_WORD_STATES_PER_USER,
+          },
+          note: 'measured effective phase after warm-up; warm-up edits are reported separately and excluded',
+        },
+    measurement: {
+      steadyState: !smoke && warmup > 0,
+      warmupExcluded: warmup > 0,
+      measuredEffectiveEdits: effectiveResults.length,
+      warmupEdits: warmupResults.length,
+      note: smoke
+        ? 'smoke mode; not a gate'
+        : warmup > 0
+          ? 'p95/p99 cover the measured effective phase only; warm-up is excluded'
+          : 'no warm-up was requested; p95/p99 include first-request cost',
+    },
+    scale: {
+      asserted: !smoke,
+      ok: smoke ? null : scaleOk,
+      required: {
+        users: REQUIRED_USERS,
+        occurrencesPerUser: REQUIRED_OCCURRENCES_PER_USER,
+        documentsPerUser: REQUIRED_DOCUMENTS_PER_USER,
+        wordStatesPerUser: REQUIRED_WORD_STATES_PER_USER,
+        totalOccurrencesAtLeast: users * REQUIRED_OCCURRENCES_PER_USER,
+        totalDocumentsAtLeast: users * REQUIRED_DOCUMENTS_PER_USER,
+        totalWordStatesAtLeast: users * REQUIRED_WORD_STATES_PER_USER,
+      },
+      actual: scale,
+      checks: smoke ? null : scaleChecks,
+    },
     config: {
       users,
       edits,
@@ -779,6 +897,8 @@ async function main() {
     },
     warmup: {
       attempts: warmupResults.length,
+      excludedFromGate: true,
+      durationsMs: warmupResults.map((result) => result.durationMs),
       summary: summarize(warmupResults.map((result) => result.durationMs)),
     },
     consistency,
