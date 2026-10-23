@@ -18,6 +18,7 @@ import {
   projectionEntriesToWordbook,
   projectionEntryToWordbook,
   resolveWordbookPresentation,
+  resolveWordbookRowSource,
   searchProjectionEntries,
   sortWordbookEntries,
   type ProjectionEntry,
@@ -481,6 +482,33 @@ describe('wordbook source selection', () => {
       showPaused: false,
       showContinue: false,
     })
+  })
+})
+
+describe('wordbook row selection', () => {
+  const input = {
+    localOnly: false,
+    presentation: 'local' as const,
+    projectionReady: false,
+    sortedReady: false,
+  }
+
+  it('keeps the occurrence-built rows for an account R2 upgrade', () => {
+    expect(resolveWordbookRowSource(input)).toBe('legacy')
+    expect(resolveWordbookRowSource({ ...input, presentation: 'preparing' })).toBe('projection')
+    expect(resolveWordbookRowSource({ ...input, presentation: 'projection' })).toBe('projection')
+  })
+
+  it('uses local projection rows only after the first worker search resolves', () => {
+    const local = { ...input, localOnly: true }
+    // Producer still building: the previous list stays on screen.
+    expect(resolveWordbookRowSource(local)).toBe('legacy')
+    // Rows loaded, but the worker has not answered yet: still no empty flash.
+    expect(resolveWordbookRowSource({ ...local, projectionReady: true })).toBe('legacy')
+    // First search resolved: the read model takes over.
+    expect(
+      resolveWordbookRowSource({ ...local, projectionReady: true, sortedReady: true }),
+    ).toBe('projection')
   })
 })
 

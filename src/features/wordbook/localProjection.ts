@@ -102,20 +102,15 @@ type LemmaGroup = {
   occurrences: WordOccurrence[]
 }
 
-type CollectedContext = {
-  documentId: string
-  sentence: string
-  recordedAt: number
-  /** Position in the input — the tie-break that mirrors `buildWordbook`'s `>=`. */
-  order: number
-}
-
 /**
  * One lemma's projection row.
  *
- * `contexts` is ordered newest-first. The read model uses `contexts[0]` as the
- * row's example sentence and document, so putting the newest occurrence first is
- * what keeps this row identical to `buildWordbook`'s "most recent" rule.
+ * Contexts and surfaces are ordered exactly like the server's aggregation
+ * (`wordbook_refresh.sql`): contexts by `(documentId, sentence)` and surfaces
+ * alphabetically. The read model takes `contexts[0]` as the row's example, so a
+ * local-only device must pick the same document an account would — not the most
+ * recently recorded one. (The legacy `buildWordbook` picks recency; that
+ * difference is intentional and is what Task 10's projection path replaced.)
  *
  * Empty sentences are not display contexts (the quiz must not show an empty
  * example), but a document whose only sentence is empty still keeps one empty
@@ -124,59 +119,44 @@ type CollectedContext = {
  */
 function projectLemma(group: LemmaGroup, state: LocalWordState | undefined): ProjectionEntry {
   const rows = group.occurrences
-  const surfaces: string[] = []
+  const surfaceSet = new Set<string>()
   const documents = new Set<string>()
-  const nonEmpty: CollectedContext[] = []
-  const emptyOnly: CollectedContext[] = []
-  const documentsWithSentence = new Set<string>()
+  const withSentence = new Set<string>()
   let count = 0
 
-  for (let order = 0; order < rows.length; order += 1) {
-    const row = rows[order]
+  for (const row of rows) {
     count += row.count
     documents.add(row.documentId)
-    for (const surface of row.surfaces) {
-      if (!surfaces.includes(surface)) surfaces.push(surface)
-    }
-    if (row.sentence === '') continue
-    documentsWithSentence.add(row.documentId)
-    nonEmpty.push({
-      documentId: row.documentId,
-      sentence: row.sentence,
-      recordedAt: row.recordedAt,
-      order,
-    })
+    for (const surface of row.surfaces) surfaceSet.add(surface)
+    if (row.sentence !== '') withSentence.add(row.documentId)
   }
 
-  for (let order = 0; order < rows.length; order += 1) {
-    const row = rows[order]
-    if (row.sentence !== '' || documentsWithSentence.has(row.documentId)) continue
-    emptyOnly.push({
-      documentId: row.documentId,
-      sentence: '',
-      recordedAt: row.recordedAt,
-      order,
-    })
-  }
-
-  const newestFirst = (a: CollectedContext, b: CollectedContext): number =>
-    a.recordedAt === b.recordedAt ? b.order - a.order : b.recordedAt - a.recordedAt
-
+  // The server keeps one context per (document, sentence) where the sentence is
+  // not blank. Add the empty-only documents afterwards so their ids survive for
+  // progress without pretending they have a usable example.
   const contexts: { documentId: string; sentence: string }[] = []
   const seen = new Set<string>()
-  for (const context of [...nonEmpty.sort(newestFirst), ...emptyOnly.sort(newestFirst)]) {
-    // Same identity the server keeps: one context per (document, sentence).
-    const key = `${context.documentId}\u0000${context.sentence}`
+  for (const row of rows) {
+    if (row.sentence === '') continue
+    const key = `${row.documentId}\u0000${row.sentence}`
     if (seen.has(key)) continue
     seen.add(key)
-    contexts.push({ documentId: context.documentId, sentence: context.sentence })
+    contexts.push({ documentId: row.documentId, sentence: row.sentence })
   }
+  for (const row of rows) {
+    if (row.sentence !== '' || withSentence.has(row.documentId)) continue
+    const key = `${row.documentId}\u0000`
+    if (seen.has(key)) continue
+    seen.add(key)
+    contexts.push({ documentId: row.documentId, sentence: '' })
+  }
+  contexts.sort(compareContexts)
 
   const status: StatusValue = state?.status ?? null
   return {
     languageCode: group.languageCode,
     lemma: group.lemma,
-    surfaces,
+    surfaces: [...surfaceSet].sort(),
     contexts,
     occurrenceCount: count,
     documentCount: documents.size,
@@ -197,6 +177,16 @@ function projectLemma(group: LemmaGroup, state: LocalWordState | undefined): Pro
     // and nothing merges it with one.
     serverUpdatedAt: null,
   }
+}
+
+/** Server order for projection contexts: `order by document_id, sentence`. */
+function compareContexts(
+  a: { documentId: string; sentence: string },
+  b: { documentId: string; sentence: string },
+): number {
+  if (a.documentId !== b.documentId) return a.documentId < b.documentId ? -1 : 1
+  if (a.sentence === b.sentence) return 0
+  return a.sentence < b.sentence ? -1 : 1
 }
 
 /** Deterministic projection order — the UI sorts again in the worker. */
@@ -323,7 +313,12 @@ export type LocalProjectionRequest = {
 
 /** The slice of the worker client the producer needs. Tests pass a fake. */
 export type LocalProjectionWorker = {
-  localRebuild: (languageCode: string, request: LocalProjectionRequest) => Promise<LocalProjectionBuild>
+  localRebuild: (
+    languageCode: string,
+    request: LocalProjectionRequest,
+  ) => Promise<LocalProjectionBuild>
+  /** Releases the worker's local source/index. Missing on minimal test fakes. */
+  localClear?: (languageCode?: string) => Promise<void>
 }
 
 /** Where produced rows go for display. */
@@ -397,6 +392,20 @@ export function disposeLocalProjectionWorker(): void {
   sharedWorker = null
 }
 
+/**
+ * Releases the shared worker's local datasets without tearing the worker down.
+ *
+ * Sent when this device links an account: the account projection uses a
+ * different worker client for search, and the local-only source rows would
+ * otherwise stay in memory (a 200k-occurrence language plus its index).
+ * Resolves immediately when no local worker was ever created.
+ */
+export function releaseLocalProjectionWorker(): Promise<void> {
+  const worker = sharedWorker
+  if (!worker) return Promise.resolve()
+  return worker.localClear()
+}
+
 /** One row's state fields, in the projection's terms. */
 function stateFields(state: LocalWordState): Partial<WordbookEntryInput> {
   return {
@@ -423,59 +432,68 @@ function stateFields(state: LocalWordState): Partial<WordbookEntryInput> {
  * of the same language would race their worker responses and could write an
  * older row after a newer one — the same reason the server refreshes a lemma set
  * in one ordered statement.
+ *
+ * A generation token fences `reset()`. A build that started before the device
+ * linked an account must not clear, write, or mark itself built afterwards: its
+ * rows are local-derived and would land inside the account projection.
  */
 export class LocalProjectionProducer {
   private readonly options: LocalProjectionProducerOptions
   private readonly built = new Set<string>()
   private readonly chains = new Map<string, Promise<unknown>>()
-  private readonly ownsWorker: boolean
+  /** Incremented by `reset()`/`dispose()`; every build checks it before writing. */
+  private generation = 0
   private disposed = false
 
   constructor(options: LocalProjectionProducerOptions = {}) {
     this.options = options
-    this.ownsWorker = options.worker === undefined
   }
 
   /** Builds a language once. Safe to call from every startup path. */
   ensureLanguage(languageCode: string): Promise<void> {
     if (this.disposed || this.built.has(languageCode)) return Promise.resolve()
-    return this.enqueue(languageCode, () =>
+    return this.enqueue(languageCode, (generation) =>
       // The check is repeated inside the queue: a second caller may have queued
       // this before the first build finished.
-      this.built.has(languageCode) ? Promise.resolve() : this.buildLanguage(languageCode),
+      this.built.has(languageCode)
+        ? Promise.resolve()
+        : this.buildLanguage(languageCode, generation),
     )
   }
 
   /** Recomputes every row of a language (startup, lemma-version change). */
   rebuildLanguage(languageCode: string): Promise<void> {
     if (this.disposed) return Promise.resolve()
-    return this.enqueue(languageCode, () => this.buildLanguage(languageCode))
+    return this.enqueue(languageCode, (generation) =>
+      this.buildLanguage(languageCode, generation),
+    )
   }
 
   /** Recomputes only the lemmas of one recorded document. */
   updateDocument(languageCode: string, documentId: string): Promise<void> {
     if (this.disposed) return Promise.resolve()
-    return this.enqueue(languageCode, async () => {
-      if (!this.built.has(languageCode)) return this.buildLanguage(languageCode)
+    return this.enqueue(languageCode, async (generation) => {
+      if (!this.built.has(languageCode)) return this.buildLanguage(languageCode, generation)
       const rows = await this.readDocumentOccurrences(documentId)
+      if (!this.current(generation)) return
       const result = await this.worker.localRebuild(languageCode, {
         occurrences: rows.filter((row) => row.languageCode === languageCode),
         documentIds: [documentId],
       })
-      await this.apply(languageCode, result)
+      await this.apply(languageCode, result, generation)
     })
   }
 
   /** Drops every lemma of the removed documents; shared lemmas keep their other rows. */
   removeDocuments(languageCode: string, documentIds: readonly string[]): Promise<void> {
     if (this.disposed || documentIds.length === 0) return Promise.resolve()
-    return this.enqueue(languageCode, async () => {
-      if (!this.built.has(languageCode)) return this.buildLanguage(languageCode)
+    return this.enqueue(languageCode, async (generation) => {
+      if (!this.built.has(languageCode)) return this.buildLanguage(languageCode, generation)
       const result = await this.worker.localRebuild(languageCode, {
         occurrences: [],
         removedDocumentIds: [...documentIds],
       })
-      await this.apply(languageCode, result)
+      await this.apply(languageCode, result, generation)
     })
   }
 
@@ -489,16 +507,19 @@ export class LocalProjectionProducer {
    */
   updateState(languageCode: string, lemma: string, state: LocalWordState): Promise<void> {
     if (this.disposed) return Promise.resolve()
-    return this.enqueue(languageCode, async () => {
+    return this.enqueue(languageCode, async (generation) => {
       // A state edit can arrive before the first build. Build first, then patch:
       // the build already picks the state up from storage, and patching after it
       // also covers a state write that had not committed when the build read.
-      if (!this.built.has(languageCode)) await this.buildLanguage(languageCode)
+      if (!this.built.has(languageCode)) {
+        await this.buildLanguage(languageCode, generation)
+        if (!this.current(generation)) return
+      }
       const stored = await idbGet<WordbookEntryInput>(STORES.wordbookEntries, [
         languageCode,
         lemma,
       ])
-      if (!stored) return
+      if (!stored || !this.current(generation)) return
       const next: WordbookEntryInput = { ...stored, ...stateFields(state) }
       // `WordState` does not carry the star watermark, so a state edit must not
       // blank the one already stored on the row.
@@ -506,6 +527,7 @@ export class LocalProjectionProducer {
         next.favoriteUpdatedAt = stored.favoriteUpdatedAt ?? null
       }
       await this.putEntries([next])
+      if (!this.current(generation)) return
       // Keep the worker's copy in step so a later rebuild of this lemma (a
       // document edit) does not project an older status.
       void this.worker
@@ -518,79 +540,130 @@ export class LocalProjectionProducer {
     })
   }
 
-  /** Applies a change from {@link onLocalProjectionChange}. Errors stay in this producer. */
-  handle(change: LocalProjectionChange): void {
-    if (this.disposed) return
-    const run = (task: Promise<void>): void => {
-      void task.catch((error) => console.error('로컬 단어장 갱신 실패', error))
-    }
-    switch (change.type) {
-      case 'language':
-        run(this.ensureLanguage(change.languageCode))
-        break
-      case 'document':
-        run(this.updateDocument(change.languageCode, change.documentId))
-        break
-      case 'documents-removed':
-        run(this.removeDocuments(change.languageCode, change.documentIds))
-        break
-      case 'state':
-        run(this.updateState(change.languageCode, change.lemma, change.state))
-        break
-    }
-  }
-
-  /** Stops accepting work and terminates the shared worker when this producer created it. */
-  dispose(): void {
-    this.disposed = true
-    this.chains.clear()
-    this.built.clear()
-    if (this.ownsWorker) disposeLocalProjectionWorker()
+  /**
+   * Applies a change from {@link onLocalProjectionChange}.
+   *
+   * Errors stay in this producer (a listener must not break the store write that
+   * already committed). The returned promise lets tests and teardown await it.
+   */
+  handle(change: LocalProjectionChange): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const task = ((): Promise<void> => {
+      switch (change.type) {
+        case 'language':
+          return this.ensureLanguage(change.languageCode)
+        case 'document':
+          return this.updateDocument(change.languageCode, change.documentId)
+        case 'documents-removed':
+          return this.removeDocuments(change.languageCode, change.documentIds)
+        case 'state':
+          return this.updateState(change.languageCode, change.lemma, change.state)
+      }
+    })()
+    return task.catch((error) => {
+      console.error('로컬 단어장 갱신 실패', error)
+    })
   }
 
   /**
-   * Forgets which languages were built, keeping the producer usable.
+   * Forgets which languages were built and fences any in-flight work.
    *
-   * Used when the device leaves local-only mode: the next local build must read
-   * the device's rows again instead of assuming the account projection's rows
-   * are still the local ones.
+   * Used when the device leaves local-only mode. The generation bump makes a
+   * running build abandon its clear/write path, and the worker releases the
+   * local source rows and index. A later return to local-only starts from this
+   * device's rows again instead of trusting account projection rows.
    */
-  reset(): void {
+  async reset(): Promise<void> {
+    this.generation += 1
     this.built.clear()
+    // Do not make later tasks wait behind a build that is now fence-blocked.
+    this.chains.clear()
+    const injected = this.options.worker
+    if (injected) {
+      if (injected.localClear) {
+        await injected.localClear().catch(() => undefined)
+      }
+      return
+    }
+    await releaseLocalProjectionWorker().catch((error) => {
+      console.error('로컬 단어장 정리 실패', error)
+    })
+  }
+
+  /** Waits for every language's queued work (tests and shutdown). */
+  async flush(): Promise<void> {
+    await Promise.all([...this.chains.values()].map((chain) => chain.catch(() => undefined)))
+  }
+
+  /** Stops accepting work, releases local data, and terminates an owned worker. */
+  dispose(): void {
+    this.generation += 1
+    this.disposed = true
+    this.chains.clear()
+    this.built.clear()
+    const injected = this.options.worker
+    if (injected) {
+      void injected.localClear?.().catch(() => undefined)
+      return
+    }
+    disposeLocalProjectionWorker()
+  }
+
+  private current(generation: number): boolean {
+    return !this.disposed && generation === this.generation
   }
 
   private get worker(): LocalProjectionWorker {
     return this.options.worker ?? defaultWorker()
   }
 
-  private enqueue(languageCode: string, task: () => Promise<void>): Promise<void> {
+  private enqueue(
+    languageCode: string,
+    task: (generation: number) => Promise<void>,
+  ): Promise<void> {
+    const generation = this.generation
     const previous = this.chains.get(languageCode) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(task)
+    const next = previous
+      .catch(() => undefined)
+      .then(() => (this.current(generation) ? task(generation) : undefined))
     this.chains.set(languageCode, next)
     return next
   }
 
-  private async buildLanguage(languageCode: string): Promise<void> {
+  private async buildLanguage(languageCode: string, generation: number): Promise<void> {
     const [occurrences, wordStates] = await Promise.all([
       this.readOccurrences(languageCode),
       this.readWordStates(languageCode),
     ])
+    if (!this.current(generation)) return
     const result = await this.worker.localRebuild(languageCode, { occurrences, wordStates })
+    if (!this.current(generation)) return
     // Clear first: the build is the whole truth for the language, and a row left
     // over from an older projection would otherwise survive as a phantom.
     await this.clearEntries(languageCode)
     for (const chunk of chunkRows(result.entries, LOCAL_WRITE_BATCH)) {
+      if (!this.current(generation)) return
       await this.putEntries(chunk)
     }
+    if (!this.current(generation)) return
     this.options.sink?.setEntries(languageCode, result.entries)
     this.built.add(languageCode)
   }
 
-  private async apply(languageCode: string, result: LocalProjectionBuild): Promise<void> {
-    for (const lemma of result.removed) await this.deleteEntry(languageCode, lemma)
+  private async apply(
+    languageCode: string,
+    result: LocalProjectionBuild,
+    generation: number,
+  ): Promise<void> {
+    for (const lemma of result.removed) {
+      if (!this.current(generation)) return
+      await this.deleteEntry(languageCode, lemma)
+    }
     for (const chunk of chunkRows(result.entries, LOCAL_WRITE_BATCH)) {
+      if (!this.current(generation)) return
       await this.putEntries(chunk)
     }
+    if (!this.current(generation)) return
     if (result.entries.length > 0 || result.removed.length > 0) {
       this.options.sink?.applyEntries(languageCode, result.entries, result.removed)
     }

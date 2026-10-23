@@ -183,15 +183,18 @@ export default function App() {
 
   useEffect(() => {
     if (!localOnly) return
-    return onLocalProjectionChange((change) => localProjection.handle(change))
+    return onLocalProjectionChange((change) => {
+      void localProjection.handle(change)
+    })
   }, [localOnly, localProjection])
 
   useEffect(() => {
     if (localOnly) return
     // Linking an account hands the wordbook to the server projection. Forget
-    // which languages were built so a later return to local-only rebuilds them
-    // from this device's rows instead of trusting an account projection.
-    localProjection.reset()
+    // which languages were built (fencing any in-flight build) and release the
+    // worker's local source rows, so a later return to local-only rebuilds from
+    // this device and the account path never sees local-derived rows.
+    void localProjection.reset()
   }, [localOnly, localProjection])
 
   /**

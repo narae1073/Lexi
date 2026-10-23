@@ -135,8 +135,46 @@ export function resolveWordbookPresentation({
   }
 }
 
-/** "N of M languages ready" progress for the preparing state. */
-export function preparationProgress(
+/** Which row set a wordbook-like screen should render right now. */
+export type WordbookRowSource = 'legacy' | 'projection'
+
+export type WordbookRowSourceInput = {
+  localOnly: boolean
+  /** The source `resolveWordbookPresentation` picked for this screen. */
+  presentation: WordbookSource
+  /** This language's projection rows are loaded (account or local producer). */
+  projectionReady: boolean
+  /**
+   * The worker has answered at least one search for this language.
+   *
+   * Local-only rows reach the screen through the worker's sorted lemmas, so the
+   * first render after the producer loads would otherwise be an empty list for
+   * one frame. Keeping the occurrence-built list until the first answer avoids
+   * that flash — and only the first one: later searches keep the previous
+   * ordering on screen while they run.
+   */
+  sortedReady: boolean
+}
+
+/**
+ * Picks rows for a wordbook screen.
+ *
+ * Account mode keeps Task 10's rule (local occurrences during the R2 upgrade,
+ * the projection once complete). Local-only mode uses the same projection rows
+ * once the producer has built and indexed them; until then the occurrence-built
+ * list stays visible, exactly as before Task 11.
+ */
+export function resolveWordbookRowSource({
+  localOnly,
+  presentation,
+  projectionReady,
+  sortedReady,
+}: WordbookRowSourceInput): WordbookRowSource {
+  if (localOnly) return projectionReady && sortedReady ? 'projection' : 'legacy'
+  return presentation === 'local' ? 'legacy' : 'projection'
+}
+
+/** "N of M languages ready" progress for the preparing state. */export function preparationProgress(
   completeByLanguage: Readonly<Record<string, boolean>>,
   languages: readonly string[],
 ): { ready: number; total: number; percent: number } {

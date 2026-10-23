@@ -52,6 +52,17 @@ export type WordbookWorkerRequest =
       languageCode: string
     } & LocalProjectionRequest)
   | {
+      /**
+       * Releases the worker's local-only source and search dataset.
+       *
+       * Sent when the device stops being local-only (it links an account) or
+       * when tests tear a producer down. Without it the worker would keep a
+       * 200k-occurrence language and its index alive for the rest of the page.
+       */
+      type: 'local-clear'
+      languageCode?: string
+    }
+  | {
       type: 'search'
       query: string
       languageCode?: string
@@ -81,6 +92,7 @@ export type WordbookWorkerResponse =
       type: 'local-rebuilt'
       id?: number
     } & LocalProjectionBuild)
+  | { type: 'local-cleared'; id?: number }
   | { type: 'search'; lemmas: string[]; total: number; id?: number }
   | { type: 'progress'; progress: Record<string, DocumentProgress>; id?: number }
   | { type: 'error'; message: string; id?: number }
@@ -306,6 +318,17 @@ export function handleWordbookRequest(
 
   if (request.type === 'local-rebuild') return handleLocalRebuild(state, request)
 
+  if (request.type === 'local-clear') {
+    if (request.languageCode === undefined) {
+      state.local.clear()
+      state.datasets.clear()
+    } else {
+      state.local.delete(request.languageCode)
+      state.datasets.delete(request.languageCode)
+    }
+    return { type: 'local-cleared' }
+  }
+
   if (request.type === 'search') {
     const languageCode = request.languageCode ?? DEFAULT_LANGUAGE
     const dataset = state.datasets.get(languageCode)
@@ -437,6 +460,17 @@ export class WordbookWorkerClient {
         full: response.full,
       }
     })
+  }
+
+  /**
+   * Releases the worker's local-only source rows and search dataset.
+   *
+   * Called when this device links an account (the server projection takes over)
+   * and by producer teardown. `languageCode` limits it to one language.
+   */
+  async localClear(languageCode?: string): Promise<void> {
+    const response = await this.send({ type: 'local-clear', languageCode })
+    if (response.type !== 'local-cleared') throw new Error('unexpected worker response')
   }
 
   async search(query: string, languageCode = DEFAULT_LANGUAGE): Promise<string[]> {

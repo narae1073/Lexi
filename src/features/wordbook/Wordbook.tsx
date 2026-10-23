@@ -22,6 +22,7 @@ import type { ProjectionWordbookEntry } from './wordbookProjection'
 import {
   preparationProgress,
   resolveWordbookPresentation,
+  resolveWordbookRowSource,
   scopeProjectionEntry,
   searchProjectionEntries,
 } from './wordbookProjection'
@@ -147,6 +148,13 @@ export function Wordbook() {
   }, [worker])
 
   const [sortedLemmas, setSortedLemmas] = useState<string[]>([])
+  /**
+   * The language whose first search has resolved. Local-only rows are shown
+   * only after that, so loading the producer never flashes an empty list.
+   * Keyed by language (not query) so typing keeps the previous ordering visible
+   * instead of rebuilding the occurrence list on every keystroke.
+   */
+  const [sortedLanguage, setSortedLanguage] = useState<string | null>(null)
 
   useEffect(() => {
     if (localOnly || !languageCode || !projectionReady) return
@@ -164,7 +172,9 @@ export function Wordbook() {
       : worker.search(query, languageCode)
     void searching
       .then((lemmas) => {
-        if (!cancelled) setSortedLemmas(lemmas)
+        if (cancelled) return
+        setSortedLemmas(lemmas)
+        setSortedLanguage(languageCode)
       })
       .catch((error) => {
         if (cancelled) return
@@ -172,15 +182,23 @@ export function Wordbook() {
         console.error('단어장 검색 실패', error)
         const entries = useWordbookStore.getState().entriesByLanguage[languageCode] ?? []
         setSortedLemmas(searchProjectionEntries(entries, query, languageCode).map((entry) => entry.lemma))
+        setSortedLanguage(languageCode)
       })
   }, [localOnly, languageCode, projectionReady, query, projectionRevision, worker])
 
+  const rowSource = resolveWordbookRowSource({
+    localOnly,
+    presentation: presentation.source,
+    projectionReady,
+    sortedReady: sortedLanguage === languageCode,
+  })
+
   /**
    * Local path: an account whose projection is still incomplete (R2 upgrade),
-   * and local-only mode until the local producer's first build finishes.
+   * and local-only mode until the local producer's build and first search land.
    */
   const legacyEntries = useMemo(() => {
-    if (!localSource || !languageCode || (localOnly && projectionReady)) return []
+    if (rowSource === 'projection' || !localSource || !languageCode) return []
     return buildWordbook({
       languageCode,
       occurrences,
@@ -189,9 +207,8 @@ export function Wordbook() {
       query,
     })
   }, [
+    rowSource,
     localSource,
-    localOnly,
-    projectionReady,
     languageCode,
     occurrences,
     byKey,
@@ -217,16 +234,13 @@ export function Wordbook() {
   }, [projectionReady, languageCode, projectionEntries, sortedLemmas, effectiveDocumentId])
 
   /**
-   * Local-only mode uses the same read model once its producer has built it —
-   * same rows, same worker sorting, same scoping. An account's R2 upgrade keeps
-   * the occurrence-built list until the server projection is complete.
+   * Local-only mode uses the same read model once its producer has built and
+   * indexed it — same rows, same worker sorting, same scoping. An account's R2
+   * upgrade keeps the occurrence-built list until the server projection is
+   * complete.
    */
   const entries: WordbookEntry[] =
-    localOnly && projectionReady
-      ? projectionVisible
-      : localSource
-        ? legacyEntries
-        : projectionVisible
+    rowSource === 'legacy' ? legacyEntries : projectionVisible
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
   /**

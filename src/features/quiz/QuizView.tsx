@@ -108,7 +108,7 @@ export function QuizView() {
   })
 
   /** 이 언어의 단어장 — 퀴즈와 복습의 공통 재료 */
-  const projectionReady = projectionComplete && projectionLoaded
+  const projectionReady = localOnly ? projectionLoaded : projectionComplete && projectionLoaded
   const presentation = resolveWordbookPresentation({
     localOnly,
     projectionReady,
@@ -133,9 +133,13 @@ export function QuizView() {
     // 그때마다 등장 기록 전체를 다시 훑으면 큰 단어장에서 화면이 멈춘다.
     if (phase !== 'setup') return sessionEntries
     if (!languageCode) return []
-    // Local-only accounts — and an R2 upgrade until the projection completes —
-    // keep the occurrence builder. A new device has no local rows and shows the
-    // preparing state instead.
+    // Local-only mode reads the same `wordbookEntries` rows as account mode once
+    // the local producer has built them. The occurrence builder is only the
+    // first-start fallback, before that build finishes.
+    if (localOnly && projectionReady) return projectionEntries
+    // An account whose projection is still incomplete (an R2 upgrade) keeps the
+    // occurrence builder. A new device has no local rows and shows the preparing
+    // state instead.
     if (source === 'local') {
       return buildWordbook({
         languageCode,
@@ -148,6 +152,8 @@ export function QuizView() {
   }, [
     phase,
     languageCode,
+    localOnly,
+    projectionReady,
     source,
     occurrences,
     byKey,

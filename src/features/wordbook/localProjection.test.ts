@@ -25,12 +25,15 @@ import {
   createLocalProjectionProducer,
   disposeLocalProjectionWorker,
   onLocalProjectionChange,
+  searchLocalProjection,
   type LocalProjectionBuild,
   type LocalProjectionChange,
+  type LocalProjectionRequest,
   type LocalWordState,
 } from './localProjection'
 import {
   projectionEntriesToWordbook,
+  type ProjectionEntry,
   type ProjectionWordbookEntry,
 } from './wordbookProjection'
 import {
@@ -93,7 +96,11 @@ function wordState(
 function visible(entry: WordbookEntry | ProjectionWordbookEntry) {
   return {
     lemma: entry.lemma,
-    surfaces: entry.surfaces,
+    // Surfaces are a set (the occurrence no-op diff treats them that way); the
+    // server sorts them while `buildWordbook` keeps encounter order, so the
+    // account-parity test below compares the sorted set. Order itself is
+    // asserted against a server-shaped fixture.
+    surfaces: [...entry.surfaces].sort(),
     status: entry.status,
     favorite: entry.favorite,
     // An unstarred row has no visible star colour. The server (and therefore a
@@ -205,6 +212,33 @@ function inlineWorker() {
   return createWordbookWorkerClient({ inline: true })
 }
 
+/**
+ * A worker whose builds are resolved by the test.
+ *
+ * Lets a reset land while a build is in flight, which is exactly the account-
+ * linking race the generation fence has to close.
+ */
+function deferredWorker() {
+  const calls: LocalProjectionRequest[] = []
+  const resolvers: ((build: LocalProjectionBuild) => void)[] = []
+  const localClear = vi.fn(async () => {})
+  return {
+    calls,
+    localClear,
+    localRebuild(_languageCode: string, request: LocalProjectionRequest) {
+      calls.push(request)
+      return new Promise<LocalProjectionBuild>((resolve) => {
+        resolvers.push(resolve)
+      })
+    },
+    resolve(index: number, build: LocalProjectionBuild) {
+      const resolve = resolvers[index]
+      if (!resolve) throw new Error(`no pending build at ${index}`)
+      resolve(build)
+    },
+  }
+}
+
 async function seedOccurrences(rows: readonly WordOccurrence[]): Promise<void> {
   for (const row of rows) await idbPut(STORES.wordOccurrences, row)
 }
@@ -242,39 +276,88 @@ describe('buildLocalProjection parity with buildWordbook', () => {
     expect(actual).toEqual(expected)
   })
 
-  it('keeps the newest document as the example even when occurrences arrive out of order', () => {
+  it('orders contexts and surfaces exactly like the server projection', () => {
+    // Occurrences arrive in a scrambled order. The server aggregates
+    // `contexts order by document_id, sentence` and `surfaces order by surface`
+    // (wordbook_refresh.sql), so the local row must not depend on input order
+    // or recency. This fixture is written the way the server stores a row.
     const occurrences = [
-      occurrence({ lemma: 'cat', documentId: 'old', sentence: 'Old cat.', recordedAt: 1000 }),
-      occurrence({ lemma: 'cat', documentId: 'new', sentence: 'New cat.', recordedAt: 5000 }),
-      occurrence({ lemma: 'cat', documentId: 'mid', sentence: 'Mid cat.', recordedAt: 3000 }),
+      occurrence({ lemma: 'cat', documentId: 'b', sentence: 'Beta cat.', recordedAt: 9000 }),
+      occurrence({ lemma: 'cat', documentId: 'a', surfaces: ['cat'], sentence: 'Alpha cat.', recordedAt: 1000 }),
+      occurrence({ lemma: 'cat', documentId: 'b', surfaces: ['Cat'], sentence: 'Beta cat.', recordedAt: 9000 }),
     ]
-    const entries = projectionEntriesToWordbook(buildLocalProjection(occurrences, []), {
-      documents: [
-        { id: 'old', title: 'Old' },
-        { id: 'mid', title: 'Mid' },
-        { id: 'new', title: 'New' },
-      ],
-    })
+    const serverShaped: ProjectionEntry[] = [
+      {
+        languageCode: 'en',
+        lemma: 'cat',
+        surfaces: ['Cat', 'cat'],
+        contexts: [
+          { documentId: 'a', sentence: 'Alpha cat.' },
+          { documentId: 'b', sentence: 'Beta cat.' },
+        ],
+        occurrenceCount: 3,
+        documentCount: 2,
+        status: null,
+        isFavorite: false,
+        starAngle: 0,
+        starColor: '#eab308',
+        seenCount: 1,
+        firstSeenAt: null,
+        lastSeenAt: null,
+        favoriteUpdatedAt: null,
+        knownPresses: 0,
+        unsurePresses: 0,
+        unknownPresses: 0,
+        note: null,
+        noteUpdatedAt: null,
+        serverUpdatedAt: null,
+      },
+    ]
+    expect(buildLocalProjection(occurrences, [])).toEqual(serverShaped)
+  })
+
+  it('picks the example by server document order, not by recency', () => {
+    // Account mode reads contexts[0] from the server row, which is ordered by
+    // document id. Local-only must show the same document. (`buildWordbook`'s
+    // occurrence list chose the most recent document; that is the legacy path,
+    // and the projection deliberately replaced it.)
+    const entries = projectionEntriesToWordbook(
+      buildLocalProjection(
+        [
+          occurrence({ lemma: 'cat', documentId: 'old', sentence: 'Old cat.', recordedAt: 1000 }),
+          occurrence({ lemma: 'cat', documentId: 'new', sentence: 'New cat.', recordedAt: 5000 }),
+          occurrence({ lemma: 'cat', documentId: 'mid', sentence: 'Mid cat.', recordedAt: 3000 }),
+        ],
+        [],
+      ),
+      {
+        documents: [
+          { id: 'old', title: 'Old' },
+          { id: 'mid', title: 'Mid' },
+          { id: 'new', title: 'New' },
+        ],
+      },
+    )
     expect(entries[0]).toMatchObject({
-      sentence: 'New cat.',
-      documentId: 'new',
-      documentTitle: 'New',
+      sentence: 'Mid cat.',
+      documentId: 'mid',
+      documentTitle: 'Mid',
       count: 3,
       documentCount: 3,
     })
-    // Every sentence is still kept for the quiz; only the example follows recency.
+    // Every sentence is kept for the quiz, in the same order the server keeps.
     expect(entries[0].contexts.map((context) => context.sentence)).toEqual([
-      'New cat.',
       'Mid cat.',
+      'New cat.',
       'Old cat.',
     ])
   })
 
-  it('uses the newest non-empty sentence when the newest occurrence has none', () => {
+  it('uses a real sentence ordered by document when another document has none', () => {
     // The server never stores an empty sentence as a context, so the account
-    // read model shows the newest non-empty one. The local producer keeps that
-    // rule, and still remembers that the word occurs in the empty-sentence
-    // document (for its progress gauge).
+    // read model shows the first real one by document id. The local producer
+    // keeps that rule, and still remembers that the word occurs in the
+    // empty-sentence document (for its progress gauge).
     const entries = projectionEntriesToWordbook(
       buildLocalProjection(
         [
@@ -544,6 +627,26 @@ describe('local projection worker', () => {
     // for the local grouping that the server normally does).
     expect(buildMs).toBeLessThan(8000)
 
+    /**
+     * The fake worker calls the handler in-process, so `buildMs` does not include
+     * the real boundary's structured clone. Measure it explicitly: production
+     * pays it on the main thread when the producer posts 200k occurrences and
+     * again when 100k rows come back. The main-thread IndexedDB read that feeds
+     * the request is a separate cost (noted in the report; it cannot be measured
+     * without writing 200k rows into fake-indexeddb).
+     */
+    const requestCloneStarted = performance.now()
+    const clonedRequest = structuredClone(occurrences)
+    const requestCloneMs = performance.now() - requestCloneStarted
+    expect(clonedRequest).toHaveLength(200_000)
+    expect(requestCloneMs).toBeLessThan(4000)
+
+    const responseCloneStarted = performance.now()
+    const clonedResponse = structuredClone(result.entries)
+    const responseCloneMs = performance.now() - responseCloneStarted
+    expect(clonedResponse).toHaveLength(100_000)
+    expect(responseCloneMs).toBeLessThan(4000)
+
     expect(await client.search('word-099999', 'en')).toEqual(['word-099999'])
     client.terminate()
   }, 30_000)
@@ -777,11 +880,147 @@ describe('local projection producer', () => {
     }
   })
 
+  it('does not write a build that a reset fenced', async () => {
+    const occurrences = [occurrence({ lemma: 'apple', documentId: 'd1' })]
+    const worker = deferredWorker()
+    const sink = { setEntries: vi.fn(), applyEntries: vi.fn() }
+    const producer = createLocalProjectionProducer({
+      worker,
+      sink,
+      readOccurrences: async () => occurrences,
+      readWordStates: async () => [],
+    })
+    const built = buildLocalProjection(occurrences, [])
+    const build: LocalProjectionBuild = {
+      entries: built,
+      removed: [],
+      total: built.length,
+      full: true,
+    }
+
+    const rebuilding = producer.rebuildLanguage('en')
+    await vi.waitFor(() => expect(worker.calls).toHaveLength(1))
+
+    // The device links an account while the worker is still building.
+    await producer.reset()
+    expect(worker.localClear).toHaveBeenCalledTimes(1)
+
+    worker.resolve(0, build)
+    await rebuilding
+
+    // The fenced build never cleared, wrote, or replaced the store.
+    expect(sink.setEntries).not.toHaveBeenCalled()
+    expect(await readWordbookEntries('en')).toEqual([])
+
+    // The producer is still usable for a later local-only session.
+    const again = producer.rebuildLanguage('en')
+    await vi.waitFor(() => expect(worker.calls).toHaveLength(2))
+    worker.resolve(1, build)
+    await again
+    expect(sink.setEntries).toHaveBeenCalledTimes(1)
+    expect(await readWordbookEntries('en')).toHaveLength(1)
+  })
+
+  it('releases the worker dataset when the device links an account', async () => {
+    await seedOccurrences([occurrence({ lemma: 'apple', documentId: 'd1' })])
+    const worker = inlineWorker()
+    const producer = createLocalProjectionProducer({
+      worker,
+      sink: { setEntries: vi.fn(), applyEntries: vi.fn() },
+    })
+    await producer.rebuildLanguage('en')
+    expect(await worker.search('', 'en')).toEqual(['apple'])
+
+    await producer.reset()
+    // The local source rows and index are gone, not just the producer's `built`
+    // set — otherwise the worker would hold a 200k language for the whole page.
+    expect(await worker.search('', 'en')).toEqual([])
+
+    await producer.rebuildLanguage('en')
+    expect(await worker.search('', 'en')).toEqual(['apple'])
+  })
+
+  it('releases the shared worker dataset on reset (the app path)', async () => {
+    await seedOccurrences([occurrence({ lemma: 'apple', documentId: 'd1' })])
+    // No injected worker: this is the shared client App uses for local-only
+    // search, and the one that must not keep the source rows after linking.
+    const producer = createLocalProjectionProducer({
+      sink: { setEntries: vi.fn(), applyEntries: vi.fn() },
+    })
+    await producer.rebuildLanguage('en')
+    expect(await searchLocalProjection('', 'en')).toEqual(['apple'])
+
+    await producer.reset()
+    expect(await searchLocalProjection('', 'en')).toEqual([])
+  })
+
+  it('releases the worker dataset on dispose too', async () => {
+    await seedOccurrences([occurrence({ lemma: 'apple', documentId: 'd1' })])
+    const worker = inlineWorker()
+    const producer = createLocalProjectionProducer({
+      worker,
+      sink: { setEntries: vi.fn(), applyEntries: vi.fn() },
+    })
+    await producer.rebuildLanguage('en')
+    expect(await worker.search('', 'en')).toEqual(['apple'])
+
+    producer.dispose()
+    expect(await worker.search('', 'en')).toEqual([])
+  })
+
+  it('rebuilds an entry when a stale lemma version recomputes a document', async () => {
+    const doc: Document = {
+      id: 'd1',
+      title: 'Doc One',
+      languageCode: 'en',
+      rawText: 'The cat sat.',
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+    }
+    // The stored rows came from an older lemma rule.
+    await seedOccurrences([
+      occurrence({ lemma: 'oldword', documentId: 'd1', documentTitle: 'Doc One' }),
+    ])
+    await idbPut(STORES.documentMeta, {
+      documentId: 'd1',
+      lemmaVersion: 0,
+      segmenter: 'intl',
+    })
+    const sink = { setEntries: vi.fn(), applyEntries: vi.fn() }
+    const producer = createLocalProjectionProducer({ worker: inlineWorker(), sink })
+    await producer.rebuildLanguage('en')
+    expect((await readWordbookEntries('en')).map((row) => row.lemma)).toEqual(['oldword'])
+
+    const unsubscribe = onLocalProjectionChange((change) => {
+      void producer.handle(change)
+    })
+    try {
+      const refreshed =
+        await useOccurrencesStore.getState().refreshStaleDocuments([doc])
+      expect(refreshed).toBe(1)
+      await producer.flush()
+    } finally {
+      unsubscribe()
+    }
+
+    const rows = await readWordbookEntries('en')
+    expect(rows.map((row) => row.lemma)).toContain('cat')
+    expect(rows.map((row) => row.lemma)).not.toContain('oldword')
+    expect(sink.applyEntries).toHaveBeenCalled()
+  })
+
   it('never calls a projection RPC or the network', async () => {
-    // The module must not even reference the server read model. A future edit
-    // that imports it into the local path fails here instead of only in prod.
-    const source = readFileSync(new URL('./localProjection.ts', import.meta.url), 'utf8')
-    expect(source).not.toMatch(/wordbookPull|pullProjectionPage|supabase|\.rpc\(/)
+    // Every module on the local-only path must stay free of the server read
+    // model. A future edit that imports it into the producer, the worker, or the
+    // projection storage fails here instead of only in production.
+    for (const file of [
+      './localProjection.ts',
+      './wordbookWorker.ts',
+      '../../lib/storage/wordbookEntries.ts',
+    ]) {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8')
+      expect(source, file).not.toMatch(/wordbookPull|pullProjectionPage|supabase|\.rpc\(/)
+    }
 
     await seedOccurrences([occurrence({ lemma: 'apple' })])
     const producer = createLocalProjectionProducer({
