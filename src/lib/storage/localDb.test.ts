@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  DB_VERSION,
   STORES,
   SYNC_META_KEY,
   deleteLocalDatabase,
@@ -223,7 +224,7 @@ describe('로컬 학습 데이터 존재 확인과 초기화', () => {
    */
   it('다른 탭이 연결을 잡고 있으면 성공으로 보고하지 않고 거절한다', async () => {
     const held = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('lexi', 6)
+      const request = indexedDB.open('lexi', DB_VERSION)
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })

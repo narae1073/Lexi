@@ -9,12 +9,18 @@ const DB_NAME = 'lexi'
 /**
  * Local DB schema version.
  *
- * **Never bump for sync bookkeeping** — Release 2 stores the reserved
- * `LocalSyncMeta` record inside the existing `documentMeta` store precisely so
- * this stays 6: the previous frontend must keep opening a database this build
- * has touched (a version 7 open would fail with VersionError after a rollback).
+ * **Version 7 is a one-way frontend release.** The wordbook projection and lazy
+ * document content stores cannot be added without a version bump, so a database
+ * this build has opened can no longer be opened by the previous frontend: its
+ * v6 open fails with `VersionError`. Every existing store and row survives the
+ * v6→v7 upgrade, and a server rollback stays possible — only a frontend
+ * rollback against the same database does not.
+ *
+ * Sync bookkeeping still never moves this number: the reserved `LocalSyncMeta`
+ * record lives in the existing `documentMeta` store (see {@link SYNC_META_KEY}),
+ * so revision/pending/dirty changes never require a schema change.
  */
-export const DB_VERSION = 6
+export const DB_VERSION = 7
 
 /**
  * Prefix of every reserved `documentMeta` id.
@@ -69,6 +75,23 @@ export const STORES = {
    * 다시 올리면 완전 삭제가 무효가 된다. 지운 사실을 남겨 되살아나지 않게 한다.
    */
   documentTombstones: 'documentTombstones',
+  /**
+   * Synced wordbook projection — one row per `(languageCode, lemma)`.
+   *
+   * A server-owned read model (R3) so a device can show the complete wordbook
+   * offline without downloading every occurrence row. This is a device-local
+   * copy: it is filled from the projection pull, never pushed, and its writes
+   * must not bump the sync revision.
+   */
+  wordbookEntries: 'wordbookEntries',
+  /**
+   * Lazily fetched document text, keyed by document id.
+   *
+   * A device-local copy of `documents.raw_text` so opening a document downloads
+   * the text once. Clearing it only means the next open fetches again; its
+   * writes must not bump the sync revision.
+   */
+  documentContent: 'documentContent',
 } as const
 
 export type StoreName = (typeof STORES)[keyof typeof STORES]
@@ -412,6 +435,22 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.documentTombstones)) {
         db.createObjectStore(STORES.documentTombstones, { keyPath: 'documentId' })
       }
+      /**
+       * v7 stores. The `contains` guards keep this an additive upgrade: an
+       * existing v6 database is upgraded in place, so every store and row it
+       * already holds stays untouched. The index on `lemma` answers "which
+       * languages have this lemma"; `languageCode` is the wordbook read path.
+       */
+      if (!db.objectStoreNames.contains(STORES.wordbookEntries)) {
+        const s = db.createObjectStore(STORES.wordbookEntries, {
+          keyPath: ['languageCode', 'lemma'],
+        })
+        s.createIndex('languageCode', 'languageCode')
+        s.createIndex('lemma', 'lemma')
+      }
+      if (!db.objectStoreNames.contains(STORES.documentContent)) {
+        db.createObjectStore(STORES.documentContent, { keyPath: 'documentId' })
+      }
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
@@ -711,6 +750,10 @@ export function idbGetAllByIndex<T>(
  * 응답 캐시와 documentMeta 는 뺀다 — 사전을 한 번 보거나 규칙 버전을 적어 둔 것은
  * 학습한 내용이 아니다. 이 둘만 있는 기기를 계정에 붙이면 빈 기기를 옮기는 셈이다.
  * SYNCED_STORES 와 지금은 같은 목록이지만 뜻이 다르므로 따로 둔다.
+ *
+ * The v7 stores stay out for the same reason: the wordbook projection and the
+ * document content are copies of server-owned data. A device that only
+ * downloaded them has not authored anything worth preserving.
  */
 const LEARNING_STORES: readonly StoreName[] = [
   'documents',
