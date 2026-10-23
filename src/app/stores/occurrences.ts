@@ -24,6 +24,7 @@ import {
   segmentChinese,
 } from '../../features/reader/chinese'
 import { LEMMA_VERSION, resolveLemmasFromWords } from '../../features/reader/surfaceLemma'
+import { notifyLocalProjectionChange } from '../../features/wordbook/localProjection'
 import type { Document, LanguageCode, Segment, Sentence } from '../../types'
 
 /**
@@ -226,11 +227,15 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
     )
     rows.sort(sortByPosition)
 
+    // Compare once, before the update: the local projection is rebuilt from
+    // IndexedDB, and a load that changed nothing must not rebuild anything.
+    const changed = !sameOccurrences(get().byLanguage[languageCode], rows)
     set((s) => {
-      if (sameOccurrences(s.byLanguage[languageCode], rows)) return s
+      if (!changed) return s
       const byLanguage = { ...s.byLanguage, [languageCode]: rows }
       return { byLanguage, occurrences: flatten(byLanguage) }
     })
+    if (changed) notifyLocalProjectionChange({ type: 'language', languageCode })
   },
 
   /**
@@ -384,6 +389,17 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
 
     await replaceOccurrences(doc.id, records)
 
+    // The local wordbook projection is derived from these rows. Announce the
+    // document after the write committed, so a local-only device can recompute
+    // just this document's lemmas from IndexedDB. The unchanged path above never
+    // reaches here — a recomputation that wrote nothing is still a projection
+    // no-op.
+    notifyLocalProjectionChange({
+      type: 'document',
+      languageCode: doc.languageCode,
+      documentId: doc.id,
+    })
+
     /**
      * 계산을 기억한다 — 다음에 이 규칙이 바뀌면 다시 계산된다.
      *
@@ -410,6 +426,17 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
   },
 
   forgetDocument: async (documentId) => {
+    /**
+     * Read the rows before deleting them. They name the languages whose local
+     * projection must drop this document, and reading by the `documentId` index
+     * is proportional to the document, not to the whole device.
+     */
+    const removedRows = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      documentId,
+    ).catch(() => [])
+
     await idbDeleteByIndex(STORES.wordOccurrences, 'documentId', documentId)
     /**
      * documentMeta 는 주키가 documentId 다 — 같은 이름의 인덱스가 없다.
@@ -419,6 +446,18 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
      * 남았다 — 새로고침해야 사라졌다.
      */
     await idbDelete(STORES.documentMeta, documentId)
+
+    // A shared lemma keeps its other documents' rows; the producer recomputes it
+    // from what remains, so a purge never takes a word that still occurs
+    // elsewhere with it.
+    for (const languageCode of new Set(removedRows.map((row) => row.languageCode))) {
+      notifyLocalProjectionChange({
+        type: 'documents-removed',
+        languageCode,
+        documentIds: [documentId],
+      })
+    }
+
     set((s) => {
       const recorded = { ...s.recorded }
       delete recorded[documentId]

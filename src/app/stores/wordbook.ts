@@ -68,8 +68,24 @@ type WordbookState = {
   refreshFromStore: (languageCode?: string) => Promise<void>
   /** Reads which languages have a complete projection for this account. */
   refreshProjectionReadiness: (userId: string | null) => Promise<void>
-  /** Replaces mapped entries directly (tests and the local-only producer in Task 11). */
+  /** Replaces mapped entries directly (tests). */
   setEntries: (languageCode: string, entries: ProjectionWordbookEntry[]) => void
+  /**
+   * Replaces one language with rows the local-only producer built (Task 11).
+   *
+   * The raw projection rows are remembered too, so a document rename
+   * re-resolves titles from metadata exactly as a server projection row does.
+   */
+  setLocalEntries: (languageCode: string, entries: ProjectionEntry[]) => void
+  /**
+   * Patches only the rows a local change touched, keeping every other row's
+   * identity — a status edit or one document's words never remap the language.
+   */
+  applyLocalEntries: (
+    languageCode: string,
+    entries: ProjectionEntry[],
+    removedLemmas?: readonly string[],
+  ) => void
   /** Applies local word-state changes to just the matching rows. */
   applyWordStates: (changes: readonly WordStateChange[]) => void
   /** Re-resolves context titles from current document metadata. */
@@ -187,6 +203,88 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
     set((s) => ({
       entriesByLanguage: { ...s.entriesByLanguage, [languageCode]: entries },
       loadedLanguages: { ...s.loadedLanguages, [languageCode]: true },
+      revision: s.revision + 1,
+      dataRevision: s.dataRevision + 1,
+    }))
+  },
+
+  setLocalEntries: (languageCode, entries) => {
+    rawByLanguage.set(languageCode, [...entries])
+    const documents = useDocumentsStore.getState().documents
+    const byKey = useWordStatesStore.getState().byKey
+    get().setEntries(
+      languageCode,
+      projectionEntriesToWordbook(entries, {
+        documents,
+        stateOf: (lemma) => byKey[`${languageCode}::${lemma}`],
+      }),
+    )
+  },
+
+  applyLocalEntries: (languageCode, entries, removedLemmas = []) => {
+    if (entries.length === 0 && removedLemmas.length === 0) return
+    const documents = useDocumentsStore.getState().documents
+    const byKey = useWordStatesStore.getState().byKey
+    const mapped = projectionEntriesToWordbook(entries, {
+      documents,
+      stateOf: (lemma) => byKey[`${languageCode}::${lemma}`],
+    })
+
+    const raw = rawByLanguage.get(languageCode)
+    if (raw) {
+      const byLemma = new Map(raw.map((row) => [row.lemma, row]))
+      for (const lemma of removedLemmas) byLemma.delete(lemma)
+      for (const row of entries) byLemma.set(row.lemma, row)
+      rawByLanguage.set(languageCode, [...byLemma.values()])
+    }
+
+    const current = get().entriesByLanguage[languageCode]
+    // Not loaded yet: a full build is still pending, and inventing a partial
+    // list here would hide every row that build has not produced yet.
+    if (!current) return
+
+    const patches = new Map(mapped.map((entry) => [entry.lemma, entry]))
+    if (removedLemmas.length > 0) {
+      const removed = new Set(removedLemmas)
+      const next = current
+        .filter((entry) => !removed.has(entry.lemma))
+        .map((entry) => {
+          const patch = patches.get(entry.lemma)
+          if (!patch) return entry
+          patches.delete(entry.lemma)
+          return patch
+        })
+      for (const patch of patches.values()) next.push(patch)
+      rememberEntries(languageCode, next)
+      set((s) => ({
+        entriesByLanguage: { ...s.entriesByLanguage, [languageCode]: next },
+        revision: s.revision + 1,
+        dataRevision: s.dataRevision + 1,
+      }))
+      return
+    }
+
+    let index = indicesByLanguage.get(languageCode)
+    if (!index) {
+      index = new Map()
+      current.forEach((entry, position) => index?.set(entry.lemma, position))
+      indicesByLanguage.set(languageCode, index)
+    }
+    let copy: ProjectionWordbookEntry[] | null = null
+    for (const patch of patches.values()) {
+      if (!copy) copy = current.slice()
+      const position = index.get(patch.lemma)
+      if (position === undefined) {
+        index.set(patch.lemma, copy.length)
+        copy.push(patch)
+      } else {
+        copy[position] = patch
+      }
+    }
+    if (!copy) return
+    const next = copy
+    set((s) => ({
+      entriesByLanguage: { ...s.entriesByLanguage, [languageCode]: next },
       revision: s.revision + 1,
       dataRevision: s.dataRevision + 1,
     }))

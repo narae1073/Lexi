@@ -193,7 +193,9 @@ export function DocumentList() {
    * R3 account mode derives it from projection contexts in a worker: every
    * context carries a document id, so an ordinary document and a paged one
    * (whose occurrence rows were never downloaded) both get a gauge. Local-only
-   * accounts keep the occurrence-built calculation until Task 11.
+   * mode keeps the occurrence-built calculation: every document that has words
+   * on this device has its rows here too, so there is nothing a projection
+   * would add.
    */
   const [progressWorker] = useState(() => createWordbookWorkerClient())
   useEffect(() => {

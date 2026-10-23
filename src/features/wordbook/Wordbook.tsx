@@ -25,6 +25,7 @@ import {
   scopeProjectionEntry,
   searchProjectionEntries,
 } from './wordbookProjection'
+import { searchLocalProjection } from './localProjection'
 import { createWordbookWorkerClient } from './wordbookWorker'
 import { DocumentScopeSelect } from './DocumentScopeSelect'
 import { StarColorFilter } from './StarColorFilter'
@@ -108,7 +109,7 @@ export function Wordbook() {
   const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
   const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
 
-  const projectionReady = projectionComplete && projectionLoaded
+  const projectionReady = localOnly ? projectionLoaded : projectionComplete && projectionLoaded
   const presentation = resolveWordbookPresentation({
     localOnly,
     projectionReady,
@@ -156,10 +157,12 @@ export function Wordbook() {
   }, [localOnly, languageCode, projectionReady, projectionRevision, worker])
 
   useEffect(() => {
-    if (localOnly || !languageCode || !projectionReady) return
+    if (!languageCode || !projectionReady) return
     let cancelled = false
-    void worker
-      .search(query, languageCode)
+    const searching = localOnly
+      ? searchLocalProjection(query, languageCode)
+      : worker.search(query, languageCode)
+    void searching
       .then((lemmas) => {
         if (!cancelled) setSortedLemmas(lemmas)
       })
@@ -172,9 +175,12 @@ export function Wordbook() {
       })
   }, [localOnly, languageCode, projectionReady, query, projectionRevision, worker])
 
-  /** Local path: local-only mode, and the R2 upgrade until the projection completes. */
+  /**
+   * Local path: an account whose projection is still incomplete (R2 upgrade),
+   * and local-only mode until the local producer's first build finishes.
+   */
   const legacyEntries = useMemo(() => {
-    if (!localSource || !languageCode) return []
+    if (!localSource || !languageCode || (localOnly && projectionReady)) return []
     return buildWordbook({
       languageCode,
       occurrences,
@@ -182,7 +188,16 @@ export function Wordbook() {
       documentId: effectiveDocumentId,
       query,
     })
-  }, [localSource, languageCode, occurrences, byKey, effectiveDocumentId, query])
+  }, [
+    localSource,
+    localOnly,
+    projectionReady,
+    languageCode,
+    occurrences,
+    byKey,
+    effectiveDocumentId,
+    query,
+  ])
 
   /**
    * Projection path: the worker returned matching lemmas in sorted order; this
@@ -201,7 +216,17 @@ export function Wordbook() {
       .filter((entry): entry is ProjectionWordbookEntry => entry !== null)
   }, [projectionReady, languageCode, projectionEntries, sortedLemmas, effectiveDocumentId])
 
-  const entries: WordbookEntry[] = localSource ? legacyEntries : projectionVisible
+  /**
+   * Local-only mode uses the same read model once its producer has built it —
+   * same rows, same worker sorting, same scoping. An account's R2 upgrade keeps
+   * the occurrence-built list until the server projection is complete.
+   */
+  const entries: WordbookEntry[] =
+    localOnly && projectionReady
+      ? projectionVisible
+      : localSource
+        ? legacyEntries
+        : projectionVisible
   const grouped = useMemo(() => groupByStatus(entries), [entries])
 
   /**

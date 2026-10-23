@@ -12,18 +12,32 @@
  * occurrence rows), so a paged document with no local content still gets a
  * gauge.
  *
+ * Local-only mode (Task 11) builds the same projection in the same worker. The
+ * producer posts the device's occurrence rows once, then only the documents that
+ * changed; the worker keeps the language's source rows and recomputes just the
+ * affected lemmas. That keeps a one-document edit proportional to the document
+ * instead of to a 200k-row language.
+ *
  * `handleWordbookRequest` is pure so tests (and the no-Worker fallback) can use
  * the exact same semantics. The module only installs a `message` listener when
  * it is actually running inside a worker.
  */
 
+import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordbookEntry } from './buildWordbook'
+import {
+  buildLocalProjection,
+  type LocalProjectionBuild,
+  type LocalProjectionRequest,
+  type LocalWordState,
+} from './localProjection'
 import {
   compareWordbookEntries,
   computeDocumentProgress,
   type DocumentProgress,
   type ProgressDocument,
   type ProgressEntry,
+  type ProjectionEntry,
 } from './wordbookProjection'
 
 export type WordbookWorkerRequest =
@@ -33,6 +47,10 @@ export type WordbookWorkerRequest =
       /** Locale used for sorting; defaults to the runtime locale. */
       languageCode?: string
     }
+  | ({
+      type: 'local-rebuild'
+      languageCode: string
+    } & LocalProjectionRequest)
   | {
       type: 'search'
       query: string
@@ -59,6 +77,10 @@ export type WordbookWorkerRequest =
 
 export type WordbookWorkerResponse =
   | { type: 'rebuilt'; total: number; id?: number }
+  | ({
+      type: 'local-rebuilt'
+      id?: number
+    } & LocalProjectionBuild)
   | { type: 'search'; lemmas: string[]; total: number; id?: number }
   | { type: 'progress'; progress: Record<string, DocumentProgress>; id?: number }
   | { type: 'error'; message: string; id?: number }
@@ -71,27 +93,193 @@ type IndexEntry = {
   haystack: string
 }
 
+/**
+ * What the search index needs.
+ *
+ * Projection rows (`wordbookEntries`) and occurrence-built rows (`buildWordbook`)
+ * both have these two fields; the index never looks at the rest.
+ */
+export type WorkerDatasetEntry = {
+  lemma: string
+  surfaces: readonly string[]
+}
+
 type Dataset = {
-  entries: readonly WordbookEntry[]
-  index: IndexEntry[]
+  entries: readonly WorkerDatasetEntry[]
+  /** Sorted lazily for local builds — `null` means "sort on the next search". */
+  index: IndexEntry[] | null
+}
+
+/**
+ * One language's local-only source rows.
+ *
+ * Keeping occurrences by document (and by lemma) is what makes a document edit
+ * recompute only that document's lemmas: no scan of the whole language, and a
+ * shared lemma still reads every document it occurs in.
+ */
+type LocalDataset = {
+  occurrences: Map<string, WordOccurrence[]>
+  byLemma: Map<string, WordOccurrence[]>
+  states: Map<string, LocalWordState>
+  entries: Map<string, ProjectionEntry>
 }
 
 export type WordbookWorkerState = {
   datasets: Map<string, Dataset>
+  /** Local-only sources. Account mode never populates this map. */
+  local: Map<string, LocalDataset>
 }
 
 export function createWordbookWorkerState(): WordbookWorkerState {
-  return { datasets: new Map() }
+  return { datasets: new Map(), local: new Map() }
 }
 
 const DEFAULT_LANGUAGE = ''
 
-function indexOf(entries: readonly WordbookEntry[], languageCode: string): IndexEntry[] {
+function indexOf(
+  entries: readonly WorkerDatasetEntry[],
+  languageCode: string,
+): IndexEntry[] {
   const index = entries.map((entry) => ({
     lemma: entry.lemma,
     haystack: `${entry.lemma}\n${entry.surfaces.join('\n')}`.toLowerCase(),
   }))
   return index.sort((a, b) => compareWordbookEntries(a, b, languageCode))
+}
+
+function createLocalDataset(): LocalDataset {
+  return {
+    occurrences: new Map(),
+    byLemma: new Map(),
+    states: new Map(),
+    entries: new Map(),
+  }
+}
+
+/** Adds one occurrence row to a local dataset. Rows are kept by reference. */
+function addOccurrence(dataset: LocalDataset, row: WordOccurrence): void {
+  const documentRows = dataset.occurrences.get(row.documentId)
+  if (documentRows) documentRows.push(row)
+  else dataset.occurrences.set(row.documentId, [row])
+
+  const lemmaRows = dataset.byLemma.get(row.lemma)
+  if (lemmaRows) lemmaRows.push(row)
+  else dataset.byLemma.set(row.lemma, [row])
+}
+
+/** Removes one document's rows; returns the lemmas it contributed. */
+function removeDocument(dataset: LocalDataset, documentId: string): string[] {
+  const rows = dataset.occurrences.get(documentId)
+  if (!rows) return []
+  dataset.occurrences.delete(documentId)
+
+  const lemmas: string[] = []
+  for (const row of rows) {
+    lemmas.push(row.lemma)
+    const lemmaRows = dataset.byLemma.get(row.lemma)
+    if (!lemmaRows) continue
+    const next = lemmaRows.filter((item) => item !== row)
+    if (next.length === 0) dataset.byLemma.delete(row.lemma)
+    else dataset.byLemma.set(row.lemma, next)
+  }
+  return lemmas
+}
+
+/** True when two builds of the same lemma produced the same row. */
+function sameProjectionEntry(a: ProjectionEntry, b: ProjectionEntry): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * Builds (or incrementally updates) one language's local projection.
+ *
+ * A request without `documentIds`/`removedDocumentIds` is a full rebuild: it
+ * replaces the language's source rows and returns every row. A request with
+ * either field touches only those documents and returns only the lemmas whose
+ * row changed — that is the "one document edit updates only its entries" rule.
+ */
+function handleLocalRebuild(
+  state: WordbookWorkerState,
+  request: WordbookWorkerRequest & { type: 'local-rebuild' },
+): WordbookWorkerResponse {
+  const { languageCode } = request
+  const full =
+    request.documentIds === undefined && request.removedDocumentIds === undefined
+  let dataset = state.local.get(languageCode)
+  if (!dataset) {
+    dataset = createLocalDataset()
+    state.local.set(languageCode, dataset)
+  }
+
+  const changed: ProjectionEntry[] = []
+  const removed: string[] = []
+  const rows = request.occurrences.filter((row) => row.languageCode === languageCode)
+
+  if (full) {
+    dataset.occurrences.clear()
+    dataset.byLemma.clear()
+    dataset.states.clear()
+    for (const row of rows) addOccurrence(dataset, row)
+    for (const wordState of request.wordStates ?? []) {
+      dataset.states.set(wordState.lemma, wordState)
+    }
+    for (const entry of buildLocalProjection(rows, request.wordStates ?? [])) {
+      dataset.entries.set(entry.lemma, entry)
+      changed.push(entry)
+    }
+  } else {
+    const affected = new Set<string>()
+    for (const documentId of request.removedDocumentIds ?? []) {
+      for (const lemma of removeDocument(dataset, documentId)) affected.add(lemma)
+    }
+    for (const documentId of request.documentIds ?? []) {
+      for (const lemma of removeDocument(dataset, documentId)) affected.add(lemma)
+    }
+    for (const wordState of request.wordStates ?? []) {
+      // Merge rather than replace: a state edit from the store carries the
+      // display fields but not every watermark the row may already have.
+      const previous = dataset.states.get(wordState.lemma)
+      dataset.states.set(wordState.lemma, previous ? { ...previous, ...wordState } : wordState)
+    }
+    for (const row of rows) {
+      addOccurrence(dataset, row)
+      affected.add(row.lemma)
+    }
+
+    for (const lemma of affected) {
+      const lemmaRows = dataset.byLemma.get(lemma) ?? []
+      const previous = dataset.entries.get(lemma)
+      if (lemmaRows.length === 0) {
+        if (previous !== undefined) {
+          dataset.entries.delete(lemma)
+          removed.push(lemma)
+        }
+        continue
+      }
+      const wordState = dataset.states.get(lemma)
+      const built = buildLocalProjection(lemmaRows, wordState ? [wordState] : [])[0]
+      if (!built) continue
+      if (previous !== undefined && sameProjectionEntry(previous, built)) continue
+      dataset.entries.set(lemma, built)
+      changed.push(built)
+    }
+  }
+
+  const entries = [...dataset.entries.values()]
+  if (full || changed.length > 0 || removed.length > 0) {
+    // The search dataset shares these rows. The index is invalidated rather than
+    // re-sorted here: the next search pays that cost once, so a document edit
+    // stays proportional to the document, not to the language.
+    state.datasets.set(languageCode, { entries, index: null })
+  }
+
+  const build: LocalProjectionBuild = {
+    entries: changed,
+    removed,
+    total: entries.length,
+    full,
+  }
+  return { type: 'local-rebuilt', ...build }
 }
 
 /**
@@ -110,13 +298,19 @@ export function handleWordbookRequest(
       entries: request.entries,
       index: indexOf(request.entries, languageCode),
     })
+    // An account projection replaces any local-only rows for the language: after
+    // a device links an account, the server copy is the authority.
+    state.local.delete(languageCode)
     return { type: 'rebuilt', total: request.entries.length }
   }
+
+  if (request.type === 'local-rebuild') return handleLocalRebuild(state, request)
 
   if (request.type === 'search') {
     const languageCode = request.languageCode ?? DEFAULT_LANGUAGE
     const dataset = state.datasets.get(languageCode)
     if (!dataset) return { type: 'search', lemmas: [], total: 0 }
+    if (dataset.index === null) dataset.index = indexOf(dataset.entries, languageCode)
     const needle = request.query.trim().toLowerCase()
     const lemmas: string[] = []
     for (const item of dataset.index) {
@@ -218,6 +412,31 @@ export class WordbookWorkerClient {
     const request: WordbookWorkerRequest = { type: 'rebuild', entries, languageCode }
     this.rebuildBarrier = this.send(request)
     return this.rebuildBarrier.then(() => undefined)
+  }
+
+  /**
+   * Builds or updates one language's local-only projection.
+   *
+   * The heavy part (grouping occurrences, counts, contexts, rebuilding affected
+   * lemmas) runs in the worker. The returned rows are the changed set: everything
+   * on a full build, only the touched lemmas on a document/state update. A search
+   * that lands while this is running waits for it, exactly like `rebuild`.
+   */
+  localRebuild(
+    languageCode: string,
+    request: LocalProjectionRequest = { occurrences: [] },
+  ): Promise<LocalProjectionBuild> {
+    const pending = this.send({ type: 'local-rebuild', languageCode, ...request })
+    this.rebuildBarrier = pending
+    return pending.then((response) => {
+      if (response.type !== 'local-rebuilt') throw new Error('unexpected worker response')
+      return {
+        entries: response.entries,
+        removed: response.removed,
+        total: response.total,
+        full: response.full,
+      }
+    })
   }
 
   async search(query: string, languageCode = DEFAULT_LANGUAGE): Promise<string[]> {
