@@ -90,11 +90,12 @@ export function ReaderView({ doc }: { doc: Document }) {
   const languageName = useLanguageName()
 
   /**
-   * 본문은 열 때 받아 온다 (R3).
+   * Document text is loaded on open (R3).
    *
-   * 목록은 메타데이터만 들고 있으므로 메타데이터만 받은 문서의 `rawText` 는
-   * 비어 있다. 이 기기에 이미 본문이 있으면 그대로 그리고, 없으면 한 번 받아
-   * `documentContent` 저장소에 둔다 — 다시 열 때는 요청이 없다.
+   * The list carries metadata only, so a metadata-only document's `rawText` is
+   * empty. Text this device already has is rendered immediately; otherwise it
+   * is fetched once and kept in the `documentContent` store — reopening makes
+   * no request.
    */
   const openDocument = useDocumentsStore((s) => s.open)
   const [contentText, setContentText] = useState<string | null>(
@@ -112,7 +113,7 @@ export function ReaderView({ doc }: { doc: Document }) {
       .then((opened) => {
         if (cancelled || opened === undefined) return
         setContentText(opened.rawText)
-        // 본문과 함께 받은 등장 기록이 저장소에 들어왔을 수 있다
+        // The fetch may have stored the document's occurrence rows.
         void useOccurrencesStore.getState().loadLanguage(doc.languageCode)
       })
       .catch((error: unknown) => {
@@ -206,8 +207,8 @@ export function ReaderView({ doc }: { doc: Document }) {
    */
   const refreshStale = useOccurrencesStore((s) => s.refreshStaleDocuments)
   useEffect(() => {
-    // 메타데이터만 받은 문서는 서버의 기록을 그대로 쓴다 — 다시 계산하면
-    // 읽기만 해도 단어장이 바뀌고 다음 동기화가 그것을 올린다.
+    // A metadata-only document keeps the server's rows. Recomputing would make
+    // a read change the wordbook and push that change back.
     if (!upgrade || !mayRecomputeOccurrences(doc)) return
     let cancelled = false
     const run = async () => {
@@ -231,11 +232,12 @@ export function ReaderView({ doc }: { doc: Document }) {
   }, [doc.languageCode, loadWordStates])
 
   /**
-   * 단어장에 필요한 등장 기록. 렌더를 막지 않도록 유휴 시점에 쓴다.
+   * Occurrence rows the wordbook needs, written at idle time so rendering is
+   * never blocked.
    *
-   * 이 기기에서 만든 문서만 다시 계산한다. 메타데이터만 받은 문서의 기록은
-   * 서버 것이 이미 있으므로(본문과 함께 받아 두었다), 읽는 김에 다시 계산하면
-   * 내용을 고치지 않았는데도 등장 기록을 새로 써서 동기화가 그것을 올린다.
+   * Only a document authored on this device is recomputed. A metadata-only
+   * document already has the server's rows (fetched with its text); recomputing
+   * on read would write new rows for unchanged content and push them.
    */
   useEffect(() => {
     if (contentText === null || !mayRecomputeOccurrences(doc)) return
@@ -538,7 +540,7 @@ export function ReaderView({ doc }: { doc: Document }) {
     [sentences],
   )
 
-  // 본문을 아직 받지 못했다 — 읽을 것이 없는 상태와 구분해 말한다
+  // The text has not arrived yet — say so instead of showing an empty page.
   if (contentText === null) {
     return (
       <article className="mx-auto w-full max-w-2xl px-5 pt-8 pb-32">

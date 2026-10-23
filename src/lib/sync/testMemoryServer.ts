@@ -57,6 +57,8 @@ export function memoryServer(
       let greaterThan: { column: string; value: unknown } | null = null
       let countMode = false
       let deleting = false
+      /** Columns of the last `select`; null means every column. */
+      let selectedColumns: string[] | null = null
 
       const compareValues = compare
 
@@ -80,8 +82,15 @@ export function memoryServer(
       }
 
       const query = {
-        select: (_columns?: string, options?: { count?: string; head?: boolean }) => {
+        select: (columns?: string, options?: { count?: string; head?: boolean }) => {
           countMode = options?.count === 'exact' && options?.head === true
+          // PostgREST returns only the requested columns. The pull relies on
+          // this to keep `raw_text` out of the document list, so the stand-in
+          // must honour it rather than leaking every column.
+          selectedColumns =
+            columns === undefined || columns.trim() === '' || columns.trim() === '*'
+              ? null
+              : columns.split(',').map((column) => column.trim())
           return query
         },
         eq: (column: string, value: unknown) => {
@@ -189,7 +198,14 @@ export function memoryServer(
           rows = rows.slice(range.from, range.to === Infinity ? undefined : range.to + 1)
           if (Number.isFinite(limitCount)) rows = rows.slice(0, limitCount)
           const capped = rowCap > 0 ? rows.slice(0, rowCap) : rows
-          const data = capped.map((row) => ({ ...row }))
+          const data = capped.map((row) => {
+            if (selectedColumns === null) return { ...row }
+            const picked: Record<string, unknown> = {}
+            for (const column of selectedColumns) {
+              if (column in row) picked[column] = row[column]
+            }
+            return picked
+          })
           pages[table] = (pages[table] ?? 0) + 1
           await pageHook?.(table, pages[table])
           return resolve({ data, error: null })
@@ -351,6 +367,11 @@ export function memoryServer(
       pageHook = hook
     },
     add: (table: string, row: Record<string, unknown>) => {
+      // Seeded documents behave like a real insert: the trigger fills
+      // char_count when the fixture did not set it.
+      if (table === 'documents' && row.raw_text !== undefined && row.char_count === undefined) {
+        row = { ...row, char_count: Array.from(String(row.raw_text)).length }
+      }
       tables[table].push(row)
     },
     /** Reject any upsert chunk in `table` containing a matching row. */

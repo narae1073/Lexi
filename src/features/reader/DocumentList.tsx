@@ -427,7 +427,8 @@ export function DocumentList() {
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
                         count: documentLength(doc),
-                        date: new Date(doc.updatedAt).toLocaleString(),
+                        // The list's "recent" key is the last open, not a content edit
+                        date: new Date(doc.lastOpenedAt ?? doc.updatedAt).toLocaleString(),
                       })}
                     </span>
                   </span>
@@ -445,7 +446,8 @@ export function DocumentList() {
                       {t('list.meta', {
                         language: languageName(doc.languageCode),
                         count: documentLength(doc),
-                        date: new Date(doc.updatedAt).toLocaleString(),
+                        // The list's "recent" key is the last open, not a content edit
+                        date: new Date(doc.lastOpenedAt ?? doc.updatedAt).toLocaleString(),
                       })}
                     </span>
                   </span>

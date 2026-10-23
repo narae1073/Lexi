@@ -1,11 +1,23 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
+import { useOccurrencesStore } from '../../app/stores/occurrences'
 import type { Document } from '../../types'
-import { deleteLocalDatabase, idbGet, idbPut, STORES } from '../storage/localDb'
-import { readDocumentContent } from '../storage/documentContent'
-import { documentMetadataFromRow } from './mapping'
+import {
+  deleteLocalDatabase,
+  idbGet,
+  idbGetAllByIndex,
+  idbPut,
+  readDirtyKeys,
+  readLocalSyncMeta,
+  STORES,
+} from '../storage/localDb'
+import { readDocumentContent, putDocumentContent } from '../storage/documentContent'
+import { putWordbookEntries, readWordbookEntries } from '../storage/wordbookEntries'
+import { DOCUMENT_METADATA_COLUMNS, documentMetadataFromRow } from './mapping'
 import { mergeDocuments } from './merge'
+import { fetchAll } from './pull'
 import { syncOnce } from './sync'
 import { memoryServer, type Server } from './testMemoryServer'
 import {
@@ -120,6 +132,27 @@ describe('metadata-only documents', () => {
       ...serverDocument({ char_count: undefined }),
     } as never)
     expect(doc.charCount).toBe(Array.from(TEXT).length)
+  })
+
+  it('are pulled with an explicit column list that omits raw_text', async () => {
+    const server = memoryServer()
+    seed(server)
+
+    expect(DOCUMENT_METADATA_COLUMNS.split(',')).not.toContain('raw_text')
+
+    const rows = await fetchAll<Record<string, unknown>>(
+      server.client,
+      'documents',
+      USER,
+      'id',
+      DOCUMENT_METADATA_COLUMNS,
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).not.toHaveProperty('raw_text')
+    expect(rows[0]).toMatchObject({
+      id: 'doc-1',
+      char_count: Array.from(TEXT).length,
+    })
   })
 
   it('are not recomputed as a content edit — a metadata merge keeps loaded text', () => {
@@ -316,7 +349,6 @@ describe('opening a document', () => {
     const server = memoryServer()
     seed(server, { content_updated_at: T1 })
     // A newer copy is already stored (another tab fetched it first).
-    const { putDocumentContent } = await import('../storage/documentContent')
     await putDocumentContent('doc-1', {
       rawText: 'Newer local copy',
       contentUpdatedAt: T2,
@@ -334,6 +366,148 @@ describe('opening a document', () => {
       rawText: 'Newer local copy',
       contentUpdatedAt: T2,
     })
+  })
+
+  it('does not replace a newer local copy from the document-row path', async () => {
+    await putDocumentContent('doc-1', {
+      rawText: 'Newer local copy',
+      contentUpdatedAt: T2,
+      occurrencesUpdatedAt: null,
+    })
+
+    const opened = await openDocumentContent({
+      // A local row whose own text version is older than the stored copy.
+      document: metadataDocument({ hasContent: true, rawText: 'Older row text' }),
+      touch: false,
+    })
+
+    expect(opened.rawText).toBe('Newer local copy')
+    await expect(readDocumentContent('doc-1')).resolves.toMatchObject({
+      rawText: 'Newer local copy',
+      contentUpdatedAt: T2,
+    })
+  })
+
+  it('hydrates server occurrence rows when a bare lemmaVersion stamp has no evidence', async () => {
+    const server = memoryServer()
+    seed(server)
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: USER,
+      document_id: 'doc-1',
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 3,
+      char_end: 7,
+      sentence: TEXT,
+      occurrences_count: 3,
+    })
+    // An older build's app-start refresh stamped the version but never wrote
+    // rows and left no occurrence timestamp.
+    await idbPut(STORES.documentMeta, { documentId: 'doc-1', lemmaVersion: LEMMA_VERSION })
+
+    await openDocumentContent({
+      document: metadataDocument(),
+      db: server.client,
+      touch: false,
+    })
+
+    const rows = await idbGetAllByIndex<{ lemma: string; count: number }>(
+      STORES.wordOccurrences,
+      'documentId',
+      'doc-1',
+    )
+    expect(rows.map((row) => row.lemma)).toEqual(['chat'])
+    expect(rows[0]?.count).toBe(3)
+    // Hydration is a received row, not a local edit.
+    const meta = await readLocalSyncMeta()
+    expect(meta?.revision ?? 0).toBe(0)
+    expect(await readDirtyKeys()).toEqual([])
+  })
+
+  it('keeps rows this device really computed instead of hydrating over them', async () => {
+    const server = memoryServer()
+    seed(server)
+    server.add('word_occurrences', {
+      id: 1,
+      user_id: USER,
+      document_id: 'doc-1',
+      language_code: 'fr',
+      lemma: 'chat',
+      surface: 'chat',
+      char_start: 3,
+      char_end: 7,
+      sentence: TEXT,
+      occurrences_count: 3,
+    })
+    await idbPut(STORES.wordOccurrences, {
+      documentId: 'doc-1',
+      languageCode: 'fr',
+      lemma: 'chat',
+      surfaces: ['chat'],
+      count: 1,
+      recordedAt: 1,
+      charStart: 3,
+      charEnd: 7,
+      sentence: 'Local sentence',
+      documentTitle: 'Le chat',
+    })
+    await idbPut(STORES.documentMeta, {
+      documentId: 'doc-1',
+      lemmaVersion: LEMMA_VERSION,
+      occurrencesUpdatedAt: T2,
+    })
+
+    await openDocumentContent({
+      document: metadataDocument(),
+      db: server.client,
+      touch: false,
+    })
+
+    const rows = await idbGetAllByIndex<{ sentence: string; count: number }>(
+      STORES.wordOccurrences,
+      'documentId',
+      'doc-1',
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.sentence).toBe('Local sentence')
+    expect(rows[0]?.count).toBe(1)
+  })
+})
+
+describe('app-start occurrence refresh', () => {
+  it('never recomputes or clears a metadata-only document', async () => {
+    const doc = metadataDocument()
+    await idbPut(STORES.documents, doc)
+    await idbPut(STORES.wordOccurrences, {
+      documentId: 'doc-1',
+      languageCode: 'fr',
+      lemma: 'chat',
+      surfaces: ['chat'],
+      count: 3,
+      recordedAt: 1,
+      charStart: 3,
+      charEnd: 7,
+      sentence: TEXT,
+      documentTitle: 'Le chat',
+    })
+
+    // The fixture writes above are user writes; the refresh must add nothing.
+    const dirtyBefore = await readDirtyKeys()
+
+    const recomputed = await useOccurrencesStore.getState().refreshStaleDocuments([doc])
+
+    expect(recomputed).toBe(0)
+    const rows = await idbGetAllByIndex<{ lemma: string }>(
+      STORES.wordOccurrences,
+      'documentId',
+      'doc-1',
+    )
+    expect(rows.map((row) => row.lemma)).toEqual(['chat'])
+    // No computation record, no stamp, no extra dirty push.
+    expect(await idbGet(STORES.documentMeta, 'doc-1')).toBeUndefined()
+    expect(await readDirtyKeys()).toEqual(dirtyBefore)
   })
 })
 
@@ -372,6 +546,62 @@ describe('the 10 MB soft cap', () => {
       rawText: long,
       contentUpdatedAt: T1,
     })
+  })
+
+  /**
+   * R3 decision for paged content: a document whose occurrence payload would
+   * exceed the cap is read page by page for its text, and its occurrence rows
+   * stay where they already are. The wordbook is the projection (one row per
+   * lemma, independent of document text), so opening such a document neither
+   * needs nor may write per-document occurrence rows. Task 10 owns showing
+   * per-document progress from the projection for these documents.
+   */
+  it('leaves the wordbook projection and occurrence rows untouched', async () => {
+    const long = 'Le chat dort. '.repeat(20)
+    const server = memoryServer()
+    seed(server, { raw_text: long, char_count: Array.from(long).length })
+    await putWordbookEntries([
+      {
+        languageCode: 'fr',
+        lemma: 'chat',
+        surfaces: ['chat'],
+        contexts: [],
+        occurrenceCount: 20,
+        documentCount: 1,
+        status: 'known',
+        isFavorite: false,
+        starAngle: 0,
+        starColor: '#eab308',
+        seenCount: 1,
+        firstSeenAt: T1,
+        lastSeenAt: T1,
+        favoriteUpdatedAt: null,
+        knownPresses: 0,
+        unsurePresses: 0,
+        unknownPresses: 0,
+        note: null,
+        noteUpdatedAt: null,
+        serverUpdatedAt: T1,
+      },
+    ])
+
+    const opened = await openDocumentContent({
+      document: metadataDocument({ charCount: Array.from(long).length }),
+      db: server.client,
+      payloadByteBudget: 10,
+      pageChars: 20,
+    })
+
+    expect(opened.paged).toBe(true)
+    expect(opened.rawText).toBe(long)
+    // The wordbook still answers from the projection.
+    const entries = await readWordbookEntries('fr')
+    expect(entries.map((entry) => entry.lemma)).toEqual(['chat'])
+    // The paged path does not fabricate per-document occurrence rows.
+    expect(
+      await idbGetAllByIndex(STORES.wordOccurrences, 'documentId', 'doc-1'),
+    ).toEqual([])
+    expect(await idbGet(STORES.documentMeta, 'doc-1')).toBeUndefined()
   })
 
   it('reports a recoverable error when a page cannot be read', async () => {

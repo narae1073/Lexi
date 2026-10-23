@@ -28,11 +28,13 @@ type DocumentsState = {
     fallbackTitle: string
   }) => Promise<Document>
   /**
-   * 문서를 연다 — 본문을 (필요하면 한 번 받아) 돌려주고 열람 시각만 남긴다.
+   * Open a document: resolve its text (fetching once when needed) and record
+   * the open.
    *
-   * 여는 일은 내용을 고치는 일이 아니다. 서버에는 `touch_document` 만 부르고,
-   * 이 기기의 `lastOpenedAt` 은 조용히(동기화 변경으로 세지 않고) 적는다.
-   * 본문을 문서 행에 되쓰지도 않는다 — 본문 사본은 `documentContent` 저장소에 있다.
+   * Opening is not a content edit. The server call is `touch_document` only;
+   * this device's `lastOpenedAt` is written silently (never counted as a sync
+   * change). The text is never written back into the document row — the local
+   * copy lives in the `documentContent` store.
    */
   open: (id: string) => Promise<OpenedDocument | undefined>
   /**
@@ -73,7 +75,8 @@ export function sameDocuments(a: Document[], b: Document[]): boolean {
       doc.title === other.title &&
       doc.languageCode === other.languageCode &&
       doc.rawText === other.rawText &&
-      // 본문을 아직 받지 않았는지, 받은 본문이 어느 버전인지도 목록의 말이다
+      // Whether text was loaded, and which version of it, is part of what the
+      // list shows — a metadata-only row and a loaded one are not the same.
       (doc.hasContent ?? true) === (other.hasContent ?? true) &&
       (doc.charCount ?? null) === (other.charCount ?? null) &&
       (doc.contentUpdatedAt ?? null) === (other.contentUpdatedAt ?? null) &&
@@ -200,14 +203,14 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   },
 
   /**
-   * 문서를 연다.
+   * Open a document.
    *
-   * 본문 해석은 `openDocumentContent` 가 맡는다 (로컬 사본 → 이 기기에 이미 있는
-   * 본문 → 서버). 여기서는 열람 시각만 이 기기에 남긴다.
+   * `openDocumentContent` resolves the text (local copy → text already in this
+   * device's document row → server). This action only records the open time.
    *
-   * **조용히 쓴다.** 열기는 사용자가 고친 내용이 아니므로 동기화 변경으로 세면
-   * 안 된다. 서버는 `touch_document` 가 `last_opened_at` 만 찍고, 다음 메타데이터
-   * 동기화가 그 값을 그대로 가져온다.
+   * **The write is silent.** Opening is not a user content edit, so it must not
+   * count as an unpushed change. Server-side `touch_document` writes only
+   * `last_opened_at`; the next metadata sync pulls that value back.
    */
   open: async (id) => {
     const doc = get().documents.find((d) => d.id === id)
@@ -273,7 +276,8 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
       title: title.trim() || fallbackTitle,
       languageCode,
       rawText,
-      // 이 기기에서 만든 문서는 본문을 이미 들고 있다 — 목록 길이도 바로 안다
+      // A document created here already holds its text, so the list knows its
+      // length immediately.
       charCount: rawText.length,
       hasContent: true,
       contentUpdatedAt: null,

@@ -51,10 +51,11 @@ export function flipDirection(direction: SortDirection): SortDirection {
 }
 
 /**
- * 목록 글자 수 — '글자가 많은 순' 의 기준.
+ * The list's character count — the basis for "longest".
  *
- * 메타데이터만 받은 문서에는 본문이 없다. 서버가 센 `charCount` 가 있으면
- * 그것을 쓴다 — 길이를 알기 위해 본문을 받아 올 이유가 없다.
+ * A metadata-only document has no text on this device. When the server's
+ * `charCount` is present, use it: there is no reason to download a body just to
+ * learn its length.
  */
 export function documentLength(doc: Document): number {
   if (typeof doc.charCount === 'number' && Number.isFinite(doc.charCount)) {
@@ -64,11 +65,11 @@ export function documentLength(doc: Document): number {
 }
 
 /**
- * 주 키 비교기 — 방향을 적용할 대상이다.
+ * Primary comparators — the direction applies to these.
  *
- * '최근 본 순' 은 마지막으로 **연** 시각이다. 여는 일은 `updated_at` 을
- * 건드리지 않으므로(내용 수정이 아니다) `lastOpenedAt` 을 먼저 보고, 아직
- * 기록이 없는 옛 문서는 `updatedAt` 으로 대신한다.
+ * "Recently read" means the last **open**. Opening does not touch
+ * `updated_at` (it is not a content edit), so the key is `lastOpenedAt`;
+ * documents from before that stamp existed fall back to `updatedAt`.
  */
 const PRIMARY: Record<DocumentSort, (a: Document, b: Document) => number> = {
   recent: (a, b) =>

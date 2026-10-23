@@ -39,34 +39,35 @@ export type Document = {
   title: string
   languageCode: LanguageCode
   /**
-   * 이 기기에 들어 있는 본문. 메타데이터만 받은 문서는 비어 있다 —
-   * 본문은 처음 열 때 받아 `documentContent` 저장소에 둔다.
+   * The text held on this device. It is empty for a metadata-only document —
+   * the text is fetched on first open and kept in the `documentContent` store.
    */
   rawText: string
   /**
-   * 본문 글자 수 (서버의 `char_count`). 본문 없이도 목록이 길이를 말하고
-   * '글자가 많은 순' 으로 정렬할 수 있게 한다. 옛 로컬 행에는 없을 수 있다.
+   * Character count from the server's `char_count`. It lets the list show a
+   * length and sort by "longest" without the body. Old local rows may lack it.
    */
   charCount?: number
   /**
-   * 이 행이 실제 본문을 들고 있는가. `false` 면 `rawText` 는 빈 문자열이고
-   * 본문은 아직 받지 않았다. 없으면(`undefined`) 옛 로컬 행처럼 본문이 있다고 본다.
+   * Whether this row actually holds the text. `false` means `rawText` is empty
+   * and the body has not been fetched. `undefined` is an old local row, which
+   * always held its text.
    */
   hasContent?: boolean
   /**
-   * 본문을 마지막으로 고친 서버 시각. 기기에 든 본문 사본이 아직 최신인지
-   * 열 때 비교하는 근거다 (본문을 여는 일은 이 값을 바꾸지 않는다).
+   * Server time of the last text edit. Opening compares it with the local copy
+   * to decide whether the copy is still current (opening never changes it).
    */
   contentUpdatedAt?: string | null
   /**
-   * 등장 기록을 마지막으로 고친 서버 시각. 본문과 따로 움직인다 —
-   * 이 값만 바뀌었다고 본문을 다시 받을 이유는 없다.
+   * Server time of the last occurrence-row change. It moves independently of
+   * the text; a change here is no reason to fetch the text again.
    */
   occurrencesUpdatedAt?: string | null
   /**
-   * 마지막으로 연 시각 — `updated_at` 과 다른 말이다.
-   * 문서를 여는 일은 내용을 고치는 일이 아니므로 `updated_at` 을 건드리지 않고,
-   * 서버의 `touch_document` 가 이 값만 찍는다. 없으면 `updatedAt` 으로 대신한다.
+   * Last open — not the same thing as `updated_at`. Opening is not a content
+   * edit, so it never touches `updated_at`; the server's `touch_document`
+   * stamps this value only. Falls back to `updatedAt` when absent.
    */
   lastOpenedAt?: string | null
   createdAt: string
@@ -81,8 +82,8 @@ export type Document = {
   /**
    * 문서가 놓인 폴더. 없으면 폴더에 없다.
    *
-   * 폴더로 옮기는 일은 문서를 고치는 일이 아니다 — updated_at 은 '마지막으로 본
-   * 시각'이라 목록 날짜·정렬의 근거라서 건드리지 않는다. 옮긴 시각은
+   * 폴더로 옮기는 일은 문서를 고치는 일이 아니다 — updated_at 은 '내용을 고친
+   * 시각'이라서 건드리지 않는다. 옮긴 시각은
    * folderUpdatedAt 이 따로 찍는다 (문서 휴지통·별의 기록과 같은 모양이다).
    */
   folderId?: string | null

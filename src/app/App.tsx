@@ -125,8 +125,12 @@ export default function App() {
   useEffect(() => {
     // 잠긴 계정의 문서를 토크나이징하면 그 기록이 기기에 남는다 — 읽지도 않는다
     if (restoring || !gateReady || accountBlocked) return
-    if (documents.length === 0) return
-    const run = () => void refreshStaleDocuments(documents)
+    // Metadata-only documents have no local text. Recomputing one would clear
+    // its server occurrence rows and push an empty set. The store also guards
+    // this, but never hand it documents it can only damage.
+    const recomputable = documents.filter((doc) => doc.hasContent !== false)
+    if (recomputable.length === 0) return
+    const run = () => void refreshStaleDocuments(recomputable)
     const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300))
     const handle = idle(run)
     return () => {

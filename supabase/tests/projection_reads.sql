@@ -518,12 +518,21 @@ begin
     raise exception 'past-the-end page was %', v_single;
   end if;
 
-  -- Empty documents still have a page.
+  -- An oversized p_max_chars is clamped, not rejected: this small document
+  -- comes back whole in one page.
+  v_single := public.get_document_content_page(v_document.id, 0, 2147483647);
+  if v_single->>'rawText' is distinct from v_document.raw_text
+     or not (v_single->>'done')::boolean then
+    raise exception 'oversized p_max_chars page was %', v_single;
+  end if;
+
+  -- A page smaller than the document returns exactly that page, not the text.
   v_single := public.get_document_content_page(
     current_setting('test.empty_document_id')::uuid, 0, 5
   );
-  if v_single is null or v_single->>'rawText' is distinct from 'No words here.' then
-    raise exception 'empty document page is %', v_single;
+  if v_single->>'rawText' is distinct from left('No words here.', 5)
+     or (v_single->>'done')::boolean then
+    raise exception 'small page of a non-empty document returned %', v_single;
   end if;
 
   -- Another tenant's document and a missing one are indistinguishable from NULL.

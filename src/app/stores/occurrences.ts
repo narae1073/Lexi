@@ -239,7 +239,18 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
    * 한 번에 하나씩 유휴 시점에 처리한다 — 문서가 많으면 토크나이징이 무겁다.
    */
   refreshStaleDocuments: async (docs) => {
-    if (docs.length === 0) return 0
+    /**
+     * Only documents whose text this device holds may be recomputed.
+     *
+     * A metadata-only document (the list pull never carried its `raw_text`) has
+     * an empty `rawText`. Tokenizing that would compute no words, and the write
+     * path would replace its server occurrence rows with an empty set and push
+     * it — a read action erasing data. Metadata-only documents keep the
+     * server's rows; the wordbook and per-document progress are derived
+     * elsewhere (projection / incremental pull).
+     */
+    const recomputable = docs.filter((doc) => doc.hasContent !== false)
+    if (recomputable.length === 0) return 0
     // 목록과 동기화가 동시에 부를 수 있다 — 중복 계산을 막는다
     if (get().refreshing) return 0
     set({ refreshing: true })
@@ -259,7 +270,7 @@ export const useOccurrencesStore = create<OccurrencesState>((set, get) => ({
      * 다시 계산한다. 준비 안 됐을 땐 건드리지 않는다. 앱 시작 시점에 사전을 받게
      * 하면 모바일 데이터를 사용자가 보지도 않은 문서에 쓰게 된다.
      */
-    const stale = docs.filter(
+    const stale = recomputable.filter(
       (doc) =>
         known.get(doc.id)?.lemmaVersion !== LEMMA_VERSION ||
         (doc.languageCode === 'ja' &&

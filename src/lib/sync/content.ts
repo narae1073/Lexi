@@ -3,7 +3,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import type { Document, LanguageCode } from '../../types'
-import { STORES, idbGet, replaceOccurrences } from '../storage/localDb'
+import {
+  STORES,
+  idbGet,
+  idbGetAllByIndex,
+  replaceOccurrences,
+} from '../storage/localDb'
 import {
   putDocumentContent,
   readDocumentContent,
@@ -25,6 +30,14 @@ import type { Database } from '../supabase/database.types'
  *   3. the server, through `get_document_payload` (text + occurrences +
  *      versions). Above the 10 MB soft cap the response would be too large, so
  *      the text is read page by page with `get_document_content_page` instead.
+ *
+ * Paged text deliberately carries no occurrence rows. R3's decision for a
+ * synced document is that the wordbook projection is authoritative: the
+ * wordbook is one row per lemma and does not need a document's rows, and a
+ * document whose occurrence payload crossed the cap keeps whatever rows the
+ * incremental pull already delivered. There is no occurrence paging endpoint.
+ * Task 10 owns showing per-document progress for such a document from the
+ * projection instead of the local occurrence rows.
  *
  * Opening is not a content edit. Only `touch_document` is called: no document
  * upsert, no `raw_text` write, no occurrence recomputation. The payload's
@@ -384,12 +397,28 @@ async function hydrateOccurrences(
   payload: DocumentPayload,
 ): Promise<void> {
   if (payload.occurrences.length === 0) return
-  const meta = await idbGet<{ lemmaVersion?: number }>(STORES.documentMeta, document.id).catch(
-    () => undefined,
-  )
-  // This device already computed the document under the current rules. Its
-  // rows are newer than anything the server sent with the text.
-  if (meta !== undefined && meta.lemmaVersion === LEMMA_VERSION) return
+  const meta = await idbGet<{ lemmaVersion?: number; occurrencesUpdatedAt?: string }>(
+    STORES.documentMeta,
+    document.id,
+  ).catch(() => undefined)
+
+  /**
+   * A current `lemmaVersion` alone is not proof that this device computed the
+   * document. An older build's app-start refresh could stamp the version on a
+   * metadata-only document without ever writing rows, and its empty result then
+   * left no `occurrencesUpdatedAt`. Skipping hydration on that stamp would make
+   * every later open refuse the server's rows. Require actual evidence: local
+   * rows exist, or the computation recorded when it wrote them.
+   */
+  if (meta !== undefined && meta.lemmaVersion === LEMMA_VERSION) {
+    const localRows = await idbGetAllByIndex<WordOccurrence>(
+      STORES.wordOccurrences,
+      'documentId',
+      document.id,
+    ).catch(() => [] as WordOccurrence[])
+    const computedHere = localRows.length > 0 || meta.occurrencesUpdatedAt !== undefined
+    if (computedHere) return
+  }
 
   const records = occurrencesFromPayload(document, payload)
   if (records.length === 0) return
@@ -447,6 +476,17 @@ export async function openDocumentContent({
 
   // 2. Text that is already in the document row: created here, or an R2 row.
   if (!force && doc.hasContent !== false) {
+    // The same last-write-wins rule as a fetch: a copy with a newer version
+    // must not be replaced by a row whose text is older. This can happen when
+    // another tab fetched the text and the document row was not updated.
+    if (
+      cached !== undefined &&
+      !sameContentVersion(cached.contentUpdatedAt, docVersion) &&
+      !isNewerVersion(cached.contentUpdatedAt, docVersion)
+    ) {
+      await recordOpen()
+      return openedFromRecord(cached, { fetched: false, paged: false, lastOpenedAt })
+    }
     const stored = await putDocumentContent(doc.id, {
       rawText: doc.rawText,
       contentUpdatedAt: docVersion,
@@ -466,7 +506,13 @@ export async function openDocumentContent({
     payload = {
       rawText: page.rawText,
       contentUpdatedAt: page.contentUpdatedAt,
-      // The paged path carries no occurrence rows; the incremental pull owns them.
+      /**
+       * No occurrence rows on this path. The wordbook projection answers the
+       * wordbook, and the incremental pull is the only writer of per-document
+       * occurrence rows. Progress for these documents must come from the
+       * projection (Task 10 obligation); do not infer it from an empty local
+       * occurrence set.
+       */
       occurrencesUpdatedAt: cached?.occurrencesUpdatedAt ?? null,
       occurrences: [],
     }
