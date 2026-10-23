@@ -270,6 +270,156 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- NULL-hash, non-empty, unchanged first push
+--
+-- This is the deployment shape of every document that existed before Task 1
+-- added occurrences_hash: rows and projection exist, the hash is NULL. The
+-- first push that matches the stored rows initializes the hash but must not
+-- call refresh, move occurrences_updated_at, rewrite an occurrence row, or
+-- touch the projection.
+-- ---------------------------------------------------------------------------
+
+insert into public.documents (user_id, title, language_code, raw_text)
+values (:'user_id'::uuid, 'legacy hash', 'fr', 'L''ancien texte. L''ancienne version.')
+returning id as d_legacy \gset
+select set_config('test.d_legacy', :'d_legacy', false);
+
+insert into public.word_occurrences
+  (user_id, document_id, language_code, lemma, surface, char_start, char_end, sentence, occurrences_count)
+values
+  (:'user_id'::uuid, :'d_legacy'::uuid, 'fr', 'ancien', 'ancien', 2, 8, 'L''ancien texte.', 3),
+  (:'user_id'::uuid, :'d_legacy'::uuid, 'fr', 'ancienne', 'ancienne', 10, 18, 'L''ancienne version.', 3);
+
+-- Build the projection the way the Task 3 deployment backfill would have.
+select public.refresh_wordbook_entries(
+  current_setting('test.user_id')::uuid,
+  'fr',
+  array['ancien', 'ancienne']
+);
+
+do $$
+begin
+  if (select occurrences_hash from public.documents
+      where id = current_setting('test.d_legacy')::uuid) is not null then
+    raise exception 'legacy fixture unexpectedly has an occurrences_hash';
+  end if;
+  if (select occurrences_updated_at from public.documents
+      where id = current_setting('test.d_legacy')::uuid) is not null then
+    raise exception 'legacy fixture unexpectedly has occurrences_updated_at';
+  end if;
+  if (select occurrence_count from public.wordbook_entries
+      where user_id = current_setting('test.user_id')::uuid and lemma = 'ancien') <> 3 then
+    raise exception 'legacy fixture projection is wrong';
+  end if;
+end $$;
+
+create temp table before_null_hash as
+select
+  (select to_jsonb(d) from public.documents d
+   where d.id = current_setting('test.d_legacy')::uuid) as document,
+  (select jsonb_agg(to_jsonb(w) order by w.lemma) from public.wordbook_entries w
+   where w.user_id = current_setting('test.user_id')::uuid
+     and w.lemma in ('ancien', 'ancienne')) as entries,
+  (select jsonb_agg(
+            jsonb_build_object('xmin', o.xmin::text, 'row', to_jsonb(o))
+            order by o.id)
+   from public.word_occurrences o
+   where o.document_id = current_setting('test.d_legacy')::uuid) as occurrences;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+
+select public.replace_word_occurrences(:'d_legacy', '[
+  {"language_code":"fr","lemma":"ancienne","surface":"ancienne","char_start":10,"char_end":18,"sentence":"L''ancienne version.","occurrences_count":3},
+  {"language_code":"fr","lemma":"ancien","surface":"ancien","char_start":2,"char_end":8,"sentence":"L''ancien texte.","occurrences_count":3}
+]'::jsonb);
+
+reset role;
+
+do $$
+declare
+  v_before record;
+  v_doc public.documents%rowtype;
+  v_entries jsonb;
+  v_occurrences jsonb;
+  v_payload jsonb := '[
+    {"language_code":"fr","lemma":"ancien","surface":"ancien","char_start":2,"char_end":8,"sentence":"L''ancien texte.","occurrences_count":3},
+    {"language_code":"fr","lemma":"ancienne","surface":"ancienne","char_start":10,"char_end":18,"sentence":"L''ancienne version.","occurrences_count":3}
+  ]'::jsonb;
+begin
+  select * into v_before from before_null_hash;
+
+  select * into v_doc from public.documents
+  where id = current_setting('test.d_legacy')::uuid;
+
+  if v_doc.occurrences_hash is null then
+    raise exception 'unchanged non-empty first push did not initialize the hash';
+  end if;
+  if v_doc.occurrences_hash is distinct from public.word_occurrence_hash(v_payload) then
+    raise exception 'unchanged non-empty first push stored the wrong hash';
+  end if;
+
+  -- The hash initialization is a document metadata write only. The occurrence
+  -- watermark must not move, and neither may content.
+  if v_doc.occurrences_updated_at is not null then
+    raise exception 'unchanged non-empty first push claimed occurrences_updated_at';
+  end if;
+  if to_jsonb(v_doc)->>'content_updated_at'
+     is distinct from v_before.document->>'content_updated_at' then
+    raise exception 'unchanged non-empty first push changed content_updated_at';
+  end if;
+
+  -- No occurrence row was deleted, re-inserted, or updated (xmin proves it).
+  select jsonb_agg(
+           jsonb_build_object('xmin', o.xmin::text, 'row', to_jsonb(o))
+           order by o.id)
+  into v_occurrences
+  from public.word_occurrences o
+  where o.document_id = current_setting('test.d_legacy')::uuid;
+  if v_occurrences is distinct from v_before.occurrences then
+    raise exception 'unchanged non-empty first push rewrote occurrence rows';
+  end if;
+
+  -- The projection rows are byte-identical, watermarks included.
+  select jsonb_agg(to_jsonb(w) order by w.lemma)
+  into v_entries
+  from public.wordbook_entries w
+  where w.user_id = current_setting('test.user_id')::uuid
+    and w.lemma in ('ancien', 'ancienne');
+  if v_entries is distinct from v_before.entries then
+    raise exception 'unchanged non-empty first push rewrote the projection: % -> %',
+      v_before.entries, v_entries;
+  end if;
+end $$;
+
+-- The initialized hash makes an immediate identical re-push a full no-op.
+create temp table after_null_hash as
+select
+  (select to_jsonb(d) from public.documents d
+   where d.id = current_setting('test.d_legacy')::uuid) as document;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_id', false);
+select public.replace_word_occurrences(:'d_legacy', '[
+  {"language_code":"fr","lemma":"ancien","surface":"ancien","char_start":2,"char_end":8,"sentence":"L''ancien texte.","occurrences_count":3},
+  {"language_code":"fr","lemma":"ancienne","surface":"ancienne","char_start":10,"char_end":18,"sentence":"L''ancienne version.","occurrences_count":3}
+]'::jsonb);
+reset role;
+
+do $$
+declare
+  v_before jsonb;
+  v_after jsonb;
+begin
+  select document into v_before from after_null_hash;
+  select to_jsonb(d) into v_after from public.documents d
+  where d.id = current_setting('test.d_legacy')::uuid;
+  if v_after is distinct from v_before then
+    raise exception 'identical re-push after hash initialization changed the document';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- 1. Seeded projection: deduped counts, contexts, and hydrated state.
 -- ---------------------------------------------------------------------------
 

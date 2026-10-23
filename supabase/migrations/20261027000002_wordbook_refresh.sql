@@ -668,6 +668,8 @@ declare
   v_old_pairs jsonb;
   v_new_pairs jsonb;
   v_pairs jsonb;
+  v_deleted int;
+  v_upserted int;
   v_real_change boolean;
 begin
   if v_user_id is null then
@@ -746,6 +748,7 @@ begin
       where entry->>'lemma' = o.lemma
         and entry->>'surface' = o.surface
     );
+  get diagnostics v_deleted = row_count;
 
   insert into public.word_occurrences (
     user_id, document_id, language_code, lemma, surface,
@@ -781,43 +784,46 @@ begin
     excluded.sentence,
     excluded.occurrences_count
   );
+  get diagnostics v_upserted = row_count;
 
-  -- One set-based refresh for the union of old and new (language, lemma)
-  -- pairs. This is the only refresh call on the occurrence path.
-  select coalesce(
-           jsonb_agg(
-             jsonb_build_object(
-               'userId', v_user_id,
-               'languageCode', p.language_code,
-               'lemma', p.lemma
-             )
-             order by p.language_code, p.lemma
-           ),
-           '[]'::jsonb
-         )
-  into v_pairs
-  from (
-    select distinct
-      pair->>'languageCode' as language_code,
-      pair->>'lemma' as lemma
-    from jsonb_array_elements(v_old_pairs || v_new_pairs) as pair
-  ) p;
+  -- A real occurrence change is whatever the two writes actually wrote. A
+  -- NULL hash on a document whose rows already equal the payload (the first
+  -- push after Task 1 added the column) initializes the hash without being an
+  -- occurrence change: nothing was deleted or updated, so it must not refresh
+  -- the projection or claim occurrences_updated_at.
+  v_real_change := (v_deleted + v_upserted) > 0;
 
-  if v_pairs <> '[]'::jsonb then
-    perform public.refresh_wordbook_pairs(v_pairs);
+  if v_real_change then
+    -- One set-based refresh for the union of old and new (language, lemma)
+    -- pairs. This is the only refresh call on the occurrence path.
+    select coalesce(
+             jsonb_agg(
+               jsonb_build_object(
+                 'userId', v_user_id,
+                 'languageCode', p.language_code,
+                 'lemma', p.lemma
+               )
+               order by p.language_code, p.lemma
+             ),
+             '[]'::jsonb
+           )
+    into v_pairs
+    from (
+      select distinct
+        pair->>'languageCode' as language_code,
+        pair->>'lemma' as lemma
+      from jsonb_array_elements(v_old_pairs || v_new_pairs) as pair
+    ) p;
+
+    if v_pairs <> '[]'::jsonb then
+      perform public.refresh_wordbook_pairs(v_pairs);
+    end if;
   end if;
-
-  -- A change to an initialized document is always a real diff. An
-  -- uninitialized document (NULL hash) may only be claiming its hash: an empty
-  -- payload for an already-empty document is not an occurrence change, so it
-  -- must not claim occurrences_updated_at.
-  v_real_change := v_existing_hash is not null
-    or v_old_pairs <> '[]'::jsonb
-    or v_new_pairs <> '[]'::jsonb;
 
   -- A real change owns a new hash. server_updated_at is left to the existing
   -- set_server_updated_at trigger; updated_at is left alone because this is not
-  -- a content edit.
+  -- a content edit. The hash is stored even when no row was written (first
+  -- push after the hash column was added), so the next push short-circuits.
   update public.documents d
   set occurrences_hash = v_incoming_hash,
       occurrences_updated_at = case
