@@ -273,7 +273,20 @@ async function pullProjection(
     const limit = projectionPageLimit(PROJECTION_PAGE_MAX)
     const page = pass.full
       ? await pullProjectionPage(db, userId, pass.language, pass.bound, pass.cursor, limit)
-      : await pullProjectionPage(db, userId, pass.language, null, null, limit, pass.bound)
+      : await pullProjectionPage(
+          db,
+          userId,
+          pass.language,
+          null,
+          // The first page of an incremental pass starts at the watermark
+          // (`pass.cursor` is null), ignoring any stored cursor so rows that
+          // changed behind it are re-read. Later pages of the same pass advance
+          // by keyset, otherwise a change set of >= one page would fetch the
+          // same first page forever.
+          pass.cursor,
+          limit,
+          pass.bound,
+        )
 
     const pageBytes = page.reduce((sum, row) => sum + projectionRowBytes(row), 0)
     rows.push(...page)

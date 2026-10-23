@@ -460,8 +460,9 @@ describe('projection completeness', () => {
       db: client,
     })
 
-    // The incremental starts at the watermark, not at the stored cursor.
-    expect(calls.every((call) => call.afterLemma === null)).toBe(true)
+    // The incremental starts at the watermark and ignores the stored cursor.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.afterLemma).toBeNull()
     expect(calls.every((call) => call.updatedSince === OLDER_SNAPSHOT)).toBe(true)
     const rows = await readWordbookEntries('fr')
     expect(rows.find((row) => row.lemma === 'aaa-changed')?.note).toBe(
@@ -472,6 +473,47 @@ describe('projection completeness', () => {
     // after every row already applied.
     expect(projectionStateFor(await readProjectionState(USER_ID), 'fr').snapshot).toBe(SNAPSHOT)
   })
+
+  it('terminates a multi-page incremental pass and applies every row once', async () => {
+    const server = memoryServer(2000, SNAPSHOT)
+    const total = 1005
+    for (let index = 0; index < total; index++) {
+      server.add(
+        'wordbook_entries',
+        projectionRow({
+          lemma: `mot-${String(index).padStart(4, '0')}`,
+          note: 'changed',
+          server_updated_at: CHANGED_AT,
+        }),
+      )
+    }
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: true,
+        snapshot: OLDER_SNAPSHOT,
+        cursor: null,
+        hydratedAt: OLDER_SNAPSHOT,
+      },
+    })
+
+    const { client, calls } = recordingClient(server)
+    const report = await syncOnce({ userId: USER_ID, languages: ['fr'], db: client })
+
+    // First page from the watermark, then a keyset page after the last lemma of
+    // the first page. The 5-row short page ends the pass.
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatchObject({ afterLemma: null, updatedSince: OLDER_SNAPSHOT })
+    expect(calls[1]).toMatchObject({
+      afterLemma: 'mot-0999',
+      updatedSince: OLDER_SNAPSHOT,
+    })
+
+    const rows = await readWordbookEntries('fr')
+    expect(rows).toHaveLength(total)
+    expect(new Set(rows.map((row) => row.lemma)).size).toBe(total)
+    expect(report.projectionComplete.fr).toBe(true)
+    expect(projectionStateFor(await readProjectionState(USER_ID), 'fr').snapshot).toBe(SNAPSHOT)
+  }, 20_000)
 
   it('resumes a paused manual reset instead of clearing and restarting it', async () => {
     const server = memoryServer(2000, SNAPSHOT)
