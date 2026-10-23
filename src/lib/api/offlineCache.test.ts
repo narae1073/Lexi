@@ -24,6 +24,8 @@ vi.mock('../storage/localDb', () => ({
   STORES: { responseCache: 'responseCache' },
   idbGet: idb.readCached,
   idbPut: idb.writeCached,
+  idbGetAll: vi.fn(async () => []),
+  idbDelete: vi.fn(async () => undefined),
   idbDeleteByIndexRange: vi.fn(async () => 0),
 }))
 

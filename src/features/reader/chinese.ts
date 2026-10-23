@@ -4,6 +4,7 @@ import {
   ensureLindera,
   isLinderaReady,
   peekLindera,
+  requestDictionaryDownload,
   useLinderaUpgrade,
 } from './lindera'
 import { computeSentences } from './tokenizer'
@@ -34,6 +35,15 @@ export function isChineseReady(): boolean {
 
 export function ensureChineseTokenizer() {
   return ensureLindera('zh')
+}
+
+/**
+ * 설정 화면의 명시적 사전 다운로드.
+ *
+ * 7.25 MB zip 이므로 자동 다운로드 설정과 무관하게 크기를 보여 주고 확인을 받는다.
+ */
+export function downloadChineseDictionary() {
+  return requestDictionaryDownload('zh')
 }
 
 /**

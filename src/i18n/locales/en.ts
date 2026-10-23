@@ -308,6 +308,8 @@ export const en = {
     offline: 'Offline — showing a copy saved on this device.',
     hide: 'Hide',
     baseForm: 'Base form',
+    downloadPrompt:
+      'Download the {language} dictionary ({size})? It is stored on this device and works offline afterwards.',
   },
 
   note: {
@@ -368,6 +370,16 @@ export const en = {
     storageRequest: 'Ask the browser to keep data',
     storageUsage: 'Local data: {used} of {quota}',
     storageUnavailable: 'This browser does not report storage status.',
+    storageResponseCache:
+      'Offline translation and dictionary cache: up to {size}. Oldest entries are removed first.',
+    dictionaryTitle: 'Dictionaries',
+    dictionaryHint:
+      'Japanese ({jaSize}) and Chinese ({zhSize}) dictionaries are downloaded only when you allow it. They stay on this device and work offline.',
+    dictionaryAutoDownload: 'Download dictionaries without asking',
+    dictionaryAutoDownloadHint:
+      'When off, the app asks before each download. It asks anyway on a metered or slow connection.',
+    dictionaryDownload: 'Download ({size})',
+    dictionaryDownloaded: 'Downloaded — works offline',
     close: 'Close',
   },
 

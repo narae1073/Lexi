@@ -305,6 +305,8 @@ export const ko: Dictionary = {
     offline: '네트워크가 끊겨 이 기기에 저장돼 있던 결과입니다.',
     hide: '접기',
     baseForm: '기본형',
+    downloadPrompt:
+      '{language} 사전({size})을 내려받을까요? 한 번 받으면 이 기기에 저장되어 오프라인에서도 동작합니다.',
   },
 
   note: {
@@ -364,6 +366,16 @@ export const ko: Dictionary = {
     storageRequest: '브라우저에 데이터 보관 요청',
     storageUsage: '로컬 데이터: {used} / {quota}',
     storageUnavailable: '이 브라우저는 저장 공간 상태를 알려주지 않습니다.',
+    storageResponseCache:
+      '오프라인 번역·사전 캐시: 최대 {size}. 넘으면 오래된 것부터 지웁니다.',
+    dictionaryTitle: '사전',
+    dictionaryHint:
+      '일본어({jaSize})·중국어({zhSize}) 사전은 허락할 때만 받습니다. 받은 사전은 이 기기에 저장되어 오프라인에서도 동작합니다.',
+    dictionaryAutoDownload: '묻지 않고 사전 받기',
+    dictionaryAutoDownloadHint:
+      '끄면 받기 전에 항상 확인합니다. 데이터 절약 모드나 느린 연결에서는 켜 두어도 확인합니다.',
+    dictionaryDownload: '내려받기 ({size})',
+    dictionaryDownloaded: '받음 — 오프라인에서 동작',
     close: '닫기',
   },
 
