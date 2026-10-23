@@ -317,7 +317,10 @@ export async function seedPageQuota(config, userId, count = 59) {
      );`,
   )
   const intoWindow = seconds?.seconds ?? 0
-  if (intoWindow > 50) {
+  // Leave enough room for the browser reload and the first page request. A
+  // seed near the end of the epoch minute would roll into a fresh bucket and
+  // silently give the sync all 60 requests.
+  if (intoWindow > 40) {
     await new Promise((resolve) => setTimeout(resolve, (61 - intoWindow) * 1000))
   }
   await psql(
@@ -355,27 +358,38 @@ export async function clearProjectionQuota(config, userId) {
  * directly to every live worker after the UI has settled and reports the first
  * answer: the computation and its result serialization, not queueing.
  */
-export async function measureWorkerProgress(ctx) {
+export async function measureWorkerProgress(ctx, statuses = undefined) {
+  const payload = statuses === undefined ? '' : `, statuses: ${JSON.stringify(statuses)}`
   return ctx.page.evaluate(`(async () => {
     const workers = window.__r3Workers || [];
     if (workers.length === 0) return { ms: -1, progress: 0 };
     const id = 2_000_000_000;
     const started = performance.now();
-    const answers = await Promise.all(workers.map((worker) => new Promise((resolve) => {
-      const timer = setTimeout(() => { worker.removeEventListener('message', onMessage); resolve(null); }, 3000);
-      const onMessage = (event) => {
-        const data = event.data;
-        if (!data || data.id !== id || data.type !== 'progress') return;
-        clearTimeout(timer);
-        worker.removeEventListener('message', onMessage);
-        resolve(data.progress || {});
+    return await new Promise((resolve) => {
+      let settled = false;
+      const cleanups = [];
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        for (const cleanup of cleanups) cleanup();
+        resolve(value);
       };
-      worker.addEventListener('message', onMessage);
-      worker.postMessage({ type: 'progress', id });
-    })));
-    const answer = answers.find((value) => value !== null);
-    if (answer === undefined) return { ms: -2, progress: 0 };
-    return { ms: performance.now() - started, progress: Object.keys(answer).length };
+      const timer = setTimeout(() => finish({ ms: -2, progress: 0 }), 3000);
+      cleanups.push(() => clearTimeout(timer));
+      for (const worker of workers) {
+        const onMessage = (event) => {
+          const data = event.data;
+          if (!data || data.id !== id || data.type !== 'progress') return;
+          finish({
+            ms: performance.now() - started,
+            progress: Object.keys(data.progress || {}).length,
+          });
+        };
+        worker.addEventListener('message', onMessage);
+        cleanups.push(() => worker.removeEventListener('message', onMessage));
+        worker.postMessage({ type: 'progress', id${payload} });
+      }
+    });
   })()`)
 }
 

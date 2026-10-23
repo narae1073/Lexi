@@ -367,8 +367,9 @@ export function searchProjectionEntries<T extends Pick<WordbookEntry, 'lemma' | 
 export function computeDocumentProgress(
   entries: readonly ProgressEntry[],
   documents?: readonly ProgressDocument[],
+  statusOf?: (entry: ProgressEntry) => ProgressEntry['status'],
 ): Map<string, DocumentProgress> {
-  if (documents) return computeProgressForDocuments(entries, documents)
+  if (documents) return computeProgressForDocuments(entries, documents, statusOf)
 
   const byDocument = new Map<string, Map<string, boolean>>()
   /**
@@ -382,7 +383,7 @@ export function computeDocumentProgress(
   const seenAt = new Map<string, number>()
 
   entries.forEach((entry, entryIndex) => {
-    const marked = entry.status !== 'unmarked'
+    const marked = (statusOf ? statusOf(entry) : entry.status) !== 'unmarked'
     const visit = (id: string | undefined) => {
       if (!id || seenAt.get(id) === entryIndex) return
       seenAt.set(id, entryIndex)
@@ -445,6 +446,7 @@ function summarizeLemmas(lemmas: Map<string, boolean>): DocumentProgress {
 function computeProgressForDocuments(
   entries: readonly ProgressEntry[],
   documents: readonly ProgressDocument[],
+  statusOf?: (entry: ProgressEntry) => ProgressEntry['status'],
 ): Map<string, DocumentProgress> {
   const live = documents.filter((doc) => !doc.deletedAt)
   const indexById = new Map<string, number>()
@@ -454,7 +456,7 @@ function computeProgressForDocuments(
   const lemmasByDocument: Array<Map<string, boolean> | undefined> = new Array(live.length)
 
   entries.forEach((entry, entryIndex) => {
-    const marked = entry.status !== 'unmarked'
+    const marked = (statusOf ? statusOf(entry) : entry.status) !== 'unmarked'
     const visit = (id: string | undefined) => {
       if (!id) return
       const index = indexById.get(id)

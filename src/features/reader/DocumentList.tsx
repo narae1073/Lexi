@@ -275,8 +275,15 @@ export function DocumentList() {
         entry.status ?? 'unmarked',
       )
     }
+    // Adopt the snapshot before sending so the next progress request can stay
+    // small. If the rebuild fails, the worker still holds the previous dataset;
+    // restore the matching snapshot unless a newer rebuild has replaced it.
+    const previousStatuses = rebuiltStatusRef.current
     rebuiltStatusRef.current = rebuiltStatuses
     void progressWorker.rebuild(entries, '').catch((error) => {
+      if (rebuiltStatusRef.current === rebuiltStatuses) {
+        rebuiltStatusRef.current = previousStatuses
+      }
       console.error('문서 진도 준비 실패', error)
     })
   }, [localOnly, projectionDataRevision, projectionReadyLanguages, progressWorker])

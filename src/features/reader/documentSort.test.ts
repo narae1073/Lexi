@@ -89,6 +89,48 @@ describe('문서 정렬', () => {
     expect(ids(list)).toEqual(['long', 'short'])
   })
 
+  it('메타데이터만 있는 문서는 서버 charCount 로 길이를 정한다', () => {
+    const list = sortDocuments(
+      [
+        doc('short', { rawText: '', hasContent: false, charCount: 2200 }),
+        doc('long', { rawText: '', hasContent: false, charCount: 6600 }),
+        doc('medium', { rawText: '', hasContent: false, charCount: 4400 }),
+      ],
+      'longest',
+    )
+    expect(ids(list)).toEqual(['long', 'medium', 'short'])
+    expect(documentLength(doc('meta', { rawText: '', hasContent: false, charCount: 42 }))).toBe(42)
+  })
+
+  it('charCount 가 남아 있는 rawText 보다 우선한다', () => {
+    // 본문은 기기에 남아 있지만 서버 길이가 진실이다 — 지금 화면의 길이와
+    // 정렬이 같은 값을 써야 한다.
+    expect(documentLength(doc('mixed', { rawText: 'tiny', charCount: 6600 }))).toBe(6600)
+    expect(
+      ids(
+        sortDocuments(
+          [
+            doc('a', { rawText: 'x'.repeat(10), charCount: 10 }),
+            doc('b', { rawText: 'x'.repeat(20), charCount: 30 }),
+          ],
+          'longest',
+        ),
+      ),
+    ).toEqual(['b', 'a'])
+  })
+
+  it('길이가 같으면 제목 오름차순으로 안정적이다', () => {
+    const list = sortDocuments(
+      [
+        doc('zulu', { title: 'Zulu', rawText: '', hasContent: false, charCount: 100 }),
+        doc('alpha', { title: 'Alpha', rawText: '', hasContent: false, charCount: 100 }),
+        doc('mike', { title: 'Mike', rawText: '', hasContent: false, charCount: 100 }),
+      ],
+      'longest',
+    )
+    expect(list.map((document) => document.title)).toEqual(['Alpha', 'Mike', 'Zulu'])
+  })
+
   it('글자 수를 셀 때 앞뒤 공백을 제외한다', () => {
     expect(documentLength(doc('a', { rawText: '  hello  ' }))).toBe(5)
     expect(documentLength(doc('a', { rawText: '   ' }))).toBe(0)

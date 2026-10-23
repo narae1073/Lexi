@@ -379,16 +379,18 @@ export function handleWordbookRequest(
   const rawEntries =
     request.entries ??
     datasets.flatMap((dataset) => [...dataset.entries])
-  let entries = rawEntries as unknown as readonly ProgressEntry[]
-  if (statuses) {
-    entries = entries.map((entry) => {
-      const languageCode = (entry as { languageCode?: string }).languageCode
-      if (!languageCode) return entry
-      const status = statuses[`${languageCode}::${entry.lemma}`]
-      return status === undefined ? entry : { ...entry, status }
-    })
-  }
-  const progress = computeDocumentProgress(entries, request.documents)
+  const statusOf = statuses
+    ? (entry: ProgressEntry): ProgressEntry['status'] => {
+        const languageCode = (entry as { languageCode?: string }).languageCode
+        if (!languageCode) return entry.status
+        return statuses[`${languageCode}::${entry.lemma}`] ?? entry.status
+      }
+    : undefined
+  const progress = computeDocumentProgress(
+    rawEntries as unknown as readonly ProgressEntry[],
+    request.documents,
+    statusOf,
+  )
   return { type: 'progress', progress: Object.fromEntries(progress) }
 }
 

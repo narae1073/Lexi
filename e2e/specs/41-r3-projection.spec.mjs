@@ -49,9 +49,16 @@ const MEDIUM_COUNT = 400
 const SHORT_COUNT = 200
 const KNOWN_LEMMA = 'r3word0001'
 const SEARCH_LEMMA = 'r3word0002'
-const LONG_TITLE = 'Long passage'
-const MEDIUM_TITLE = 'Medium passage'
-const SHORT_TITLE = 'Short passage'
+// Alphabetical order (Alpha, Mike, Zulu) differs from length order
+// (Zulu, Mike, Alpha), so a length sort cannot pass by tie-break accident.
+const LONG_TITLE = 'Zulu long passage'
+const MEDIUM_TITLE = 'Mike medium passage'
+const SHORT_TITLE = 'Alpha short passage'
+const EXPECTED_COUNTS = {
+  [LONG_TITLE]: 6600,
+  [MEDIUM_TITLE]: 4400,
+  [SHORT_TITLE]: 2200,
+}
 
 function sleep(ms = 250) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -159,8 +166,24 @@ function fixtureSql(userId) {
   `
 }
 
-function wordbookCounts(ctx) {
-  return ctx.page.evaluate(`(() => {
+/** Occurrence table reads after a request-log index. */
+function occurrenceReadsSince(log, start) {
+  return tableReads(log.slice(start), 'word_occurrences')
+}
+
+/**
+ * Full word_states reads after an index.
+ *
+ * An incremental sync filters `server_updated_at`; a first/full pull does not.
+ * The lazy-open gate only forbids re-downloading the whole state table.
+ */
+function fullStateReadsSince(log, start) {
+  return tableReads(log.slice(start), 'word_states').filter(
+    (entry) => !entry.url.includes('server_updated_at='),
+  )
+}
+
+function wordbookCounts(ctx) {  return ctx.page.evaluate(`(() => {
     const row = [...document.querySelectorAll('button[aria-pressed]')].find((b) => /\\d/.test(b.innerText));
     return row ? [...row.parentElement.children].map((c) => (c.innerText.match(/(\\d+)/)?.[1] ?? '0')) : [];
   })()`)
@@ -226,10 +249,34 @@ export async function run(ctx) {
       tableReads(firstLog, 'word_states').length === 0,
       `${tableReads(firstLog, 'word_states').length} requests`,
     )
+    const metadataReads = [
+      ...tableReads(firstLog, 'user_languages'),
+      ...tableReads(firstLog, 'documents'),
+      ...tableReads(firstLog, 'folders'),
+    ]
+    const lastMetadataAt = Math.max(0, ...metadataReads.map((entry) => entry.at))
     ctx.check(
-      'first sync requests projection pages only after metadata',
-      firstPages.length >= 2,
-      `${firstPages.length} projection requests`,
+      'projection pages are requested only after the metadata reads',
+      firstPages.length > 0 && firstPages[0].at > lastMetadataAt,
+      `projection at ${firstPages[0]?.at?.toFixed(1) ?? 'n/a'}, metadata ended at ${lastMetadataAt.toFixed(1)}`,
+    )
+    const snapshots = new Set(firstPages.map((page) => page.params?.p_snapshot))
+    ctx.check(
+      'first sync pages are snapshot-bounded, not incremental or unbounded',
+      snapshots.size === 1 &&
+        [...snapshots][0] !== null &&
+        firstPages.every(
+          (page) => page.params?.p_updated_since === null && page.params?.p_limit === 1000,
+        ),
+      `snapshots=${JSON.stringify([...snapshots])}, ` +
+        `limits=${firstPages.map((page) => page.params?.p_limit).join(',')}`,
+    )
+    ctx.check(
+      'first sync requests the page after the first one (quota interruption point)',
+      firstPages.length === 2 && firstPages[1].params?.p_after_lemma === 'r3word1000',
+      `${firstPages.length} requests; cursors ${JSON.stringify(
+        firstPages.map((page) => page.params?.p_after_lemma ?? null),
+      )}`,
     )
     ctx.check(
       'first page started at the first lemma',
@@ -292,12 +339,28 @@ export async function run(ctx) {
       finalRows.length === LONG_COUNT + MEDIUM_COUNT + SHORT_COUNT,
       `${finalRows.length} rows`,
     )
+    // A settle point after the projection pass: later checks assert that UI
+    // actions add no source-row reads.
+    await sleep(1500)
+    const postSyncLogLength = (await requests(ctx)).length
 
     // ── wordbook: status hydrated from the projection, search works ───────
+    const beforeFirstWordbook = (await requests(ctx)).length
     await navigate(ctx, '/wordbook')
     await ctx.waitFor(`!!document.querySelector('input[placeholder]')`, 'wordbook')
     await gotoUnmarkedTab(ctx)
     await waitForWordbookRows(ctx)
+    const firstWordbookLog = await requests(ctx)
+    ctx.check(
+      'opening the wordbook on the first device reads no occurrence rows',
+      occurrenceReadsSince(firstWordbookLog, beforeFirstWordbook).length === 0,
+      `${occurrenceReadsSince(firstWordbookLog, beforeFirstWordbook).length} reads`,
+    )
+    ctx.check(
+      'opening the wordbook on the first device triggers no full word_states read',
+      fullStateReadsSince(firstWordbookLog, beforeFirstWordbook).length === 0,
+      `${fullStateReadsSince(firstWordbookLog, beforeFirstWordbook).length} full reads`,
+    )
     const counts = await wordbookCounts(ctx)
     ctx.check(
       'every projected word reaches the wordbook',
@@ -325,11 +388,18 @@ export async function run(ctx) {
     const countsOnList = await ctx.page.evaluate(`(() =>
       [...document.querySelectorAll('a[href^="/read/"]')].map((a) => a.innerText)
     )()`)
+    const expectedCounts = Object.entries(EXPECTED_COUNTS).map(
+      ([title, count]) => `${title}|${count}`,
+    )
     ctx.check(
-      'metadata-only documents show their server character count',
+      'metadata-only documents show their exact server character count',
       countsOnList.length === 3 &&
-        countsOnList.every((text) => /\d+ characters|\d+ chars|글자/.test(text)),
-      countsOnList.map((text) => text.replace(/\n/g, ' | ').slice(0, 60)).join(' / '),
+        expectedCounts.every((entry) => {
+          const [title, count] = entry.split('|')
+          const row = countsOnList.find((text) => text.includes(title))
+          return row !== undefined && row.includes(`· ${count} chars ·`)
+        }),
+      countsOnList.map((text) => text.replace(/\n/g, ' | ').slice(0, 70)).join(' / '),
     )
     ctx.check(
       'no document body was downloaded to build the list',
@@ -399,6 +469,16 @@ export async function run(ctx) {
       tableWrites(afterOpenLog, 'documents').length === 0,
       `${tableWrites(afterOpenLog, 'documents').length} document writes`,
     )
+    ctx.check(
+      'opening/reopening reads no occurrence table rows',
+      occurrenceReadsSince(afterOpenLog, postSyncLogLength).length === 0,
+      `${occurrenceReadsSince(afterOpenLog, postSyncLogLength).length} reads`,
+    )
+    ctx.check(
+      'opening/reopening triggers no full word_states read',
+      fullStateReadsSince(afterOpenLog, postSyncLogLength).length === 0,
+      `${fullStateReadsSince(afterOpenLog, postSyncLogLength).length} full reads`,
+    )
 
     // ── offline: the wordbook is projection-backed ────────────────────────
     await navigate(ctx, '/wordbook')
@@ -431,6 +511,8 @@ export async function run(ctx) {
     await startSession(ctx, { config, session })
     await waitForAppReady(ctx)
     await waitForProjectionComplete(ctx, user.id, PROJECTION_LANGUAGE, 180_000)
+    await sleep(1000)
+    const secondBaseline = (await requests(ctx)).length
 
     const secondContent = await storeCount(ctx, 'documentContent')
     const secondOccurrences = await storeCount(ctx, 'wordOccurrences')
@@ -455,6 +537,17 @@ export async function run(ctx) {
     await ctx.waitFor(`!!document.querySelector('input[placeholder]')`, 'wordbook')
     await gotoUnmarkedTab(ctx)
     await waitForWordbookRows(ctx)
+    const secondWordbookLog = await requests(ctx)
+    ctx.check(
+      'opening the wordbook on the new device reads no occurrence rows',
+      occurrenceReadsSince(secondWordbookLog, secondBaseline).length === 0,
+      `${occurrenceReadsSince(secondWordbookLog, secondBaseline).length} reads`,
+    )
+    ctx.check(
+      'opening the wordbook on the new device triggers no full word_states read',
+      fullStateReadsSince(secondWordbookLog, secondBaseline).length === 0,
+      `${fullStateReadsSince(secondWordbookLog, secondBaseline).length} full reads`,
+    )
     const secondCounts = await wordbookCounts(ctx)
     ctx.check(
       'the new device wordbook is complete without document text',

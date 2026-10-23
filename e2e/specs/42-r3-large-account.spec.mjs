@@ -21,6 +21,7 @@ import {
   navigate,
   passwordSession,
   projectionRequests,
+  psql,
   psqlJson,
   readProjectionState,
   requests,
@@ -124,7 +125,16 @@ export async function run(ctx) {
   await waitForAppReady(ctx, 300_000)
   const syncMs = Date.now() - syncStarted
   const complete = await waitForProjectionComplete(ctx, user.id, PROJECTION_LANGUAGE, 300_000)
-  ctx.check('projection pass completes for the 200k account', complete?.complete === true, JSON.stringify(complete ?? null))
+  const passMs =
+    complete?.snapshot && complete?.hydratedAt
+      ? Date.parse(complete.hydratedAt) - Date.parse(complete.snapshot)
+      : Number.NaN
+  ctx.check(
+    'projection pass completes for the 200k account',
+    complete?.complete === true,
+    `${JSON.stringify(complete ?? null)}; pass ${passMs.toFixed(0)} ms, ` +
+      `app start to completion ${syncMs} ms`,
+  )
 
   const firstLog = await requests(ctx)
   ctx.check(
@@ -138,10 +148,22 @@ export async function run(ctx) {
     `${tableReads(firstLog, 'word_states').length} requests`,
   )
   const pages = projectionRequests(firstLog)
+  const expectedPages = Math.floor(fixture.projection / 1000) + 1
+  const snapshots = new Set(pages.map((page) => page.params?.p_snapshot))
   ctx.check(
-    'projection is downloaded in bounded pages',
-    pages.length >= Math.ceil(fixture.projection / 1000),
-    `${pages.length} pages for ${fixture.projection} rows`,
+    'projection is downloaded in exactly the bounded page sequence',
+    pages.length === expectedPages &&
+      snapshots.size === 1 &&
+      pages.every(
+        (page) =>
+          page.params?.p_limit === 1000 &&
+          page.params?.p_updated_since === null &&
+          page.params?.p_snapshot !== null,
+      ) &&
+      pages[0]?.params?.p_after_lemma === null &&
+      pages.slice(1).every((page) => typeof page.params?.p_after_lemma === 'string'),
+    `${pages.length} pages (expected ${expectedPages}) for ${fixture.projection} rows; ` +
+      `snapshots=${JSON.stringify([...snapshots])}`,
   )
 
   const localRows = await storeRows(ctx, 'wordbookEntries')
@@ -149,6 +171,18 @@ export async function run(ctx) {
     'every projected lemma is stored locally',
     localRows.length === fixture.projection,
     `${localRows.length} / ${fixture.projection}`,
+  )
+  const sample = localRows[0]
+  ctx.check(
+    'local wordbook rows carry server projection data (contexts + watermark)',
+    Boolean(
+      sample &&
+        Array.isArray(sample.contexts) &&
+        sample.contexts.length > 0 &&
+        typeof sample.serverUpdatedAt === 'string' &&
+        typeof sample.occurrenceCount === 'number',
+    ),
+    JSON.stringify(sample ? Object.keys(sample) : null),
   )
 
   const state = await readProjectionState(ctx, user.id)
@@ -176,7 +210,6 @@ export async function run(ctx) {
     return -2;
   })()`)
   ctx.check('wordbook first render within 2.5 s', renderMs >= 0 && renderMs < 2500, `${renderMs.toFixed(1)} ms`)
-  ctx.check('200k wordbook first render path is the projection', true, `sync ${syncMs} ms`)
 
   const counts = await wordbookCounts(ctx)
   const totalVisible = counts.slice(0, 5).reduce((sum, count) => sum + Number(count), 0)
@@ -185,6 +218,10 @@ export async function run(ctx) {
     totalVisible >= fixture.projection,
     `${totalVisible} in tabs; expected >= ${fixture.projection}`,
   )
+
+  // Let background hydration/rebuild effects settle so the search budget
+  // measures the worker's search, not an unrelated rebuild queue.
+  await sleep(1200)
 
   // ── search within target ───────────────────────────────────────────────
   const searchMs = await ctx.page.evaluate(`(async () => {
@@ -230,6 +267,16 @@ export async function run(ctx) {
       `${progressCalls.map((call) => `${call.ms.toFixed(1)}(${call.statusCount ?? '—'})`).join(', ') || '(none)'} ` +
       `(UI ready ${progressWallMs} ms)`,
   )
+
+  const overrideStatus = fixture.status === 'known' ? 'unknown' : 'known'
+  const override = await measureWorkerProgress(ctx, {
+    [`en::${fixture.lemma}`]: overrideStatus,
+  })
+  ctx.check(
+    'document progress status-override path under 100 ms',
+    override.ms >= 0 && override.ms < 100 && override.progress > 0,
+    `${override.ms.toFixed(1)} ms for ${override.progress} documents with 1 override`,
+  )
   ctx.check(
     'wordbook rebuild stays under 2.5 s',
     Number.isFinite(rebuildMs) && rebuildMs < 2500,
@@ -242,6 +289,40 @@ export async function run(ctx) {
     'UI interaction does not re-download occurrence rows',
     tableReads(afterUiLog, 'word_occurrences').length === 0,
     `${tableReads(afterUiLog, 'word_occurrences').length} requests`,
+  )
+
+  // The fixture is shared with the refresh load gate. Restore the one status
+  // this spec taps so the next gate sees the documented seed state.
+  await sleep(2000)
+  if (fixture.status !== null) {
+    await psql(
+      config,
+      `
+      update public.word_states
+      set status = ${sqlLiteral(fixture.status)}
+      where user_id = ${sqlLiteral(user.id)}::uuid
+        and language_code = 'en'
+        and lemma = ${sqlLiteral(fixture.lemma)};
+      `,
+    )
+  }
+  const restored = await psqlJson(
+    config,
+    `
+    select jsonb_build_object(
+      'status', (
+        select status from public.wordbook_entries
+        where user_id = ${sqlLiteral(user.id)}::uuid
+          and language_code = 'en'
+          and lemma = ${sqlLiteral(fixture.lemma)}
+      )
+    );
+    `,
+  )
+  ctx.check(
+    'fixture status is restored after the tap',
+    restored?.status === fixture.status,
+    `projection status ${JSON.stringify(restored?.status)} (expected ${JSON.stringify(fixture.status)})`,
   )
 }
 

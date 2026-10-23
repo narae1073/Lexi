@@ -13,6 +13,10 @@ const JA_TEXT = `昨日パンを食べた。今日も食べています。
 関西国際空港で買ったお土産だ。`
 
 export async function run(ctx) {
+  // R3 makes dictionary downloads ask-by-default. This spec is about the
+  // tokenizer, not the consent prompt: opt in before the document opens so a
+  // native window.confirm() cannot block the CDP session.
+  await ctx.page.evaluate(`localStorage.setItem('lexi.dictionary.autoDownload', 'true'); true`)
   await ctx.enrollLanguage('Japanese')
   await ctx.createDocument(JA_TEXT, 'Japanese')
   await sleep(2500) // 등장 기록은 유휴 시점에 기록된다

@@ -13,6 +13,10 @@ const ZH_TEXT = `我昨天去北京大学了。
 他把苹果吃了。`
 
 export async function run(ctx) {
+  // R3 makes dictionary downloads ask-by-default. This spec is about the
+  // tokenizer, not the consent prompt: opt in before the document opens so a
+  // native window.confirm() cannot block the CDP session.
+  await ctx.page.evaluate(`localStorage.setItem('lexi.dictionary.autoDownload', 'true'); true`)
   await ctx.enrollLanguage('Chinese (Simplified)')
   await ctx.createDocument(ZH_TEXT, 'Chinese (Simplified)')
   await sleep(2500) // 등장 기록은 유휴 시점에 기록된다

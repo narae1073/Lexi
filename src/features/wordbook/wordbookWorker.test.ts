@@ -52,6 +52,34 @@ function largeFixture(size = 116_000): WordbookEntry[] {
   return entries
 }
 
+/** 25k projection rows with 200k contexts — the 200k-fixture client shape. */
+function projectionFixture(count = 25_000, documentCount = 1112): ProjectionWordbookEntry[] {
+  return Array.from({ length: count }, (_, index) => {
+    const documentIds = Array.from({ length: 8 }, (_, offset) => `d${(index * 8 + offset) % documentCount}`)
+    const lemma = `w${index}`
+    return {
+      lemma,
+      languageCode: 'en',
+      surfaces: [lemma],
+      status: index === 0 ? 'known' : 'unmarked',
+      favorite: false,
+      sentence: '',
+      documentId: documentIds[0],
+      documentTitle: documentIds[0],
+      contexts: documentIds.map((documentId) => ({
+        documentId,
+        documentTitle: documentId,
+        sentence: '',
+      })),
+      documentIds,
+      lastSeenAt: '',
+      knownPresses: 0,
+      count: 1,
+      documentCount: 8,
+    } as unknown as ProjectionWordbookEntry
+  })
+}
+
 /**
  * A fake worker that runs the real protocol handler on a later task.
  *
@@ -219,6 +247,37 @@ describe('wordbook worker boundary', () => {
     expect(worker.messages.map((message) => message.type)).toEqual(['progress'])
     client.terminate()
   })
+
+  it('computes 200k-context progress and a status override within 100 ms', async () => {
+    const entries = projectionFixture()
+    const worker = new FakeWorker()
+    const client = createWordbookWorkerClient({ worker })
+    const documents = Array.from({ length: 1112 }, (_, index) => ({ id: `d${index}` }))
+
+    await client.rebuild(entries, 'en')
+    const cachedStarted = performance.now()
+    const cached = await client.progress(undefined, documents)
+    const cachedMs = performance.now() - cachedStarted
+
+    // Take the best of three warm runs: this is a computation budget, not a
+    // scheduler-contention gate (the e2e spec measures the browser path).
+    let overrideMs = Number.POSITIVE_INFINITY
+    let overridden = cached
+    for (let run = 0; run < 3; run += 1) {
+      const overrideStarted = performance.now()
+      overridden = await client.progress(undefined, documents, { 'en::w0': 'unmarked' })
+      overrideMs = Math.min(overrideMs, performance.now() - overrideStarted)
+    }
+
+    expect(cached.size).toBe(1112)
+    expect(cached.get('d0')?.total).toBeGreaterThan(0)
+    expect(cached.get('d0')?.marked).toBe(1)
+    expect(overridden.get('d0')?.marked).toBe(0)
+    // Same 100 ms target as document progress in the 200k e2e gate.
+    expect(cachedMs).toBeLessThan(100)
+    expect(overrideMs).toBeLessThan(100)
+    client.terminate()
+  }, 20_000)
 
   it('falls back to the same semantics when no Worker exists', async () => {
     const client = createWordbookWorkerClient({ inline: true })
