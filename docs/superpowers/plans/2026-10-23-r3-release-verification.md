@@ -6,7 +6,7 @@ No production migration, deployment, or production data change was performed.
 - Plan: `/home/achi/.opencode/plan/2026-10-23-r3-scale-data-usage.md`
 - Branch: `r3-scale-data-usage`
 - Pre-verification HEAD: `044a642` (`fix(sync): validate projection pass codes and harden R3 metrics gates`)
-- R3 e2e gates commit: `9cd065b` (`test(r3): add projection and large-account release gates`)
+- R3 e2e gates commit: `7296c83` (`test(r3): add projection and large-account release gates`)
 
 The only Supabase target used below was the local stack at
 `http://127.0.0.1:54321` (project `translator`). `.env.local` pointed the build
