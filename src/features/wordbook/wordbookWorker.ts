@@ -120,6 +120,15 @@ type Dataset = {
   entries: readonly WorkerDatasetEntry[]
   /** Sorted lazily for local builds — `null` means "sort on the next search". */
   index: IndexEntry[] | null
+  /**
+   * Document progress from these entries without status overrides.
+   *
+   * DocumentList requests progress on every app start. Recomputing the same
+   * 25k-row/200k-context projection for an unchanged dataset was the difference
+   * between the 100 ms target and a measured ~145 ms; the rebuild now pays the
+   * cost once and the request filters the cached map.
+   */
+  progress: Map<string, DocumentProgress> | null
 }
 
 /**
@@ -282,7 +291,7 @@ function handleLocalRebuild(
     // The search dataset shares these rows. The index is invalidated rather than
     // re-sorted here: the next search pays that cost once, so a document edit
     // stays proportional to the document, not to the language.
-    state.datasets.set(languageCode, { entries, index: null })
+    state.datasets.set(languageCode, { entries, index: null, progress: null })
   }
 
   const build: LocalProjectionBuild = {
@@ -309,6 +318,12 @@ export function handleWordbookRequest(
     state.datasets.set(languageCode, {
       entries: request.entries,
       index: indexOf(request.entries, languageCode),
+      // Progress is part of the same rebuild: DocumentList asks for it right
+      // after app start, and walking 200k contexts inside that request was the
+      // difference between a 62 ms and a 100+ ms round trip.
+      progress: computeDocumentProgress(
+        request.entries as unknown as readonly ProgressEntry[],
+      ),
     })
     // An account projection replaces any local-only rows for the language: after
     // a device links an account, the server copy is the authority.
@@ -343,12 +358,29 @@ export function handleWordbookRequest(
     return { type: 'search', lemmas, total: lemmas.length }
   }
 
+  const datasets = [...state.datasets.values()]
+  const statuses = request.statuses
+  /**
+   * The common request has no overrides: DocumentList's status map only carries
+   * rows that differ from what the worker rebuilt. Reuse the rebuild's progress
+   * and filter it to the live documents instead of walking every context again.
+   */
+  if (request.entries === undefined && (!statuses || Object.keys(statuses).length === 0)) {
+    const merged = new Map<string, DocumentProgress>()
+    for (const dataset of datasets) {
+      dataset.progress ??= computeDocumentProgress(
+        dataset.entries as unknown as readonly ProgressEntry[],
+      )
+      for (const [documentId, entry] of dataset.progress) merged.set(documentId, entry)
+    }
+    return { type: 'progress', progress: Object.fromEntries(filterProgress(merged, request.documents)) }
+  }
+
   const rawEntries =
     request.entries ??
-    [...state.datasets.values()].flatMap((dataset) => [...dataset.entries])
+    datasets.flatMap((dataset) => [...dataset.entries])
   let entries = rawEntries as unknown as readonly ProgressEntry[]
-  if (request.statuses) {
-    const statuses = request.statuses
+  if (statuses) {
     entries = entries.map((entry) => {
       const languageCode = (entry as { languageCode?: string }).languageCode
       if (!languageCode) return entry
@@ -358,6 +390,20 @@ export function handleWordbookRequest(
   }
   const progress = computeDocumentProgress(entries, request.documents)
   return { type: 'progress', progress: Object.fromEntries(progress) }
+}
+
+/** Keeps only live document ids when the caller supplies the document list. */
+function filterProgress(
+  progress: Map<string, DocumentProgress>,
+  documents: readonly ProgressDocument[] | undefined,
+): Map<string, DocumentProgress> {
+  if (documents === undefined) return progress
+  const allowed = new Set(documents.filter((doc) => !doc.deletedAt).map((doc) => doc.id))
+  const filtered = new Map<string, DocumentProgress>()
+  for (const [documentId, entry] of progress) {
+    if (allowed.has(documentId)) filtered.set(documentId, entry)
+  }
+  return filtered
 }
 
 /** Minimal worker surface this client needs; tests provide a fake with the same shape. */

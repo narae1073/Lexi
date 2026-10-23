@@ -15,6 +15,7 @@ import { buildWordbook, type WordbookEntry } from '../wordbook/buildWordbook'
 import {
   preparationProgress,
   resolveWordbookPresentation,
+  type ProjectionWordbookEntry,
 } from '../wordbook/wordbookProjection'
 import { QuizAnswerButtons } from './QuizAnswerButtons'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
@@ -47,6 +48,14 @@ type DictionaryTarget = {
 /** 사전 상자는 단어 팝오버와 같은 폭을 쓴다 — 같은 사전이 두 곳에서 달라 보이지 않게 */
 const DICTIONARY_WIDTH = 300
 const EMPTY_PAUSED: string[] = []
+/**
+ * Stable empty projection list.
+ *
+ * A selector that returns a fresh `[]` on every store read makes Zustand v5's
+ * `useSyncExternalStore` see a changed snapshot forever (React #185). The quiz
+ * reads this slice before the local producer has built its rows.
+ */
+const EMPTY_PROJECTION: ProjectionWordbookEntry[] = []
 
 /**
  * 단어 퀴즈.
@@ -78,7 +87,7 @@ export function QuizView() {
   const [phase, setPhase] = useState<Phase>('setup')
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(enrolled[0] ?? null)
   const projectionEntries = useWordbookStore(
-    (s) => s.entriesByLanguage[languageCode ?? ''] ?? [],
+    (s) => s.entriesByLanguage[languageCode ?? ''] ?? EMPTY_PROJECTION,
   )
   const projectionComplete = useWordbookStore(
     (s) => s.projectionCompleteByLanguage[languageCode ?? ''] === true,

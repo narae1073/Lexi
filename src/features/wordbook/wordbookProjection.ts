@@ -368,26 +368,24 @@ export function computeDocumentProgress(
   entries: readonly ProgressEntry[],
   documents?: readonly ProgressDocument[],
 ): Map<string, DocumentProgress> {
-  const allowed = documents
-    ? new Set(documents.filter((doc) => !doc.deletedAt).map((doc) => doc.id))
-    : null
-  const byDocument = new Map<string, Map<string, boolean>>()
+  if (documents) return computeProgressForDocuments(entries, documents)
 
-  for (const entry of entries) {
+  const byDocument = new Map<string, Map<string, boolean>>()
+  /**
+   * One shared de-duplication table instead of a Set per entry.
+   *
+   * Every entry can carry the same document several times (one context per
+   * sentence), and a 200k fixture has tens of thousands of entries. Allocating
+   * a Set for each one was measurable in the document-progress round trip; the
+   * stamp is the entry's position, so a document is visited once per entry.
+   */
+  const seenAt = new Map<string, number>()
+
+  entries.forEach((entry, entryIndex) => {
     const marked = entry.status !== 'unmarked'
-    const fromContexts = entry.documentIds ?? entry.contexts.map((context) => context.documentId)
-    const ids =
-      fromContexts.some((id) => id !== undefined)
-        ? fromContexts
-        : entry.documentId
-          ? [entry.documentId]
-          : []
-    if (ids.length === 0) continue
-    const seen = new Set<string>()
-    for (const id of ids) {
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      if (allowed && !allowed.has(id)) continue
+    const visit = (id: string | undefined) => {
+      if (!id || seenAt.get(id) === entryIndex) return
+      seenAt.set(id, entryIndex)
       let lemmas = byDocument.get(id)
       if (!lemmas) {
         lemmas = new Map()
@@ -396,18 +394,86 @@ export function computeDocumentProgress(
       // A lemma is one word per document even when it has many contexts there.
       if (!lemmas.has(entry.lemma)) lemmas.set(entry.lemma, marked)
     }
-  }
+
+    visitEntryDocuments(entry, visit)
+  })
 
   const progress = new Map<string, DocumentProgress>()
   for (const [documentId, lemmas] of byDocument) {
-    let marked = 0
-    for (const isMarked of lemmas.values()) if (isMarked) marked += 1
-    const total = lemmas.size
-    progress.set(documentId, {
-      total,
-      marked,
-      percent: total === 0 ? 0 : Math.round((marked / total) * 100),
-    })
+    progress.set(documentId, summarizeLemmas(lemmas))
+  }
+  return progress
+}
+
+/** Visits each distinct document association of one entry. */
+function visitEntryDocuments(
+  entry: ProgressEntry,
+  visit: (documentId: string | undefined) => void,
+): void {
+  if (entry.documentIds && entry.documentIds.some((id) => id !== undefined)) {
+    for (const id of entry.documentIds) visit(id)
+    return
+  }
+  if (entry.documentIds) {
+    // An explicitly empty association list is not evidence for contexts;
+    // the legacy single-document field is the only fallback.
+    if (entry.documentId) visit(entry.documentId)
+    return
+  }
+  let hadContextId = false
+  for (const context of entry.contexts) {
+    if (context.documentId) hadContextId = true
+    visit(context.documentId)
+  }
+  if (!hadContextId && entry.documentId) visit(entry.documentId)
+}
+
+function summarizeLemmas(lemmas: Map<string, boolean>): DocumentProgress {
+  let marked = 0
+  for (const isMarked of lemmas.values()) if (isMarked) marked += 1
+  const total = lemmas.size
+  return { total, marked, percent: total === 0 ? 0 : Math.round((marked / total) * 100) }
+}
+
+/**
+ * The path DocumentList uses: the caller already knows every live document.
+ *
+ * Documents become integer slots, so each visited context costs one map lookup
+ * and an array read instead of two nested string-keyed map lookups. This is
+ * what keeps the 200k fixture's progress computation under the 100 ms budget.
+ */
+function computeProgressForDocuments(
+  entries: readonly ProgressEntry[],
+  documents: readonly ProgressDocument[],
+): Map<string, DocumentProgress> {
+  const live = documents.filter((doc) => !doc.deletedAt)
+  const indexById = new Map<string, number>()
+  live.forEach((doc, index) => indexById.set(doc.id, index))
+
+  const lastEntry = new Int32Array(live.length).fill(-1)
+  const lemmasByDocument: Array<Map<string, boolean> | undefined> = new Array(live.length)
+
+  entries.forEach((entry, entryIndex) => {
+    const marked = entry.status !== 'unmarked'
+    const visit = (id: string | undefined) => {
+      if (!id) return
+      const index = indexById.get(id)
+      if (index === undefined || lastEntry[index] === entryIndex) return
+      lastEntry[index] = entryIndex
+      let lemmas = lemmasByDocument[index]
+      if (!lemmas) {
+        lemmas = new Map()
+        lemmasByDocument[index] = lemmas
+      }
+      if (!lemmas.has(entry.lemma)) lemmas.set(entry.lemma, marked)
+    }
+    visitEntryDocuments(entry, visit)
+  })
+
+  const progress = new Map<string, DocumentProgress>()
+  for (let index = 0; index < live.length; index += 1) {
+    const lemmas = lemmasByDocument[index]
+    if (lemmas) progress.set(live[index].id, summarizeLemmas(lemmas))
   }
   return progress
 }

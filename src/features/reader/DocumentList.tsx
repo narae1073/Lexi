@@ -10,7 +10,7 @@ import { useLanguageName, useSettingsStore, useTranslation } from '../../app/sto
 import { useSyncStore } from '../../app/stores/sync'
 import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
-import { documentProgress, groupByDocument } from './documentProgress'
+import { changedStatuses, documentProgress, groupByDocument } from './documentProgress'
 import {
   computeDocumentProgress,
   preparationProgress,
@@ -31,7 +31,7 @@ import {
   sortDocuments,
 } from './documentSort'
 import { childrenOf, folderOfDocument, pruneNestedTicks, visibleRoots } from './folderTree'
-import type { Folder, LanguageCode } from '../../types'
+import type { Folder, LanguageCode, WordStatus } from '../../types'
 
 const EMPTY_PAUSED: string[] = []
 
@@ -210,6 +210,16 @@ export function DocumentList() {
     () => new Map(),
   )
 
+  /**
+   * The status of every entry the worker last rebuilt, keyed `${language}::${lemma}`.
+   *
+   * A status tap patches the main-thread row and must reach the worker as an
+   * override. Sending every known word state on each call meant copying ~25k
+   * statuses for one tap on the 200k fixture; only keys that differ from the
+   * dataset the worker holds are actually overrides.
+   */
+  const rebuiltStatusRef = useRef<Map<string, WordStatus | 'unmarked'>>(new Map())
+
   const projectionReadyLanguages = useMemo(() => {
     const ready = new Set<string>()
     for (const language of enrolled) {
@@ -258,6 +268,14 @@ export function DocumentList() {
     const entries = Object.entries(useWordbookStore.getState().entriesByLanguage)
       .filter(([language]) => projectionReadyLanguages.has(language))
       .flatMap(([, rows]) => rows)
+    const rebuiltStatuses = new Map<string, WordStatus | 'unmarked'>()
+    for (const entry of entries) {
+      rebuiltStatuses.set(
+        `${entry.languageCode}::${entry.lemma}`,
+        entry.status ?? 'unmarked',
+      )
+    }
+    rebuiltStatusRef.current = rebuiltStatuses
     void progressWorker.rebuild(entries, '').catch((error) => {
       console.error('문서 진도 준비 실패', error)
     })
@@ -275,12 +293,10 @@ export function DocumentList() {
     if (localOnly || projectedEntries.length === 0) return
 
     const documentIds = documents.map((doc) => ({ id: doc.id }))
-    // Status taps arrive as a small override map; the rebuilt projection stays
-    // in the worker, so a 116k payload is not re-sent on every tap.
-    const statuses: Record<string, 'known' | 'unsure' | 'unknown' | 'unmarked'> = {}
-    for (const [key, state] of Object.entries(byKey)) {
-      statuses[key] = state.status ?? 'unmarked'
-    }
+    // Only statuses that differ from the dataset the worker holds are overrides.
+    // A projection row's status is already in the rebuilt dataset; sending every
+    // word state would copy the whole language for one tap.
+    const statuses = changedStatuses(byKey, rebuiltStatusRef.current)
     let cancelled = false
 
     void progressWorker

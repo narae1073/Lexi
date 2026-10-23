@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordStatus } from '../../types'
-import { documentProgress, groupByDocument } from './documentProgress'
+import { changedStatuses, documentProgress, groupByDocument } from './documentProgress'
 
 function occ(over: Partial<WordOccurrence> & { lemma: string }): WordOccurrence {
   return {
@@ -86,5 +86,37 @@ describe('groupByDocument', () => {
 
   it('빈 목록이면 빈 맵', () => {
     expect(groupByDocument([]).size).toBe(0)
+  })
+})
+
+describe('changedStatuses', () => {
+  it('sends only keys whose status differs from the rebuilt dataset', () => {
+    const rebuilt = new Map<string, WordStatus | 'unmarked'>([
+      ['en::alpha', 'known'],
+      ['en::bravo', 'unmarked'],
+      ['en::charlie', 'unsure'],
+    ])
+    const current = {
+      'en::alpha': { status: 'known' as WordStatus },
+      'en::bravo': { status: 'unknown' as WordStatus },
+      'en::charlie': { status: 'unsure' as WordStatus },
+      'en::delta': { status: 'known' as WordStatus },
+    }
+    expect(changedStatuses(current, rebuilt)).toEqual({
+      'en::bravo': 'unknown',
+      'en::delta': 'known',
+    })
+  })
+
+  it('treats a missing state as unmarked and compares it to the rebuilt status', () => {
+    expect(changedStatuses({}, new Map<string, WordStatus | 'unmarked'>([['en::alpha', 'known']]))).toEqual({})
+    expect(
+      changedStatuses(
+        { 'en::alpha': undefined },
+        new Map<string, WordStatus | 'unmarked'>([['en::alpha', 'known']]),
+      ),
+    ).toEqual({
+      'en::alpha': 'unmarked',
+    })
   })
 })
