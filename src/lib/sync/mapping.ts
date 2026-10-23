@@ -112,10 +112,12 @@ export function documentTombstoneFromRow(row: DocumentTombstoneRow): DocumentTom
   }
 }
 
+// server_updated_at and occurrences_hash are server-owned. Sending either on a
+// document upsert would overwrite the value the server just computed.
 export function documentToRow(
   userId: string,
   doc: Document,
-): Omit<DocumentRow, 'server_updated_at'> {
+): Omit<DocumentRow, 'server_updated_at' | 'occurrences_hash'> {
   return {
     id: doc.id,
     user_id: userId,

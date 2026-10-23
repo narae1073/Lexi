@@ -32,6 +32,8 @@ export type Database = {
           folder_updated_at: string | null
           /** 서버가 찍는 동기화 워터마크 */
           server_updated_at: string
+          /** Canonical occurrence-set hash. NULL until the first occurrence push. */
+          occurrences_hash: string | null
         }
         Insert: {
           id?: string
@@ -45,6 +47,7 @@ export type Database = {
           folder_id?: string | null
           folder_updated_at?: string | null
           server_updated_at?: string
+          occurrences_hash?: string | null
         }
         Update: {
           id?: string
@@ -58,6 +61,7 @@ export type Database = {
           folder_id?: string | null
           folder_updated_at?: string | null
           server_updated_at?: string
+          occurrences_hash?: string | null
         }
         Relationships: []
       }
