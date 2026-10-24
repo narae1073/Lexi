@@ -137,6 +137,9 @@ export default function App() {
   useEffect(() => {
     // 잠긴 계정의 문서를 토크나이징하면 그 기록이 기기에 남는다 — 읽지도 않는다
     if (restoring || !gateReady || accountBlocked) return
+    // Starter stories are created just before onboarding finishes. Do not start
+    // tokenizing them (or prompting for a CJK dictionary) while still onboarding.
+    if (!ready) return
     // Metadata-only documents have no local text. Recomputing one would clear
     // its server occurrence rows and push an empty set. The store also guards
     // this, but never hand it documents it can only damage.
@@ -150,7 +153,7 @@ export default function App() {
         window.cancelIdleCallback(handle)
       }
     }
-  }, [documents, refreshStaleDocuments, restoring, gateReady, accountBlocked])
+  }, [documents, refreshStaleDocuments, restoring, gateReady, accountBlocked, ready])
 
   // 번역·사전 응답은 기기에 계속 쌓인다. 오래된 것부터 한 번씩 버린다.
   useEffect(() => {

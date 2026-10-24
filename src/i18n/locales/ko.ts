@@ -29,6 +29,14 @@ export const ko: Dictionary = {
     hint: '공부하고 있는 언어를 고르세요. 나중에 추가할 수 있습니다.',
     selectAtLeastOne: '언어를 1개 이상 고르세요',
     done: '선택 완료',
+    preparing: '이야기를 준비하는 중…',
+    welcomeTitle: 'Lexi에 오신 것을 환영합니다',
+    welcomeBody:
+      '고른 언어마다 짧은 이야기를 하나씩 준비했습니다. 바로 읽고 단어를 표시해 보세요.',
+    welcomeRead: '읽기',
+    welcomeClose: '환영 안내 닫기',
+    welcomeDismiss: '확인',
+    welcomeDeleteNote: '이 이야기는 언제든 지울 수 있습니다.',
   },
 
   compose: {

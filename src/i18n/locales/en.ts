@@ -30,6 +30,14 @@ export const en = {
     hint: 'Pick the languages you are studying. You can add more later.',
     selectAtLeastOne: 'Choose at least one language',
     done: 'Done',
+    preparing: 'Preparing your stories…',
+    welcomeTitle: 'Welcome to Lexi',
+    welcomeBody:
+      'We added a short story in each language you chose, so you can start reading and marking words right away.',
+    welcomeRead: 'Read',
+    welcomeClose: 'Dismiss welcome',
+    welcomeDismiss: 'Got it',
+    welcomeDeleteNote: 'You can delete these anytime.',
   },
 
   compose: {

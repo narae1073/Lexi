@@ -1,6 +1,9 @@
+import { useState } from 'react'
+
 import { useLanguagesStore } from '../../app/stores/languages'
 import { useLanguageName, useTranslation } from '../../app/stores/settings'
 import { SUPPORTED_LANGUAGES } from '../../lib/languages'
+import { seedFirstRunStories } from '../onboarding/firstRun'
 import { AppLanguageSwitcher } from '../settings/AppLanguageSwitcher'
 
 /**
@@ -23,9 +26,30 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
 
   const mine = SUPPORTED_LANGUAGES.filter((lang) => enrolled.includes(lang.code))
   const others = SUPPORTED_LANGUAGES.filter((lang) => !enrolled.includes(lang.code))
+  const [starting, setStarting] = useState(false)
 
   /** 첫 화면에서는 마치는 버튼이 항상 있어야 한다 — 어디서 끝낼지 있어야 한다 */
   const showDone = Boolean(onDone) || !ready
+
+  /**
+   * First-run stories are local IndexedDB writes. Await them before flipping
+   * `ready` so Home never flashes the empty composer and then swaps in stories.
+   * Existing libraries are skipped inside seedFirstRunStories.
+   */
+  const complete = async () => {
+    if (starting) return
+    setStarting(true)
+    try {
+      if (!ready) await seedFirstRunStories(enrolled)
+    } catch (error) {
+      // A storage failure must not trap the user in onboarding.
+      console.error('첫 실행 이야기 준비 실패', error)
+    } finally {
+      const finished = finish()
+      setStarting(false)
+      if (finished) onDone?.()
+    }
+  }
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
@@ -68,13 +92,16 @@ export function LanguagePicker({ onDone }: { onDone?: () => void }) {
       {showDone && (
         <button
           type="button"
-          onClick={() => {
-            if (finish()) onDone?.()
-          }}
-          disabled={enrolled.length === 0}
+          onClick={() => void complete()}
+          disabled={enrolled.length === 0 || starting}
+          aria-busy={starting}
           className="mt-6 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-ink disabled:opacity-30"
         >
-          {enrolled.length === 0 ? t('onboarding.selectAtLeastOne') : t('onboarding.doneCount', { count: enrolled.length })}
+          {starting
+            ? t('onboarding.preparing')
+            : enrolled.length === 0
+              ? t('onboarding.selectAtLeastOne')
+              : t('onboarding.doneCount', { count: enrolled.length })}
         </button>
       )}
     </section>

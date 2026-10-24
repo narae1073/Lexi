@@ -19,6 +19,7 @@ import {
 } from '../wordbook/wordbookProjection'
 import { createWordbookWorkerClient } from '../wordbook/wordbookWorker'
 import { useProjectionPauseReady } from '../wordbook/useProjectionPause'
+import { FirstRunWelcome } from '../onboarding/FirstRunWelcome'
 import { FolderMenu } from './FolderMenu'
 import { FolderPicker } from './FolderPicker'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -609,6 +610,8 @@ export function DocumentList() {
           <span className="text-ink-muted text-xs">{t('list.sortHint')}</span>
         </div>
       </div>
+
+      {folderId === null && !selecting && <FirstRunWelcome documents={documents} />}
 
       {/*
         빈 곳이 '문서가 없다' 고 읽히지 않게 — 폴더·언어의 말이 먼저다.
