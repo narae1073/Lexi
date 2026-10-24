@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { WordOccurrence } from '../../app/stores/occurrences'
 import type { WordState, WordStatus } from '../../types'
-import { buildWordbook, filterByStarColors, groupByStatus, wordbookGroupOrDefault } from './buildWordbook'
-import type { WordbookEntry } from './buildWordbook'
+import {
+  buildWordbook,
+  filterByStarColors,
+  firstNonEmptyGroup,
+  groupByStatus,
+  wordbookGroupOrDefault,
+} from './buildWordbook'
+import type { WordbookEntry, WordbookGroup } from './buildWordbook'
 
 const occurrence = (over: Partial<WordOccurrence> & { lemma: string }): WordOccurrence => ({
   documentId: 'doc-1',
@@ -242,6 +248,34 @@ describe('buildWordbook', () => {
       statusOf: (lang, lemma) => (lang === 'ko' && lemma === '고양이' ? state('고양이', 'known') : undefined),
     })
     expect(entries[0].status).toBe('known')
+  })
+})
+
+describe('firstNonEmptyGroup', () => {
+  const emptyGroups = (): Record<WordbookGroup, WordbookEntry[]> => ({
+    favorite: [],
+    known: [],
+    unsure: [],
+    unknown: [],
+    unmarked: [],
+  })
+
+  it('keeps the current tab when it has rows', () => {
+    const groups = emptyGroups()
+    groups.known = [{} as WordbookEntry]
+    groups.favorite = [{} as WordbookEntry]
+    expect(firstNonEmptyGroup(groups, 'known')).toBe('known')
+  })
+
+  it('moves to the first non-empty tab when the current tab is empty', () => {
+    const groups = emptyGroups()
+    groups.unsure = [{} as WordbookEntry]
+    groups.unmarked = [{} as WordbookEntry]
+    expect(firstNonEmptyGroup(groups, 'favorite')).toBe('unsure')
+  })
+
+  it('keeps the current tab when every tab is empty', () => {
+    expect(firstNonEmptyGroup(emptyGroups(), 'favorite')).toBe('favorite')
   })
 })
 

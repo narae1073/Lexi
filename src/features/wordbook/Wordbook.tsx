@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { useDocumentsStore } from '../../app/stores/documents'
@@ -16,7 +16,13 @@ import { useWordbookStore } from '../../app/stores/wordbook'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { paginate } from '../../lib/paginate'
 import type { LanguageCode } from '../../types'
-import { buildWordbook, filterByStarColors, groupByStatus, WORDBOOK_GROUPS } from './buildWordbook'
+import {
+  buildWordbook,
+  filterByStarColors,
+  firstNonEmptyGroup,
+  groupByStatus,
+  WORDBOOK_GROUPS,
+} from './buildWordbook'
 import type { WordbookEntry } from './buildWordbook'
 import type { ProjectionWordbookEntry } from './wordbookProjection'
 import {
@@ -267,7 +273,40 @@ export function Wordbook() {
    * 목록이 줄어 마지막 쪽이 사라지는 경우까지 paginate 가 계산에서 당겨준다 —
    * 화면에 빈 쪽을 보여주지 않기 위해서다.
    */
-  const resetPage = () => setPageNumber(1)
+  const resetPage = useCallback(() => setPageNumber(1), [])
+
+  /**
+   * A language switch should not strand the user on an empty tab. Wait until
+   * the new language's row set is actually ready, then move to the first tab
+   * that has words. This also lets ja/zh example rows mount and trigger the
+   * dictionary prompt instead of leaving the view blank.
+   */
+  const pendingGroupForLanguage = useRef<LanguageCode | null>(null)
+  useEffect(() => {
+    if (!languageCode || pendingGroupForLanguage.current !== languageCode) return
+    if (presentation.source === 'preparing') return
+    // The projection/local read model is empty until the worker's first search
+    // resolves for the new language; switching now would pick an empty tab by
+    // mistake.
+    if ((rowSource === 'projection' || localOnly) && sortedLanguage !== languageCode) return
+
+    const next = firstNonEmptyGroup(grouped, group)
+    if (next !== group) {
+      // Persist through the external settings store rather than a React setter:
+      // this effect is synchronizing a data-driven default, not deriving render
+      // state. The page was already reset by the language button.
+      useSettingsStore.getState().setWordbookGroup(next)
+    }
+    pendingGroupForLanguage.current = null
+  }, [
+    group,
+    grouped,
+    languageCode,
+    localOnly,
+    presentation.source,
+    rowSource,
+    sortedLanguage,
+  ])
 
   /**
    * ★ 탭에서 별 색으로 좁히는 필터 (개선사항.txt).
@@ -381,8 +420,11 @@ export function Wordbook() {
               key={code}
               type="button"
               onClick={() => {
+                if (code !== languageCode) pendingGroupForLanguage.current = code
                 setLanguageCode(code)
                 resetPage()
+                // 별 색 필터는 이전 언어의 선택이다 — 새 언어에 그대로 걸지 않는다
+                setStarColors([])
                 // 다른 언어 문서로 좁힌 채 이동하면 빈 목록만 보인다
                 clearScope(code)
               }}
@@ -467,6 +509,8 @@ export function Wordbook() {
             key={key}
             type="button"
             onClick={() => {
+              // An explicit tab choice wins over the language-switch fallback.
+              pendingGroupForLanguage.current = null
               setGroup(key)
               resetPage()
             }}

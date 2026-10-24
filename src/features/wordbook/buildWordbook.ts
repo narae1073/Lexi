@@ -12,6 +12,21 @@ export function wordbookGroupOrDefault(value: unknown): WordbookGroup {
   return WORDBOOK_GROUPS.includes(value as WordbookGroup) ? (value as WordbookGroup) : 'favorite'
 }
 
+/**
+ * Language switches must not land on an empty tab. The ★ tab is the intentional
+ * default for a fresh wordbook, but a language with no favorites would show an
+ * empty screen — and, for ja/zh, never render an example that can trigger the
+ * dictionary prompt. Keep the current tab when it has rows; otherwise use the
+ * first non-empty tab in display order.
+ */
+export function firstNonEmptyGroup(
+  grouped: Record<WordbookGroup, WordbookEntry[]>,
+  current: WordbookGroup,
+): WordbookGroup {
+  if (grouped[current].length > 0) return current
+  return WORDBOOK_GROUPS.find((key) => grouped[key].length > 0) ?? current
+}
+
 export type WordbookEntry = {
   lemma: string
   /** 이 lemma 이 문서들에서 실제로 쓰인 표기들 */
