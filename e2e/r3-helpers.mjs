@@ -291,6 +291,59 @@ export async function readProjectionState(ctx, userId) {
   )
 }
 
+/**
+ * Replaces one language's persisted pause metadata. Used by the network tests
+ * to turn a live quota pause into an event-driven pause without waiting for the
+ * server's minute window; the snapshot and cursor are left untouched.
+ */
+export async function setProjectionPause(ctx, userId, language, pause) {
+  const key = projectionStateKey(userId)
+  return idb(
+    ctx,
+    `(db) => new Promise((resolve, reject) => {
+      const tx = db.transaction('documentMeta', 'readwrite');
+      const store = tx.objectStore('documentMeta');
+      const get = store.get(${JSON.stringify(key)});
+      get.onsuccess = () => {
+        const record = get.result;
+        const state = record && record.state && record.state[${JSON.stringify(language)}];
+        if (!state) return reject(new Error('projection state missing'));
+        state.pause = ${JSON.stringify(pause)};
+        store.put(record);
+      };
+      get.onerror = () => reject(get.error);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    })`,
+  )
+}
+
+/** Installs a NetworkInformation profile before the next document loads. */
+export async function installNetworkProfile(ctx, profile) {
+  const source = `(() => {
+    const profile = ${JSON.stringify(profile)};
+    const descriptor = {
+      configurable: true,
+      enumerable: true,
+      get: () => profile,
+    };
+    try {
+      Object.defineProperty(navigator, 'connection', descriptor);
+    } catch {
+      try {
+        Object.defineProperty(Navigator.prototype, 'connection', descriptor);
+      } catch {}
+    }
+  })()`
+  const result = await ctx.page.send('Page.addScriptToEvaluateOnNewDocument', { source })
+  return result?.identifier
+}
+
+export async function removeNetworkProfile(ctx, identifier) {
+  if (!identifier) return
+  await ctx.page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
+}
+
 export async function waitForProjectionComplete(ctx, userId, language, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

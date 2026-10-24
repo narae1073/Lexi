@@ -14,6 +14,7 @@ import {
   emptyProjectionState,
   projectionStateFor,
   projectionStateKey,
+  markProjectionFailure,
   readProjectionState,
   updateProjectionState,
   writeProjectionState,
@@ -155,6 +156,143 @@ describe('projection completeness', () => {
     )
     expect(stored?.documentId).toBe(`${PROJECTION_STATE_KEY_PREFIX}${USER_ID}`)
     expect(stored?.documentId).not.toBe(SYNC_META_KEY)
+  })
+})
+
+describe('projection pause persistence', () => {
+  it('restores the pause reason and quota window after a reload', async () => {
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: false,
+        snapshot: SNAPSHOT,
+        cursor: { languageCode: 'fr', lemma: 'chat' },
+        hydratedAt: HYDRATED_AT,
+        pause: {
+          reason: 'quota',
+          pausedAt: '2026-10-27T12:01:00.000Z',
+          nextAttemptAt: '2026-10-27T12:02:00.000Z',
+          quotaBucket: 'page',
+          retryAfterSeconds: 60,
+        },
+      },
+    })
+
+    const state = await readProjectionState(USER_ID)
+    expect(state.fr).toEqual({
+      complete: false,
+      snapshot: SNAPSHOT,
+      cursor: { languageCode: 'fr', lemma: 'chat' },
+      hydratedAt: HYDRATED_AT,
+      pause: {
+        reason: 'quota',
+        pausedAt: '2026-10-27T12:01:00.000Z',
+        nextAttemptAt: '2026-10-27T12:02:00.000Z',
+        quotaBucket: 'page',
+        retryAfterSeconds: 60,
+      },
+    })
+  })
+
+  it('marks only unfinished, resumable languages offline without replacing a reason', async () => {
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: false,
+        snapshot: SNAPSHOT,
+        cursor: { languageCode: 'fr', lemma: 'chat' },
+        hydratedAt: null,
+      },
+      de: {
+        complete: true,
+        snapshot: SNAPSHOT,
+        cursor: null,
+        hydratedAt: null,
+      },
+      ja: {
+        complete: false,
+        snapshot: null,
+        cursor: null,
+        hydratedAt: null,
+      },
+      es: {
+        complete: false,
+        snapshot: SNAPSHOT,
+        cursor: null,
+        hydratedAt: null,
+        pause: {
+          reason: 'quota',
+          pausedAt: '2026-10-27T12:01:00.000Z',
+          nextAttemptAt: '2026-10-27T12:02:00.000Z',
+          quotaBucket: 'page',
+          retryAfterSeconds: 60,
+        },
+      },
+    })
+
+    await markProjectionFailure(USER_ID, 'offline')
+    const state = await readProjectionState(USER_ID)
+
+    expect(state.fr.pause).toMatchObject({
+      reason: 'offline',
+      nextAttemptAt: null,
+      quotaBucket: null,
+      retryAfterSeconds: null,
+    })
+    expect(state.de.pause).toBeUndefined()
+    expect(state.ja.pause).toBeUndefined()
+    expect(state.es.pause?.reason).toBe('quota')
+  })
+
+  it('drops malformed pause metadata but keeps the resumable cursor', async () => {
+    await idbPut(STORES.documentMeta, {
+      documentId: projectionStateKey(USER_ID),
+      version: 1,
+      state: {
+        fr: {
+          complete: false,
+          snapshot: SNAPSHOT,
+          cursor: { languageCode: 'fr', lemma: 'chat' },
+          hydratedAt: null,
+          pause: {
+            reason: 'not-a-reason',
+            pausedAt: 'yesterday',
+            nextAttemptAt: 'tomorrow',
+            quotaBucket: 'day',
+            retryAfterSeconds: -1,
+          },
+        },
+      },
+    })
+
+    const state = await readProjectionState(USER_ID)
+    expect(state.fr).toEqual({
+      complete: false,
+      snapshot: SNAPSHOT,
+      cursor: { languageCode: 'fr', lemma: 'chat' },
+      hydratedAt: null,
+    })
+  })
+
+  it('keeps an offline pause before the first page has a snapshot', async () => {
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: false,
+        snapshot: null,
+        cursor: null,
+        hydratedAt: null,
+        pause: {
+          reason: 'offline',
+          pausedAt: '2026-10-27T12:01:00.000Z',
+          nextAttemptAt: null,
+          quotaBucket: null,
+          retryAfterSeconds: null,
+        },
+      },
+    })
+
+    const state = await readProjectionState(USER_ID)
+    expect(state.fr.pause?.reason).toBe('offline')
+    expect(state.fr.snapshot).toBeNull()
+    expect(state.fr.cursor).toBeNull()
   })
 })
 

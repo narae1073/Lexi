@@ -17,7 +17,7 @@
 import { create } from 'zustand'
 
 import { STORES, idbGetAll } from '../../lib/storage/localDb'
-import { readProjectionState } from '../../lib/sync/projectionState'
+import { readProjectionState, type ProjectionPause } from '../../lib/sync/projectionState'
 import { readWordbookEntries } from '../../lib/storage/wordbookEntries'
 import type { WordState } from '../../types'
 import {
@@ -49,6 +49,11 @@ type WordbookState = {
    * before the first projection pull finishes.
    */
   projectionCompleteByLanguage: Record<string, boolean>
+  /**
+   * Persisted pause metadata per language. This is the reload source of truth
+   * for the paused banner; the in-memory sync report is only a transient view.
+   */
+  projectionPauseByLanguage: Record<string, ProjectionPause>
   /** Load state for the latest projection read. */
   status: WordbookStoreStatus
   error: string | null
@@ -121,6 +126,7 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
   entriesByLanguage: {},
   loadedLanguages: {},
   projectionCompleteByLanguage: {},
+  projectionPauseByLanguage: {},
   status: 'idle',
   error: null,
   revision: 0,
@@ -180,21 +186,23 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
 
   refreshProjectionReadiness: async (userId) => {
     if (!userId) {
-      set({ projectionCompleteByLanguage: {} })
+      set({ projectionCompleteByLanguage: {}, projectionPauseByLanguage: {} })
       return
     }
     try {
       const states = await readProjectionState(userId)
       const complete: Record<string, boolean> = {}
+      const paused: Record<string, ProjectionPause> = {}
       for (const [languageCode, state] of Object.entries(states)) {
         complete[languageCode] = state.complete
+        if (state.pause !== undefined) paused[languageCode] = state.pause
       }
-      set({ projectionCompleteByLanguage: complete })
+      set({ projectionCompleteByLanguage: complete, projectionPauseByLanguage: paused })
     } catch (error) {
       // Unreadable state means "not complete" — the local wordbook stays
       // visible rather than the screen claiming an empty wordbook.
       console.error('단어장 준비 상태 읽기 실패', error)
-      set({ projectionCompleteByLanguage: {} })
+      set({ projectionCompleteByLanguage: {}, projectionPauseByLanguage: {} })
     }
   },
 

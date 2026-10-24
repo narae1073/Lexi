@@ -667,6 +667,12 @@ describe('projection completeness', () => {
       complete: true,
       snapshot: OLDER_SNAPSHOT,
       cursor: null,
+      pause: {
+        reason: 'bytes',
+        nextAttemptAt: null,
+        quotaBucket: null,
+        retryAfterSeconds: null,
+      },
     })
     const applied = await readWordbookEntries('fr')
     expect(applied.length).toBeGreaterThan(0)
@@ -678,7 +684,43 @@ describe('projection completeness', () => {
     const rows = await readWordbookEntries('fr')
     expect(rows).toHaveLength(total)
     expect(new Set(rows.map((row) => row.lemma)).size).toBe(total)
-    expect(projectionStateFor(await readProjectionState(USER_ID), 'fr').snapshot).toBe(SNAPSHOT)
+    const finished = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(finished.snapshot).toBe(SNAPSHOT)
+    expect(finished.pause).toBeUndefined()
+  }, 20_000)
+
+  it('leaves a paused projection untouched when automatic resume is not allowed', async () => {
+    const server = memoryServer(2000, SNAPSHOT)
+    for (let index = 0; index < 1050; index++) {
+      server.add(
+        'wordbook_entries',
+        projectionRow({ lemma: `mot-${String(index).padStart(4, '0')}`, note: 'x'.repeat(50) }),
+      )
+    }
+
+    const first = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      projectionByteBudget: 1024,
+    })
+    expect(first.projectionPaused).toEqual(['fr'])
+    const paused = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(paused.pause?.reason).toBe('bytes')
+
+    const blocked = recordingClient(server)
+    const second = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: blocked.client,
+      resumePausedProjection: false,
+    })
+
+    expect(blocked.calls).toHaveLength(0)
+    expect(second.projectionPaused).toEqual([])
+    const stillPaused = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(stillPaused.cursor).toEqual(paused.cursor)
+    expect(stillPaused.pause?.reason).toBe('bytes')
   }, 20_000)
 
   it('restarts an interrupted first projection on the same snapshot and spends one pass', async () => {

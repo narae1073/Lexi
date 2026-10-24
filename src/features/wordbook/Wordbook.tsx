@@ -34,11 +34,11 @@ import { WordStatusChart } from './WordStatusChart'
 import { countsFromGroups } from './statusChart'
 import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
+import { useProjectionPauseReady } from './useProjectionPause'
 import { WordbookItem } from './WordbookItem'
 
 const EMPTY: WordOccurrence[] = []
 const EMPTY_ENTRIES: ProjectionWordbookEntry[] = []
-const EMPTY_PAUSED: string[] = []
 
 /**
  * 단어장 (plan.txt 9줄).
@@ -93,10 +93,8 @@ export function Wordbook() {
   const byKey = useWordStatesStore((s) => s.byKey)
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
-  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
-  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
-  const quotaRetrySeconds = useSyncStore(
-    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
+  const languagePause = useWordbookStore((s) =>
+    languageCode ? s.projectionPauseByLanguage[languageCode] : undefined,
   )
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
@@ -118,16 +116,20 @@ export function Wordbook() {
   const presentation = resolveWordbookPresentation({
     localOnly,
     projectionReady,
-    projectionPaused: languageCode !== null && pausedLanguages.includes(languageCode),
+    projectionPaused: languagePause !== undefined,
     // The R2 device already has an occurrence-built wordbook. A new device has
     // none, so it gets the preparing state instead of an empty list.
     hasLocalWordbook: occurrences.length > 0,
   })
   const localSource = presentation.source === 'local'
   const preparation = preparationProgress(completeByLanguage, enrolled)
-  const quotaPaused = presentation.showPaused && pausedReason === 'quota'
-  const statePaused = presentation.showPaused && pausedReason === 'state'
-  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
+  const quotaPaused = presentation.showPaused && languagePause?.reason === 'quota'
+  const statePaused = presentation.showPaused && languagePause?.reason === 'state'
+  const quotaMinutes = Math.max(
+    1,
+    Math.ceil((languagePause?.retryAfterSeconds ?? 60) / 60),
+  )
+  const pauseReady = useProjectionPauseReady(languagePause)
 
   /**
    * Account mode reads the persisted projection state first. Until a language
@@ -341,7 +343,7 @@ export function Wordbook() {
                 ? t('wordbook.statePausedHint')
                 : t('wordbook.pausedHint')}
           </span>
-          {presentation.showContinue && !quotaPaused && !statePaused && (
+          {presentation.showContinue && pauseReady && (
             <button
               type="button"
               data-wordbook-continue

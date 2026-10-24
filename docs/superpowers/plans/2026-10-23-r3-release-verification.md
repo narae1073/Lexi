@@ -1,8 +1,9 @@
 # R3 release verification — 2026-10-23
 
-**Status:** implementation and local verification complete; **4 external e2e
-checks fail without a local translation provider**. **Not released.**
-No production migration, deployment, or production data change was performed.
+**Status:** implementation and local verification complete; full e2e is green
+(**622/622**) and the local translation-provider key is configured. **Not
+released.** No production migration, deployment, or production data change was
+performed.
 
 ## Settled release decisions — 2026-10-24
 
@@ -32,7 +33,8 @@ No production migration, deployment, or production data change was performed.
 - Original gates commit: `7296c83`
 - First review-fix commit: `81f5998`
 - Final whole-branch review-fix commit: `5634367`
-- Verified tree: `5634367` plus its follow-up evidence commit
+- Verified tree: the local working tree after the conditional auto-resume and
+  paused-state restoration implementation (commit handled separately)
 
 The only Supabase target used below was the local stack at
 `http://127.0.0.1:54321` (project `translator`). `.env.local` is git-ignored and
@@ -69,10 +71,10 @@ opt in because they test tokenization, not consent.
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -b`, exit 0 |
 | `npm run lint` | PASS | `oxlint`, exit 0; only the pre-existing Wordbook memoization warnings |
-| `npm run test` | PASS | 95 files, **1217 tests** |
-| `npm run build` | PASS | PWA generated; 20 precache entries (2,702.75 KiB) |
+| `npm run test` | PASS | 96 files, **1233 tests** |
+| `npm run build` | PASS | PWA generated; 20 precache entries |
 | `npm run verify:rls` | PASS | local anon/forged-JWT reads and writes denied; direct `word_occurrences` DML denied; `dictionary_entries` read allowed |
-| `npm run e2e` | **598 / 602** | specs 41 = 40/40, 42 = 18/18, 28 = 7/7, 29 = 8/8; 4 external failures below |
+| `npm run e2e` | **622 / 622** | specs 41 = 45/45, 42 = 18/18, 28 = 7/7, 29 = 8/8; no external failures |
 | `npm run r3:seed -- --users 4 --occurrences 200000 --documents 1112 --clean` | PASS | 4 users, 800,000 occurrences, 4,448 documents, 92,800 word states, 100,000 projection rows |
 | `npm run r3:load -- --users 4 --edits 100 --concurrency 4` | **PASS** | no errors, deadlocks, retries, or no-op writes |
 
@@ -102,15 +104,15 @@ lemmas per user.
 
 | Measurement | Result | Budget |
 |---|---:|---:|
-| App start through first projection completion | 9,254 ms | — |
-| Projection pass itself (snapshot → hydrated) | **4,160 ms** | — |
+| App start through first projection completion | 9,563 ms | — |
+| Projection pass itself (snapshot → hydrated) | **4,277 ms** | — |
 | Projection pages | **38** byte-bounded pages for 25,000 rows (37 unique cursors) | ≤1,000 rows and ~1 MiB/page |
-| Wordbook first render | **600.8 ms** | < 2,500 ms |
-| Worker rebuild | **516.9 ms** | < 2,500 ms |
-| Wordbook search | **13.3 ms** | < 200 ms |
-| Status toggle (visible) | **20.7 ms** | < 100 ms |
-| Document progress computation | **12.1 ms** for 1,112 documents | < 100 ms |
-| Document progress status-override path | **40.3 ms** with 1 override | < 100 ms |
+| Wordbook first render | **599.6 ms** | < 2,500 ms |
+| Worker rebuild | **601.3 ms** | < 2,500 ms |
+| Wordbook search | **14.4 ms** | < 200 ms |
+| Status toggle (visible) | **22.3 ms** | < 100 ms |
+| Document progress computation | **17.6 ms** for 1,112 documents | < 100 ms |
+| Status-override worker benchmark | **< 100 ms** (25k entries, 1 override) | < 100 ms |
 | Occurrence re-download during UI interaction | 0 requests | 0 |
 
 The page count is now byte-driven as well as row-driven: the same 25,000 rows
@@ -197,20 +199,24 @@ allowlists, retention, and concurrent first-page serialization (`200` + `429`).
 
 `npx vitest run src/lib/storage/localDbV7.test.ts src/lib/sync/projectionSync.test.ts
 src/lib/sync/wordbookPull.test.ts src/lib/sync/projectionQuota.test.ts`
-→ 4 files, **62 tests passed**.
+→ 4 files, **71 tests passed**.
 
 `localDbV7.test.ts` includes the v6→v7 additive upgrade: every existing store
 and row survives, the new `wordbookEntries` and `documentContent` stores are
 created empty, and a blocked/other-tab upgrade completes without hanging.
-The full Vitest suite (1217 tests) passes.
+The full Vitest suite (1233 tests) passes.
 
-## E2E flow evidence (spec 41, 40/40)
+## E2E flow evidence (spec 41, 45/45)
 
 - First sync: 0 `word_occurrences` table reads, 0 full `word_states` reads;
   projection pages are requested only after metadata and all carry one
   snapshot, `p_limit=1000`, and `p_updated_since=null`.
 - Interruption/resume: cursor persisted and re-sent under the same snapshot;
   exactly one server pass row exists and is complete; 1,200/1,200 rows stored.
+- Reload restores the paused banner from device-local metadata; a quota pause
+  makes no projection request before its retry window.
+- A cellular network makes no projection request while paused; the explicit
+  Continue action resumes the same snapshot and cursor and completes one pass.
 - Wordbook works offline after the projection; search works offline.
 - Document list shows exact server lengths **6,600 / 4,400 / 2,200 chars**
   without fetching a body; titles are Zulu/Mike/Alpha so alphabetical order
@@ -226,25 +232,14 @@ The full Vitest suite (1217 tests) passes.
 - Spec 42 restores the fixture's original status after its one status tap, so
   the refresh load gate sees the documented seed state.
 
-## Full e2e failure classification (4)
+## Translation provider e2e
 
-`npm run e2e` → **598/602**. All four remaining failures are **external**:
-the local Edge Function has no `GOOGLE_TRANSLATE_API_KEY` (no production key
-used), and the function returns HTTP 500 before its translation call.
+`npm run e2e` → **622/622**. The local translation-provider key is configured
+for the local Edge Function, so `03-sentence-translation`, `13-offline`, and
+`34-quiz` pass. No external failures remain.
 
-| Spec | Failure | Classification |
-|---|---|---|
-| `03-sentence-translation` (2) | `Translation service error (500)` | external: local translate provider unconfigured |
-| `13-offline` (1) | stored sentence translation fails | external: same missing local provider |
-| `34-quiz` (1) | context translation timeout | external: same missing local provider |
-
-The R2 baseline was 560/560 on the production-backed configuration. This run
-uses 600 checks (hardened R3 specs) and a local-only backend; the four failures
-are not evidence of an R3 regression and are not a green full gate. Specs 28
-and 29 were R3-caused failures in the first review run (the new ask-by-default
-dictionary prompt blocked `Runtime.evaluate`); they now pass 7/7 and 8/8 with
-the auto-download preference, and are **not** classified as external failures.
-
+Specs 28 and 29 set the R3 auto-download preference before opening a document;
+they pass 7/7 and 8/8. The product still asks by default for real users.
 No assertion or threshold was weakened to hide any failure.
 
 ## Final whole-branch review fixes (`5634367`)
@@ -288,12 +283,22 @@ No assertion or threshold was weakened to hide any failure.
 - [x] Lazy document content: one payload fetch, local reopen, no occurrence push,
       no source-table read on open or wordbook open.
 - [x] Metadata-only exact length and longest sort come from `char_count`.
-- [x] 200k account UI budgets met (first render, search, status, progress,
-      progress status override).
+- [x] 200k account UI budgets met (first render, search, status, progress),
+      plus the deterministic 25k worker status-override benchmark.
 - [x] 4 × 200k refresh gate PASS with zero deadlocks/no-op writes.
 - [x] v7 upgrade and local SQL/RLS/quota checks pass.
 - [x] Metrics snapshot complete with egress and page-byte evidence.
 - [x] Fixture status restored after spec 42.
+- [x] Pause reason, snapshot, cursor, quota bucket, retry window, and timestamp
+      persist per account/language; the paused banner restores after reload.
+- [x] Wi-Fi/unmetered resumes silently; cellular/`saveData`/slow connections
+      make no projection request until explicit consent.
+- [x] Quota/state retry timers re-arm from persisted metadata; byte/offline
+      pauses wait for lifecycle events or consent.
+- [x] Automatic sync skips paused projection lanes without blocking normal
+      document/word-state sync.
+- [x] No duplicate projection pass or daily unit on resume; the same snapshot
+      and cursor are reused.
 - [ ] **Production migration — NOT PERFORMED.**
 - [ ] **Production deployment — NOT PERFORMED.**
 - [ ] **Production data change — NOT PERFORMED.**

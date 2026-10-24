@@ -550,12 +550,70 @@ describe('projection readiness from persisted state', () => {
     })
   })
 
-  it('treats a missing account/state as incomplete', async () => {
+  it('restores per-language pause metadata after a reload', async () => {
+    await writeProjectionState('user-1', {
+      fr: {
+        complete: false,
+        snapshot: '2026-01-01T00:00:00.000Z',
+        cursor: { languageCode: 'fr', lemma: 'a' },
+        hydratedAt: null,
+        pause: {
+          reason: 'quota',
+          pausedAt: '2026-01-01T00:01:00.000Z',
+          nextAttemptAt: '2026-01-01T00:02:00.000Z',
+          quotaBucket: 'page',
+          retryAfterSeconds: 60,
+        },
+      },
+      de: {
+        complete: false,
+        snapshot: '2026-01-01T00:00:00.000Z',
+        cursor: null,
+        hydratedAt: null,
+        pause: {
+          reason: 'bytes',
+          pausedAt: '2026-01-01T00:01:00.000Z',
+          nextAttemptAt: null,
+          quotaBucket: null,
+          retryAfterSeconds: null,
+        },
+      },
+      en: {
+        complete: true,
+        snapshot: '2026-01-01T00:00:00.000Z',
+        cursor: null,
+        hydratedAt: null,
+      },
+    })
+
+    await useWordbookStore.getState().refreshProjectionReadiness('user-1')
+
+    expect(useWordbookStore.getState().projectionPauseByLanguage).toEqual({
+      fr: {
+        reason: 'quota',
+        pausedAt: '2026-01-01T00:01:00.000Z',
+        nextAttemptAt: '2026-01-01T00:02:00.000Z',
+        quotaBucket: 'page',
+        retryAfterSeconds: 60,
+      },
+      de: {
+        reason: 'bytes',
+        pausedAt: '2026-01-01T00:01:00.000Z',
+        nextAttemptAt: null,
+        quotaBucket: null,
+        retryAfterSeconds: null,
+      },
+    })
+  })
+
+  it('treats a missing account/state as incomplete and clears pause metadata', async () => {
     await useWordbookStore.getState().refreshProjectionReadiness(null)
     expect(useWordbookStore.getState().projectionCompleteByLanguage).toEqual({})
+    expect(useWordbookStore.getState().projectionPauseByLanguage).toEqual({})
 
     await useWordbookStore.getState().refreshProjectionReadiness('new-device-user')
     expect(useWordbookStore.getState().projectionCompleteByLanguage).toEqual({})
+    expect(useWordbookStore.getState().projectionPauseByLanguage).toEqual({})
   })
 })
 

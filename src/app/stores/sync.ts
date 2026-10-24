@@ -8,6 +8,7 @@ import { useLanguagesStore } from './languages'
 import { useOccurrencesStore } from './occurrences'
 import { useWordStatesStore } from './wordStates'
 import { createSyncScheduler } from './syncScheduler'
+import { useWordbookStore } from './wordbook'
 import { markSynced, statusKind, NOTICE_MS, type StatusKind, type SyncNotice } from './syncVisibility'
 import { hasLocalLearningData, ensureLocalSyncMeta, onLocalWrite, readLocalSyncMeta, subtractPending, STORES, type StoreName } from '../../lib/storage/localDb'
 import {
@@ -33,6 +34,16 @@ import {
 import { createSingleFlight, type SingleFlight } from '../../lib/sync/singleFlight'
 import { createSyncChannel, type SyncChannel } from '../../lib/sync/syncChannel'
 import { withSyncLock } from '../../lib/sync/syncLock'
+import {
+  markProjectionFailure,
+  readProjectionState,
+} from '../../lib/sync/projectionState'
+import {
+  currentProjectionNetwork,
+  pauseRetryDelayMs,
+  shouldAutoResumeProjection,
+  shouldResumePausedProjection,
+} from '../../lib/sync/projectionResume'
 import type { LocalSyncMeta, SyncMessage } from '../../lib/sync/types'
 
 export type SyncStatus = 'local' | 'syncing' | 'synced' | 'error'
@@ -73,19 +84,45 @@ export function quotaRetryDelayMs(report: SyncReport | null): number | null {
 
 let quotaRetryTimer: ReturnType<typeof setTimeout> | undefined
 
-function scheduleQuotaRetry(userId: string, report: SyncReport): void {
+function scheduleProjectionRetry(userId: string, delay: number): void {
   if (quotaRetryTimer !== undefined) {
     clearTimeout(quotaRetryTimer)
     quotaRetryTimer = undefined
   }
-  const delay = quotaRetryDelayMs(report)
-  if (delay === null) return
   quotaRetryTimer = setTimeout(() => {
     quotaRetryTimer = undefined
     // The account may have changed while the timer waited.
     if (useAuthStore.getState().user?.id !== userId) return
     void useSyncStore.getState().syncQuietly()
   }, delay)
+}
+
+function scheduleQuotaRetry(userId: string, report: SyncReport): void {
+  const delay = quotaRetryDelayMs(report)
+  if (delay === null) return
+  scheduleProjectionRetry(userId, delay)
+}
+
+/**
+ * Re-arms a quota/state retry after a reload. The report is gone, but the
+ * projection state carries the server window.
+ */
+async function schedulePersistedProjectionRetry(userId: string): Promise<void> {
+  try {
+    const states = await readProjectionState(userId)
+    if (useAuthStore.getState().user?.id !== userId) return
+    let delay: number | null = null
+    for (const state of Object.values(states)) {
+      const remaining = pauseRetryDelayMs(state.pause)
+      if (remaining === null || remaining <= 0) continue
+      delay = delay === null ? remaining : Math.min(delay, remaining)
+    }
+    if (delay === null) return
+    scheduleProjectionRetry(userId, Math.min(delay, MAX_QUOTA_RETRY_MS))
+  } catch {
+    // A retry timer is an optimization; the normal lifecycle triggers will
+    // still resume once the window is over.
+  }
 }
 
 /**
@@ -306,9 +343,10 @@ export const useSyncStore = create<SyncState>((set) => ({
       set({ status: 'local', error: null })
       return
     }
-    // 사람이 누른 것이다 — 결과를 알려야 한다
+    // 사람이 누른 것이다 — 결과를 알려야 한다. Explicit consent also lets a
+    // paused projection resume on a metered connection.
     useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
-    await run(set)
+    await run(set, true)
   },
 
   syncQuietly: async () => {
@@ -318,7 +356,10 @@ export const useSyncStore = create<SyncState>((set) => ({
       return
     }
     try {
-      await run(set)
+      // A normal background sync still uploads local work on a metered link,
+      // but it does not silently spend that link on a paused projection.
+      const network = currentProjectionNetwork()
+      await run(set, shouldAutoResumeProjection(network))
     } catch {
       // 조용히 돌리는 경로에서는 실패해도 사용자를 막지 않는다.
       // 다시 켜졌을 때 온라인 복귀 훅이 재시도한다.
@@ -336,7 +377,7 @@ export const useSyncStore = create<SyncState>((set) => ({
     // a full-pull cycle actually completes for this account.
     requestFullResync(user.id)
     useSyncStore.setState({ notice: { until: Date.now() + NOTICE_MS, synced: false } })
-    await run(set)
+    await run(set, true)
   },
 
   claimLocalData: (userId) => {
@@ -544,12 +585,30 @@ export async function waitForSyncIdle(locks?: LockManager): Promise<void> {
   await withSyncLock(async () => {}, locks)
 }
 
-async function run(set: Setter): Promise<void> {
-  exclusive ??= createSingleFlight(() => withSyncLock(() => doRun(set)))
+/**
+ * A request that joins an in-flight cycle cannot change that cycle's network
+ * decision. Keep the strongest requested consent for the queued rerun: an
+ * explicit Continue must never be downgraded by a background sync that lands
+ * while the first cycle is still running.
+ */
+let queuedResumePausedProjection: boolean | null = null
+
+async function run(set: Setter, resumePausedProjection: boolean): Promise<void> {
+  queuedResumePausedProjection =
+    queuedResumePausedProjection === true ? true : resumePausedProjection
+  exclusive ??= createSingleFlight(() =>
+    withSyncLock(() => {
+      // No request means no consent. A queued rerun after a quiet sync must
+      // not default to true and silently resume on a metered connection.
+      const resume = queuedResumePausedProjection ?? false
+      queuedResumePausedProjection = null
+      return doRun(set, resume)
+    }),
+  )
   return exclusive()
 }
 
-async function doRun(set: Setter) {
+async function doRun(set: Setter, resumePausedProjection: boolean) {
   const user = useAuthStore.getState().user
   // 예약된 뒤에 로그아웃했거나 다른 계정으로 바뀌었을 수 있다 — 문에서 다시 확인한다
   if (!user || !canSyncForUser(user.id)) return
@@ -617,6 +676,7 @@ async function doRun(set: Setter) {
         // A manual refresh starts the projection over from a new snapshot and
         // clears the language first, so a soft-deleted row cannot survive.
         resetProjection: fullResyncWasRequested,
+        resumePausedProjection,
       })
       if (clockGuard.rolledBack && !report.warnings.includes('clock-rollback')) {
         report.warnings = [...report.warnings, 'clock-rollback']
@@ -719,6 +779,7 @@ async function doRun(set: Setter) {
       // A quota pause is recoverable: come back after the server's window
       // instead of waiting for an unrelated user action or a reload.
       scheduleQuotaRetry(startedUserId, report)
+      void schedulePersistedProjectionRetry(startedUserId)
 
       // The full pull is what the manual request was for. A push-only failure
       // still means it completed; a failed pull must be retried from scratch.
@@ -757,6 +818,19 @@ async function doRun(set: Setter) {
         set({ status: 'local', error: null, dirty: false, pendingByStore: {} })
         return
       }
+      // An offline pull leaves an already-started pass resumable. Persist the
+      // offline reason so a reload restores the banner instead of silently
+      // presenting an incomplete wordbook as merely "preparing".
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        try {
+          await markProjectionFailure(startedUserId, 'offline')
+          await useWordbookStore.getState().refreshProjectionReadiness(startedUserId)
+        } catch {
+          // The projection state is local bookkeeping; a failed marker must
+          // not replace the sync error the user needs to see.
+        }
+      }
+
       // 못 보냈으므로 그대로 '기기에만 있음' — 지워 버리면 진도가 사라진 것으로 보인다.
       // Counts may have grown in another tab during this cycle, so prefer the
       // shared record and fall back to the batch when it cannot be read.
@@ -854,7 +928,12 @@ export function useCloudSync() {
       }
       useSyncStore.setState(next)
 
-      if (scope.canSync) void useSyncStore.getState().syncQuietly()
+      if (scope.canSync && userId !== null) {
+        // A quota/state pause restores its retry window before the sync cycle
+        // even starts, so a reload does not lose the server's timer.
+        void schedulePersistedProjectionRetry(userId)
+        void useSyncStore.getState().syncQuietly()
+      }
     })()
 
     return () => {
@@ -893,7 +972,21 @@ export function useCloudSync() {
     // pagehide 는 beforeunload 보다 믿을 만하다: bfcache 로 들어갈 때도 불리고,
     // 휴대전화에서 X 를 눌러도 난다.
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') syncDirty()
+      if (document.visibilityState === 'hidden') {
+        syncDirty()
+        return
+      }
+      if (!user) return
+      // Returning to the tab resumes a due paused projection, but only when
+      // the connection policy allows it. A metered tab keeps the prompt.
+      void readProjectionState(user.id)
+        .then((states) => {
+          if (useAuthStore.getState().user?.id !== user.id) return
+          if (shouldResumePausedProjection(states, currentProjectionNetwork())) {
+            void syncQuietly()
+          }
+        })
+        .catch(() => undefined)
     }
 
     window.addEventListener('pagehide', syncDirty)

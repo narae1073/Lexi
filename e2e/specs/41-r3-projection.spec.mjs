@@ -23,6 +23,7 @@ import {
   PROJECTION_LANGUAGE,
   clearProjectionPageQuota,
   deleteTestUser,
+  installNetworkProfile,
   installProbes,
   navigate,
   prepareTestUser,
@@ -30,10 +31,12 @@ import {
   projectionPassState,
   psql,
   readProjectionState,
+  removeNetworkProfile,
   requests,
   rpcWrites,
   searchWordbook,
   seedPageQuota,
+  setProjectionPause,
   sqlLiteral,
   startSession,
   storeCount,
@@ -320,11 +323,75 @@ export async function run(ctx) {
       `${storedRows.length} projection rows`,
     )
 
-    // ── resume: the retry uses the stored cursor and the same snapshot ─────
-    // Only the page-rate counters are cleared. Keeping `projection_sync_passes`
-    // is what proves this is a real resume of the charged pass: deleting it
-    // would let the client look like it resumed while starting a fresh one.
+    // ── reload: restore the pause from device-local metadata ──────────────
+    await ctx.reload()
+    await waitForAppReady(ctx)
+    await ctx.waitFor(
+      `!!document.querySelector('[data-list-paused]')`,
+      'restored paused projection banner',
+      10_000,
+    )
+    const afterReloadLog = await requests(ctx)
+    ctx.check(
+      'paused banner is restored after reload',
+      true,
+      'data-list-paused present before any resume',
+    )
+    ctx.check(
+      'quota pause makes no projection request before its window',
+      projectionRequests(afterReloadLog).length === 0,
+      `${projectionRequests(afterReloadLog).length} requests`,
+    )
+
+    // ── metered: require consent, then resume on the explicit action ───────
+    // Turn the quota pause into an event-driven pause so the retry window does
+    // not hide the network gate. The snapshot and cursor are unchanged; this
+    // test is about consent, not about inventing a different pass.
+    await setProjectionPause(ctx, user.id, PROJECTION_LANGUAGE, {
+      reason: 'bytes',
+      pausedAt: new Date().toISOString(),
+      nextAttemptAt: null,
+      quotaBucket: null,
+      retryAfterSeconds: null,
+    })
     await clearProjectionPageQuota(config, user.id)
+    const networkScript = await installNetworkProfile(ctx, {
+      saveData: false,
+      effectiveType: '4g',
+      type: 'cellular',
+    })
+    await ctx.reload()
+    await waitForAppReady(ctx)
+    await ctx.waitFor(
+      `!!document.querySelector('[data-list-paused]')`,
+      'metered pause banner',
+      10_000,
+    )
+    const meteredProfile = await ctx.page.evaluate(`(() => {
+      const c = navigator.connection;
+      return c ? { type: c.type ?? null, saveData: c.saveData ?? null, effectiveType: c.effectiveType ?? null } : null;
+    })()`)
+    ctx.check(
+      'metered test profile is visible to the app',
+      meteredProfile?.type === 'cellular',
+      JSON.stringify(meteredProfile),
+    )
+    await sleep(1500)
+    const meteredLog = await requests(ctx)
+    ctx.check(
+      'metered connection does not silently resume the paused projection',
+      projectionRequests(meteredLog).length === 0,
+      `${projectionRequests(meteredLog).length} requests while metered: ${JSON.stringify(
+        projectionRequests(meteredLog).map((page) => page.params),
+      )}`,
+    )
+    const continueVisible = await ctx.page.evaluate(
+      `!!document.querySelector('[data-list-continue]')`,
+    )
+    ctx.check('metered pause offers explicit consent', continueVisible === true)
+
+    await ctx.clickSelector('[data-list-continue]')
+    await removeNetworkProfile(ctx, networkScript)
     await waitForProjectionComplete(ctx, user.id, PROJECTION_LANGUAGE, 180_000)
     const completeState = await readProjectionState(ctx, user.id)
     ctx.check(

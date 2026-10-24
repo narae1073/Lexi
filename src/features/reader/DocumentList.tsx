@@ -18,6 +18,7 @@ import {
   type ProgressEntry,
 } from '../wordbook/wordbookProjection'
 import { createWordbookWorkerClient } from '../wordbook/wordbookWorker'
+import { useProjectionPauseReady } from '../wordbook/useProjectionPause'
 import { FolderMenu } from './FolderMenu'
 import { FolderPicker } from './FolderPicker'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -33,8 +34,6 @@ import {
 import { childrenOf, folderOfDocument, pruneNestedTicks, visibleRoots } from './folderTree'
 import type { Folder, LanguageCode, WordStatus } from '../../types'
 
-const EMPTY_PAUSED: string[] = []
-
 export function DocumentList() {
   const t = useTranslation()
   const languageName = useLanguageName()
@@ -44,17 +43,13 @@ export function DocumentList() {
   const byKey = useWordStatesStore((s) => s.byKey)
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
-  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
-  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
-  const quotaRetrySeconds = useSyncStore(
-    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
-  )
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
   const enrolled = useLanguagesStore((s) => s.enrolled)
   const projectionEntries = useWordbookStore((s) => s.entriesByLanguage)
   const projectionDataRevision = useWordbookStore((s) => s.dataRevision)
   const completeByLanguage = useWordbookStore((s) => s.projectionCompleteByLanguage)
+  const projectionPauseByLanguage = useWordbookStore((s) => s.projectionPauseByLanguage)
   const loadedLanguages = useWordbookStore((s) => s.loadedLanguages)
   const refreshWordbook = useWordbookStore((s) => s.refreshFromStore)
   const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
@@ -239,12 +234,15 @@ export function DocumentList() {
 
   const preparing = !localOnly && enrolled.some((language) => !projectionReadyLanguages.has(language))
   const preparation = preparationProgress(completeByLanguage, enrolled)
-  const projectionPaused = pausedLanguages.some((language) =>
+  const pausedLanguages = Object.keys(projectionPauseByLanguage).filter((language) =>
     enrolled.includes(language as LanguageCode),
   )
-  const quotaPaused = projectionPaused && pausedReason === 'quota'
-  const statePaused = projectionPaused && pausedReason === 'state'
-  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
+  const firstPause = projectionPauseByLanguage[pausedLanguages[0] ?? '']
+  const projectionPaused = pausedLanguages.length > 0
+  const quotaPaused = projectionPaused && firstPause?.reason === 'quota'
+  const statePaused = projectionPaused && firstPause?.reason === 'state'
+  const quotaMinutes = Math.max(1, Math.ceil((firstPause?.retryAfterSeconds ?? 60) / 60))
+  const pauseReady = useProjectionPauseReady(firstPause)
 
   /** Reads persisted completeness; this is what keeps an R2 upgrade on local data. */
   useEffect(() => {
@@ -526,7 +524,7 @@ export function DocumentList() {
                   : t('wordbook.pausedHint')}
             </span>
           )}
-          {projectionPaused && !quotaPaused && !statePaused && (
+          {projectionPaused && pauseReady && (
             <button
               type="button"
               data-list-continue

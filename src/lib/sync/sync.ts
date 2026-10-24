@@ -572,6 +572,7 @@ export async function syncOnce({
   pushedAt,
   resetProjection = false,
   projectionByteBudget,
+  resumePausedProjection = true,
 }: {
   userId: string
   /** 이 기기에서 배운 언어 */
@@ -591,6 +592,12 @@ export async function syncOnce({
   resetProjection?: boolean
   /** Override the soft projection byte budget (tests only). */
   projectionByteBudget?: number
+  /**
+   * Whether a projection that persisted a pause may resume this cycle.
+   * Automatic sync sets false on metered/saveData connections; an explicit
+   * Continue/full-resync action leaves the default true.
+   */
+  resumePausedProjection?: boolean
 }): Promise<SyncReport> {
   // This snapshot of server and local data is the plan for one sync attempt.
   const syncStartedAt = new Date().toISOString()
@@ -604,6 +611,7 @@ export async function syncOnce({
       projectionState,
       resetProjection,
       projectionByteBudget,
+      resumePaused: resumePausedProjection,
     }),
     readLocal(),
   ])

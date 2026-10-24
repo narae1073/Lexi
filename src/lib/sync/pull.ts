@@ -195,6 +195,11 @@ export type PullOptions = {
   resetProjection?: boolean
   /** Override the soft projection byte budget (tests only). */
   projectionByteBudget?: number
+  /**
+   * Whether a paused projection may resume. Automatic sync passes false when
+   * the connection is metered; an explicit user action passes true.
+   */
+  resumePaused?: boolean
 }
 
 type ProjectionPass = {
@@ -271,8 +276,20 @@ async function pullProjection(
   state: ProjectionStateMap,
   reset: boolean,
   budget: number,
+  resumePaused: boolean,
 ): Promise<{ pull: ProjectionPull; rows: ProjectionRow[] }> {
-  const targets = [...new Set(languages.filter((code) => typeof code === 'string' && code !== ''))]
+  const now = Date.now()
+  const targets = [
+    ...new Set(languages.filter((code) => typeof code === 'string' && code !== '')),
+  ].filter((code) => {
+    const stored = projectionStateFor(state, code)
+    if (!resumePaused && stored.pause !== undefined) return false
+    if (stored.pause?.nextAttemptAt) {
+      const retryAt = Date.parse(stored.pause.nextAttemptAt)
+      if (!Number.isNaN(retryAt) && retryAt > now) return false
+    }
+    return true
+  })
   const rows: ProjectionRow[] = []
   const paused: string[] = []
   const fullLanguages: string[] = []
@@ -340,6 +357,7 @@ async function pullProjection(
   let index = 0
   let pauseReason: 'bytes' | 'quota' | 'state' | null = null
   let quota: { bucket: ProjectionQuotaBucket; retryAfterSeconds: number } | null = null
+  const pausedAt = new Date().toISOString()
   while (passes.some((pass) => !pass.done)) {
     const pass = passes[index % passes.length]
     index += 1
@@ -439,6 +457,28 @@ async function pullProjection(
     }
   }
 
+  /**
+   * The pause is part of the same persisted state as the cursor. A reload can
+   * therefore restore the banner and quota window without a sync report.
+   */
+  const pauseForPausedLanguage: ProjectionState['pause'] =
+    pauseReason === null
+      ? undefined
+      : {
+          reason: pauseReason,
+          pausedAt,
+          nextAttemptAt:
+            pauseReason === 'quota' && quota !== null
+              ? new Date(
+                  Date.parse(pausedAt) + quota.retryAfterSeconds * 1000 + 1000,
+                ).toISOString()
+              : pauseReason === 'state'
+                ? new Date(Date.parse(pausedAt) + 5_000).toISOString()
+                : null,
+          quotaBucket: pauseReason === 'quota' ? (quota?.bucket ?? null) : null,
+          retryAfterSeconds: pauseReason === 'quota' ? (quota?.retryAfterSeconds ?? null) : null,
+        }
+
   const next: Record<string, ProjectionState> = {}
   const complete: Partial<Record<string, boolean>> = {}
   for (const pass of passes) {
@@ -455,6 +495,9 @@ async function pullProjection(
         snapshot: pass.restartSnapshot,
         cursor: null,
         hydratedAt: pass.previous.hydratedAt,
+        ...(paused.includes(pass.language) && pauseForPausedLanguage !== undefined
+          ? { pause: pauseForPausedLanguage }
+          : {}),
       }
       complete[pass.language] = false
       continue
@@ -482,6 +525,9 @@ async function pullProjection(
               ? { languageCode: pass.language, lemma: pass.cursor }
               : null,
           hydratedAt: pass.previous.hydratedAt,
+          ...(!pass.done && paused.includes(pass.language) && pauseForPausedLanguage !== undefined
+            ? { pause: pauseForPausedLanguage }
+            : {}),
         }
     next[pass.language] = state
     complete[pass.language] = state.complete
@@ -599,6 +645,7 @@ export async function pull(
     projectionState,
     options.resetProjection === true,
     options.projectionByteBudget ?? PROJECTION_BYTE_BUDGET,
+    options.resumePaused !== false,
   )
 
   return {

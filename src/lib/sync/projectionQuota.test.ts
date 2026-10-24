@@ -128,8 +128,20 @@ describe('quota-aware projection pulls', () => {
       languageCode: 'fr',
       lemma: lemma(1000),
     })
+    expect(paused.projection.next.fr.pause).toMatchObject({
+      reason: 'quota',
+      quotaBucket: 'page',
+      retryAfterSeconds: 42,
+    })
+    expect(paused.projection.next.fr.pause?.pausedAt).toEqual(expect.any(String))
+    expect(paused.projection.next.fr.pause?.nextAttemptAt).toEqual(expect.any(String))
 
     // The next cycle resumes after the last stored lemma, not from lemma 0.
+    // Move the persisted quota window into the past so this test covers the
+    // resume page shape; the waiting behavior has its own test below.
+    if (paused.projection.next.fr.pause) {
+      paused.projection.next.fr.pause.nextAttemptAt = new Date(Date.now() - 1).toISOString()
+    }
     const resumed = quotaAfter(server, 0, 'page')
     const rest = await pull(
       USER_ID,
@@ -149,6 +161,55 @@ describe('quota-aware projection pulls', () => {
     expect(rest.projection.next.fr.complete).toBe(true)
     expect(rest.projection.paused).toEqual([])
     expect(rest.projection.pauseReason).toBeNull()
+  })
+
+  it('does not resume a paused pass without consent', async () => {
+    const server = memoryServer()
+    for (let index = 1; index <= 1500; index += 1) {
+      server.add('wordbook_entries', projectionRow(lemma(index)))
+    }
+
+    const first = quotaAfter(server, 2, 'page')
+    const paused = await pull(USER_ID, first.client, {}, { languages: ['fr'] })
+    const denied = quotaAfter(server, 0, 'page')
+    const blocked = await pull(USER_ID, denied.client, {}, {
+      languages: ['fr'],
+      projectionState: paused.projection.next,
+      resumePaused: false,
+    })
+
+    expect(denied.calls).toHaveLength(0)
+    expect(blocked.wordbookEntries).toEqual([])
+    expect(blocked.projection.next).toEqual({})
+  })
+
+  it('waits for a persisted quota window even when resume is allowed', async () => {
+    const server = memoryServer()
+    server.add('wordbook_entries', projectionRow(lemma(1)))
+    const state = {
+      fr: {
+        complete: false,
+        snapshot: '2026-10-30T00:00:00.000Z',
+        cursor: null,
+        hydratedAt: null,
+        pause: {
+          reason: 'quota' as const,
+          pausedAt: new Date().toISOString(),
+          nextAttemptAt: new Date(Date.now() + 60_000).toISOString(),
+          quotaBucket: 'page' as const,
+          retryAfterSeconds: 60,
+        },
+      },
+    }
+    const waiting = quotaAfter(server, 0, 'page')
+    const result = await pull(USER_ID, waiting.client, {}, {
+      languages: ['fr'],
+      projectionState: state,
+      resumePaused: true,
+    })
+
+    expect(waiting.calls).toHaveLength(0)
+    expect(result.wordbookEntries).toEqual([])
   })
 
   it('does not clear a language when a new pass is denied before its first page', async () => {
@@ -232,11 +293,16 @@ describe('quota-aware projection pulls', () => {
     expect(result.projection.quota).toBeNull()
     // Restart the same charged snapshot from lemma 0 instead of retrying the
     // rejected cursor. A new snapshot would spend another daily unit.
-    expect(result.projection.next.fr).toEqual({
+    expect(result.projection.next.fr).toMatchObject({
       complete: false,
       snapshot: '2026-10-30T00:00:00.000Z',
       cursor: null,
       hydratedAt: null,
+      pause: {
+        reason: 'state',
+        quotaBucket: null,
+        retryAfterSeconds: null,
+      },
     })
   })
 })

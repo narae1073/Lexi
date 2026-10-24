@@ -17,6 +17,7 @@ import {
   resolveWordbookPresentation,
   type ProjectionWordbookEntry,
 } from '../wordbook/wordbookProjection'
+import { useProjectionPauseReady } from '../wordbook/useProjectionPause'
 import { QuizAnswerButtons } from './QuizAnswerButtons'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
@@ -47,7 +48,6 @@ type DictionaryTarget = {
 
 /** 사전 상자는 단어 팝오버와 같은 폭을 쓴다 — 같은 사전이 두 곳에서 달라 보이지 않게 */
 const DICTIONARY_WIDTH = 300
-const EMPTY_PAUSED: string[] = []
 /**
  * Stable empty projection list.
  *
@@ -76,11 +76,6 @@ export function QuizView() {
   const pressStatus = useWordStatesStore((s) => s.pressStatus)
   const localOnly = useSyncStore((s) => s.localOnly)
   const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
-  const pausedLanguages = useSyncStore((s) => s.report?.projectionPaused ?? EMPTY_PAUSED)
-  const pausedReason = useSyncStore((s) => s.report?.projectionPausedReason ?? null)
-  const quotaRetrySeconds = useSyncStore(
-    (s) => s.report?.projectionQuotaRetryAfterSeconds ?? null,
-  )
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
 
@@ -96,6 +91,9 @@ export function QuizView() {
     (s) => s.loadedLanguages[languageCode ?? ''] === true,
   )
   const completeByLanguage = useWordbookStore((s) => s.projectionCompleteByLanguage)
+  const languagePause = useWordbookStore((s) =>
+    languageCode ? s.projectionPauseByLanguage[languageCode] : undefined,
+  )
   const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
   const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
   /** 고른 개수. 아직 안 골랐으면 가장 큰 선택지로 본다 */
@@ -125,14 +123,18 @@ export function QuizView() {
   const presentation = resolveWordbookPresentation({
     localOnly,
     projectionReady,
-    projectionPaused: languageCode !== null && pausedLanguages.includes(languageCode),
+    projectionPaused: languagePause !== undefined,
     hasLocalWordbook: (occurrences[languageCode ?? '']?.length ?? 0) > 0,
   })
   const source = presentation.source
   const preparation = preparationProgress(completeByLanguage, enrolled)
-  const quotaPaused = presentation.showPaused && pausedReason === 'quota'
-  const statePaused = presentation.showPaused && pausedReason === 'state'
-  const quotaMinutes = Math.max(1, Math.ceil((quotaRetrySeconds ?? 60) / 60))
+  const quotaPaused = presentation.showPaused && languagePause?.reason === 'quota'
+  const statePaused = presentation.showPaused && languagePause?.reason === 'state'
+  const quotaMinutes = Math.max(
+    1,
+    Math.ceil((languagePause?.retryAfterSeconds ?? 60) / 60),
+  )
+  const pauseReady = useProjectionPauseReady(languagePause)
 
   useEffect(() => {
     if (localOnly) return
@@ -300,7 +302,7 @@ export function QuizView() {
                   ? t('wordbook.statePausedHint')
                   : t('wordbook.pausedHint')}
             </span>
-            {presentation.showContinue && !quotaPaused && !statePaused && (
+            {presentation.showContinue && pauseReady && (
               <button
                 type="button"
                 onClick={() => void syncNow()}

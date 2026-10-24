@@ -31,11 +31,32 @@ import {
 
 export type ProjectionCursor = { languageCode: string; lemma: string }
 
+/**
+ * Why a projection pass stopped before finishing.
+ *
+ * `bytes` and `quota` are the normal resumable pauses. `state` means the server
+ * rejected the cursor and the next cycle must restart the pass from its
+ * snapshot. `offline` and `error` describe a pull that could not reach the
+ * server; they have no retry window and wait for a lifecycle event.
+ */
+export type ProjectionPauseReason = 'bytes' | 'quota' | 'state' | 'offline' | 'error'
+
+export type ProjectionPause = {
+  reason: ProjectionPauseReason
+  pausedAt: string
+  /** Quota retry time, or the short state-restart delay. Null when event-driven. */
+  nextAttemptAt: string | null
+  quotaBucket: 'page' | 'sync' | null
+  retryAfterSeconds: number | null
+}
+
 export type ProjectionState = {
   complete: boolean
   snapshot: string | null
   cursor: ProjectionCursor | null
   hydratedAt: string | null
+  /** Present only while this language is paused; absent once it completes. */
+  pause?: ProjectionPause
 }
 
 export type ProjectionStateMap = Record<string, ProjectionState>
@@ -72,6 +93,60 @@ function normalizeCursor(value: unknown): ProjectionCursor | null {
   return { languageCode: value.languageCode, lemma: value.lemma }
 }
 
+const PAUSE_REASONS = new Set<ProjectionPauseReason>([
+  'bytes',
+  'quota',
+  'state',
+  'offline',
+  'error',
+])
+
+/**
+ * Bad pause metadata is dropped, not turned into "complete". The snapshot and
+ * cursor remain usable, so a corrupt notice cannot force a re-download.
+ */
+function normalizePause(value: unknown): ProjectionPause | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.reason !== 'string' || !PAUSE_REASONS.has(value.reason as ProjectionPauseReason)) {
+    return undefined
+  }
+  if (!isTimestamp(value.pausedAt)) return undefined
+
+  const nextAttemptAt =
+    value.nextAttemptAt === null || value.nextAttemptAt === undefined
+      ? null
+      : isTimestamp(value.nextAttemptAt)
+        ? value.nextAttemptAt
+        : undefined
+  if (nextAttemptAt === undefined) return undefined
+
+  const quotaBucket =
+    value.quotaBucket === null || value.quotaBucket === undefined
+      ? null
+      : value.quotaBucket === 'page' || value.quotaBucket === 'sync'
+        ? value.quotaBucket
+        : undefined
+  if (quotaBucket === undefined) return undefined
+
+  const retryAfterSeconds =
+    value.retryAfterSeconds === null || value.retryAfterSeconds === undefined
+      ? null
+      : typeof value.retryAfterSeconds === 'number' &&
+          Number.isFinite(value.retryAfterSeconds) &&
+          value.retryAfterSeconds >= 0
+        ? value.retryAfterSeconds
+        : undefined
+  if (retryAfterSeconds === undefined) return undefined
+
+  return {
+    reason: value.reason as ProjectionPauseReason,
+    pausedAt: value.pausedAt,
+    nextAttemptAt,
+    quotaBucket,
+    retryAfterSeconds,
+  }
+}
+
 /**
  * One language's state, or the incomplete default when the stored value is not
  * a usable record. `complete` is only true when it was stored as a boolean
@@ -82,9 +157,11 @@ function normalizeProjectionState(value: unknown): ProjectionState {
 
   const snapshot = isTimestamp(value.snapshot) ? value.snapshot : null
   const cursor = normalizeCursor(value.cursor)
+  const pause = normalizePause(value.pause)
+  const paused = pause === undefined ? {} : { pause }
   // The cursor is only meaningful under the snapshot it was produced from.
   if (snapshot === null) {
-    return { complete: false, snapshot: null, cursor: null, hydratedAt: null }
+    return { complete: false, snapshot: null, cursor: null, hydratedAt: null, ...paused }
   }
 
   return {
@@ -92,6 +169,7 @@ function normalizeProjectionState(value: unknown): ProjectionState {
     snapshot,
     cursor,
     hydratedAt: isTimestamp(value.hydratedAt) ? value.hydratedAt : null,
+    ...paused,
   }
 }
 
@@ -216,6 +294,40 @@ export async function updateProjectionState(
     transaction.onabort = () =>
       reject(failure ?? transaction.error ?? new Error('projection state update was aborted'))
   })
+}
+
+/**
+ * Records an event-driven pause (offline/error) for resumable languages.
+ *
+ * Only a language that already started a full pass (`snapshot !== null`) and
+ * is still unfinished gets the marker. A brand-new language that has not read
+ * its first page is "not downloaded yet", not "paused". An existing quota or
+ * byte pause is more specific and is left untouched.
+ */
+export async function markProjectionFailure(
+  userId: string,
+  reason: 'offline' | 'error',
+): Promise<void> {
+  const states = await readProjectionState(userId)
+  const pausedAt = new Date().toISOString()
+  for (const [languageCode, state] of Object.entries(states)) {
+    if (state.complete || state.snapshot === null || state.pause !== undefined) continue
+    await updateProjectionState(userId, languageCode, (current) => {
+      if (current.complete || current.snapshot === null || current.pause !== undefined) {
+        return current
+      }
+      return {
+        ...current,
+        pause: {
+          reason,
+          pausedAt,
+          nextAttemptAt: null,
+          quotaBucket: null,
+          retryAfterSeconds: null,
+        },
+      }
+    })
+  }
 }
 
 /**
