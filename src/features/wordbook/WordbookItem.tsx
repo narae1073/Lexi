@@ -123,7 +123,9 @@ export function WordbookItem({
               <button
                 key={status}
                 type="button"
-                onClick={() => setStatus(languageCode, entry.lemma, status, entry.lemma)}
+                onClick={() =>
+                  setStatus(languageCode, entry.lemma, status, entry.lemma, 'wordbook')
+                }
                 aria-pressed={active}
                 aria-label={t(`status.${status}`)}
                 title={t(`status.${status}`)}

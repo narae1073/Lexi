@@ -19,6 +19,7 @@ import {
 } from '../wordbook/wordbookProjection'
 import { useProjectionPauseReady } from '../wordbook/useProjectionPause'
 import { QuizAnswerButtons } from './QuizAnswerButtons'
+import { QuizProgressChart } from './QuizProgressChart'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
@@ -295,6 +296,8 @@ export function QuizView() {
             </button>
           ))}
         </div>
+
+        {languageCode && <QuizProgressChart key={languageCode} languageCode={languageCode} />}
 
         {presentation.showPaused && (
           <div

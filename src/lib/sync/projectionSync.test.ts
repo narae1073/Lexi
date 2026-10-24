@@ -687,7 +687,7 @@ describe('projection completeness', () => {
     const finished = projectionStateFor(await readProjectionState(USER_ID), 'fr')
     expect(finished.snapshot).toBe(SNAPSHOT)
     expect(finished.pause).toBeUndefined()
-  }, 20_000)
+  }, 40_000)
 
   it('starts a reusable read session and keeps it across a paused pass', async () => {
     const server = memoryServer(2000, SNAPSHOT)

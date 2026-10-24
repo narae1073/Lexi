@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 
 import { pruneCache } from '../lib/api/offlineCache'
+import { ensureWordStateBaseline } from '../lib/storage/wordStateEvents'
 import { ComposeDocument } from '../features/reader/ComposeDocument'
 import { DocumentList } from '../features/reader/DocumentList'
 import { ReaderView } from '../features/reader/ReaderView'
@@ -153,9 +154,23 @@ export default function App() {
   useEffect(() => {
     // 소유자 확인 전이나 잠금 중에는 사전·등장 기록을 받아 오지 않는다
     if (restoring || !gateReady || accountBlocked) return
-    for (const language of enrolled) {
-      void loadOccurrences(language)
-      void loadWordStates(language)
+    let cancelled = false
+    void (async () => {
+      for (const language of enrolled) {
+        void loadOccurrences(language)
+        await loadWordStates(language)
+        if (cancelled) return
+        const states = Object.values(useWordStatesStore.getState().byKey)
+          .filter((state) => state.languageCode === language)
+          .map((state) => ({ lemma: state.lemma, status: state.status }))
+        // The graph is device-local. This baseline makes its first point
+        // reflect the wordbook that exists on this device now; after a reset
+        // the same path starts a fresh timeline.
+        await ensureWordStateBaseline(language, states)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [enrolled, loadOccurrences, loadWordStates, restoring, gateReady, accountBlocked])
 

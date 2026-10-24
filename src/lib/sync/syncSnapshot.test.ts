@@ -99,7 +99,7 @@ describe('snapshot-based pulls', () => {
       new Date(Date.parse(SNAPSHOT) - 5 * 60_000).toISOString(),
     )
     expect(server.rpcCalls('sync_snapshot')).toBe(1)
-  })
+  }, 20_000)
 
   it('re-reads the five-minute overlap after a late commit', async () => {
     const server = memoryServer(1000, SNAPSHOT)

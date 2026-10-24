@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 
 import { STORES, idbGet, idbGetAllByIndex, idbPut } from '../../lib/storage/localDb'
+import {
+  appendWordStateEvent,
+  type WordStateEventSource,
+} from '../../lib/storage/wordStateEvents'
 import type { LanguageCode, WordState, WordStatus } from '../../types'
 import { randomStarAngle, randomStarColor } from '../../features/reader/favoriteStar'
 import { notifyLocalProjectionChange } from '../../features/wordbook/localProjection'
@@ -37,6 +41,7 @@ type WordStatesStore = {
     lemma: string,
     status: WordStatus,
     surface?: string,
+    source?: WordStateEventSource,
   ) => void
   /**
    * 표시를 없앤다 — 같은 버튼을 한 번 더 누른 것이다.
@@ -45,7 +50,11 @@ type WordStatesStore = {
    * 사라진다. 상태만 빼고 시각을 새로 찍으면, 동기화에서 '늦게 없앤 쪽' 이
    * 이겨 서버 행도 지워진다. 다시 표시하면 그때부터 새 기록이다.
    */
-  clearStatus: (languageCode: LanguageCode, lemma: string) => void
+  clearStatus: (
+    languageCode: LanguageCode,
+    lemma: string,
+    source?: WordStateEventSource,
+  ) => void
   /**
    * 즐겨찾기 ☆/★.
    *
@@ -91,6 +100,7 @@ type WordStatesStore = {
     result: WordStatus,
     pressed: WordStatus,
     surface?: string,
+    source?: WordStateEventSource,
   ) => void
   getStatus: (languageCode: LanguageCode, lemma: string) => WordStatus | undefined
 }
@@ -120,7 +130,7 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
 
   getStatus: (languageCode, lemma) => get().byKey[wordKey(languageCode, lemma)]?.status,
 
-  setStatus: (languageCode, lemma, status, surface) => {
+  setStatus: (languageCode, lemma, status, surface, source = 'reader') => {
     if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
@@ -149,12 +159,20 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     announceState(next)
 
     if (previous?.status === status) return
+    void appendWordStateEvent({
+      languageCode,
+      lemma,
+      oldStatus: previous?.status ?? null,
+      newStatus: status,
+      source,
+      occurredAt: timestamp,
+    }).catch((error) => console.error('단어 상태 이벤트 저장 실패', error))
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
       console.error('단어 상태 저장 실패', error)
     })
   },
 
-  pressStatus: (languageCode, lemma, result, pressed, surface) => {
+  pressStatus: (languageCode, lemma, result, pressed, surface, source = 'quiz') => {
     if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
@@ -182,13 +200,24 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
     announceState(next)
 
+    if (previous?.status !== result) {
+      void appendWordStateEvent({
+        languageCode,
+        lemma,
+        oldStatus: previous?.status ?? null,
+        newStatus: result,
+        source,
+        occurredAt: timestamp,
+      }).catch((error) => console.error('퀴즈 상태 이벤트 저장 실패', error))
+    }
+
     // 상태가 그대로여도 저장한다 — 횟수가 늘었기 때문이다
     void idbPut(STORES.wordStates, { ...next, surface }).catch((error) => {
       console.error('퀴즈 단추 횟수 저장 실패', error)
     })
   },
 
-  clearStatus: (languageCode, lemma) => {
+  clearStatus: (languageCode, lemma, source = 'reader') => {
     if (lemma.length > MAX_LEMMA_LENGTH) return
     const key = wordKey(languageCode, lemma)
     const previous = get().byKey[key]
@@ -200,6 +229,14 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
     const next = { ...kept, lastSeenAt: timestamp }
     set((s) => ({ byKey: { ...s.byKey, [key]: next } }))
     announceState(next)
+    void appendWordStateEvent({
+      languageCode,
+      lemma,
+      oldStatus: previous.status ?? null,
+      newStatus: null,
+      source,
+      occurredAt: timestamp,
+    }).catch((error) => console.error('단어 상태 해제 이벤트 저장 실패', error))
 
     // 저장된 행에서 상태만 뺀다 — 별·읽은 기록·별 시각은 그대로 둔다.
     // lastSeenAt 을 새로 찍어야 동기화에서 이 '없앰' 이 이긴다.
@@ -339,12 +376,30 @@ export const useWordStatesStore = create<WordStatesStore>((set, get) => ({
    */
   loadLanguage: async (languageCode, options) => {
     if (!options?.force && get().loaded[languageCode]) return
+    const wasLoaded = get().loaded[languageCode] === true
 
     const rows = await idbGetAllByIndex<WordState & { surface?: string }>(
       STORES.wordStates,
       'languageCode',
       languageCode,
     )
+    if (wasLoaded) {
+      const previous = get().byKey
+      const now = new Date().toISOString()
+      for (const row of rows) {
+        const oldStatus = previous[wordKey(languageCode, row.lemma)]?.status ?? null
+        const newStatus = row.status ?? null
+        if (oldStatus === newStatus) continue
+        void appendWordStateEvent({
+          languageCode,
+          lemma: row.lemma,
+          oldStatus,
+          newStatus,
+          source: 'sync',
+          occurredAt: now,
+        }).catch((error) => console.error('동기화 상태 이벤트 저장 실패', error))
+      }
+    }
     set((s) => {
       const byKey = { ...s.byKey }
       for (const row of rows) {
