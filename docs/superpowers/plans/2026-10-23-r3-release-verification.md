@@ -4,6 +4,28 @@
 checks fail without a local translation provider**. **Not released.**
 No production migration, deployment, or production data change was performed.
 
+## Settled release decisions — 2026-10-24
+
+- **Q1(a):** 116k is a linear worst-case upper bound, not a Heaps-law model.
+  The 25k-lemma release fixture is intentional. The 64 MB soft projection cap
+  stays; a worst-case 116k projection may require a second pass, and approved
+  conditional auto-resume makes that invisible on Wi-Fi/unmetered networks.
+  A genuine 116k stress fixture is an optional verification spike, not a
+  release prerequisite.
+- **Q2:** conditional auto-resume is approved. Wi-Fi/unmetered resumes silently;
+  metered/`saveData` prompts. Paused state must be restored from device-local
+  metadata after reload/restart and is now a **P1** requirement.
+- **Q4:** IndexedDB v7 is accepted. Local data is preserved by the v6→v7
+  upgrade. **R2 cannot reopen a v7 database.** Post-deploy frontend rollback is
+  a forward-fix, not a code rollback; server rollback remains possible.
+
+### v7 release boundary
+
+> R3 uses IndexedDB v7. R2 cannot open a v7 database after R3 has opened it.
+> Local learning data is preserved by the v7 migration; server rollback remains
+> possible, but post-deploy frontend rollback is a forward-fix, not a code
+> rollback.
+
 - Plan: `/home/achi/.opencode/plan/2026-10-23-r3-scale-data-usage.md`
 - Branch: `r3-scale-data-usage`
 - R3 scale/pre-public work HEAD: `044a642`

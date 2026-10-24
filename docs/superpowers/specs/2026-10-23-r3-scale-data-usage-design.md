@@ -1,8 +1,34 @@
 # R3 — Scale & Data Usage Design
 
-**Status:** Draft for approval
-**Date:** 2026-10-23
+**Status:** Accepted; implementation complete, production release pending explicit approval
+**Date:** 2026-10-24
 **Scope:** Lexi R3, building on the completed and deployed R2 sync model.
+
+## Decision update — 2026-10-24
+
+The following decisions are settled and supersede earlier “proposed” or
+“remaining decision” language in this document:
+
+- **Q1(a) — 116k is a worst-case upper bound; keep the 64 MB soft cap.** The
+  116k figure was derived by linear extrapolation from the production ratio
+  (3,237 distinct lemmas / 5,571 occurrence rows = 0.581; 200,000 × 0.581 =
+  116,000), not from Heaps’ law. Natural-language vocabulary growth is
+  sublinear; the 25k-lemma release fixture is an intentional synthetic model,
+  not a linear extrapolation. The 64 MB cap remains; a worst-case 116k
+  projection may require a second pass, which conditional auto-resume makes
+  invisible on Wi-Fi/unmetered networks. A genuine 116k stress fixture remains
+  an optional verification spike, not a release prerequisite.
+- **Q2 — conditional auto-resume is approved.** On Wi-Fi/unmetered, a paused
+  projection resumes silently; on metered/`saveData`, the prompt remains a
+  data-consent gate. Paused state survives reload/app restart and resumes on
+  app open/online/visibility. Background Fetch is not used.
+- **Q2 — paused banner restoration is P1.** Persisting and restoring the paused
+  projection state after reload is now a release prerequisite, not polish.
+- **Q4 — IndexedDB v7 is accepted.** Local data is preserved by the additive
+  v6→v7 upgrade. R2 cannot reopen a v7 database; post-deploy rollback means
+  forward-fix, not code rollback. Server rollback remains possible.
+- The 64 MB/10 MB/25 MB caps, client-derived document progress, security-definer
+  refresh mechanism, and the 200k local seed/load gate are accepted decisions.
 
 ## Intent
 
@@ -81,6 +107,17 @@ Production currently has heavy occurrence churn: 28.9M inserts and 28.9M deletes
 | Server joined wordbook aggregate | 172 ms |
 
 The exact model used 1,112 documents, 116,000 lemmas, and 200,000 occurrence rows. Client timings are single-threaded Node measurements, not a mobile-device guarantee.
+
+**How 116k was derived.** It is a linear worst-case extrapolation, not a
+vocabulary-saturation model: production has 3,237 distinct lemmas across
+5,571 occurrence rows, or 0.581 lemmas per row; 200,000 × 0.581 ≈ 116,000.
+Applying Heaps’ law with β≈0.5–0.6 to the same starting point yields roughly
+19k–28k lemmas at 200k occurrences. The release fixture intentionally uses
+`HOT_POOL = 5,000` + `COLD_POOL = 20,000` = **25,000 distinct lemmas/user**,
+with 60% hot/40% cold per document and ~10% surface duplicates; it was not
+derived from the production ratio. The accepted 64 MB cap is therefore sized
+for the natural-language range and is only a soft two-pass case for the linear
+worst-case model when auto-resume is available.
 
 ### Current cache and dictionary cost
 
@@ -293,10 +330,23 @@ The wordbook projection has its own snapshot and cursor; it does not share the d
 
 - Remove the global `MAX_ROWS = 200_000` hard failure.
 - Page by bytes as well as rows; target a small page budget (roughly 1 MB) and store a resumable cursor with the snapshot.
-- Initial wordbook projection has a soft cap (proposed 64 MB uncompressed) with an explicit “continue” prompt and progress rather than a silent failure.
-- Per-document content/occurrence fetch has a soft cap (proposed 10 MB) and a paged/resumable path for larger documents.
+- Initial wordbook projection has an accepted soft cap of 64 MB uncompressed. A worst-case 116k projection may need a second pass; a natural-language account near the 25k fixture is covered by one pass.
+- Per-document content/occurrence fetch has an accepted soft cap of 10 MB and a paged/resumable path for larger documents.
 - A failed or interrupted projection resumes from its cursor; it does not restart and does not delete local data.
 - No byte cap may silently evict learning data. Cache eviction applies only to disposable response/dictionary caches.
+
+#### Conditional auto-resume (approved)
+
+Paused projections resume without a manual “2-pass/days” decision:
+
+- **Wi-Fi / unmetered:** resume silently from the persisted snapshot and cursor on app open, `online`, or visibility; no button.
+- **Metered / `saveData` / slow effective connection:** show the prompt and require consent before continuing.
+- **Reload/app restart:** restore the paused language state immediately from device-local metadata and resume silently where the network allows.
+- Use app lifecycle/network events plus the existing sync scheduler; do **not** depend on Background Fetch, which is unreliable on iOS.
+- Auto-resume is client-side; the server pass-state/quota contract already supports same-snapshot resume. No new server endpoint is required.
+- Persist the paused state in the reserved `documentMeta` projection record per account/language: `reason` (`bytes`/`quota`/`offline`/`error`), `pausedAt`, optional `nextAttemptAt`, `quotaBucket`, and `retryAfterSeconds`, alongside the existing `complete`, `snapshot`, `cursor`, and `hydratedAt`.
+- Paused-state restoration is a **P1** release requirement (promoted from P3), because it is the prerequisite for continuous auto-resume after reload.
+- Required tests: reload while paused; cold app restart; `online`/visibility resume; Wi-Fi/unmetered silent; cellular/`saveData` prompt; quota-window retry; no duplicate pass or daily unit; no server re-report.
 
 #### Responsiveness targets
 
@@ -331,20 +381,22 @@ Local-only accounts have no server projection. R3 builds `wordbookEntries` local
 
 The existing `buildWordbook` logic is retained as the semantic reference and worker aggregation code, but the UI reads `wordbookEntries` in both modes. Tests compare synced projection semantics against the local builder for the same source data.
 
-IndexedDB version 7 is proposed for the new stores. **Rollback boundary:** an R2 frontend cannot open a v7 database after R3 has opened it. R3 is therefore proposed as a one-way frontend release with server rollback still possible; this must be accepted explicitly before planning. The alternative is a separate-database/store strategy, which is more complex and is not recommended for R3.
+IndexedDB version 7 is **accepted** for the new stores. The additive v6→v7 upgrade preserves existing stores, rows, and sync metadata; this is covered by `src/lib/storage/localDbV7.test.ts`. **Rollback boundary:** an R2 frontend cannot open a v7 database after R3 has opened it. R3 is therefore a one-way frontend release with server rollback still possible; post-deploy frontend rollback means forward-fix, not code rollback. The alternative separate-database/store strategy is not selected.
 
 ### UI
 
 - `Wordbook` renders from `wordbookEntries`; no full occurrence scan or `buildWordbook` aggregate on the main thread.
 - Wordbook search and sorting run in a worker or over a precomputed sorted index; pagination remains.
 - `DocumentList` progress is derived from wordbook contexts/document ids, memoized and worker-backed. If the 200k benchmark misses responsiveness targets, add a compact per-document progress projection.
+- A paused projection banner is restored from device-local metadata after reload; it is not dependent on an in-memory sync report surviving the page lifecycle.
+- On Wi-Fi/unmetered, a paused projection resumes silently; on metered/`saveData`, the prompt remains visible until consent.
 - `ReaderView` fetches content/occurrences on open, shows a loading state only for the missing document, and never blocks the wordbook or document list.
 - Quiz uses contexts already present in the wordbook projection; no context fetch is required for a new device.
 - Document list rendering is paginated/virtualized for large accounts.
 
 ### Cache, dictionary, and WASM
 
-- Add a bounded LRU/size policy to `responseCache` (proposed 25 MB) in addition to age pruning.
+- Add a bounded LRU/size policy to `responseCache` (accepted 25 MB) in addition to age pruning.
 - Before downloading Japanese/Chinese dictionaries, prompt with the exact size and respect Wi-Fi/`saveData` preferences.
 - Precache the Lindera WASM runtime with the service worker so offline dictionary use does not depend on a prior browser cache.
 - Dictionary zips may remain on-demand and are stored in OPFS after download.
@@ -363,7 +415,7 @@ Keep the existing watermark/dirty-key machinery, but make the push path explicit
 - **Projection staleness:** the derived table must be refreshed on every mutation path; a missed trigger produces a wordbook that disagrees with source data.
 - **First-sync size:** ~49 MB at 200k is still significant on mobile; compression, progress UI, and resumability are part of the feature, not polish.
 - **Upgrade download:** an existing R2 account still downloads the full projection after upgrading. This is expected, but it is a one-time 49 MB cost and needs first-class progress and resume behavior.
-- **IndexedDB rollback:** v7 is one-way unless the separate-store strategy is chosen; this is the remaining explicit release decision.
+- **IndexedDB rollback:** accepted one-way v7 boundary; R2 cannot reopen the database. Post-deploy frontend rollback is forward-fix, not code rollback.
 - **Server refresh cost:** recomputing affected lemmas after occurrence replacement must stay within the request budget.
 - **Dual mode:** local-only wordbook and synced projection wordbook must stay semantically identical.
 - **Word-state hydration:** a hydrated server state must not look like an unsynced local edit; otherwise a new device re-pushes the whole wordbook state.
@@ -385,6 +437,8 @@ R3 is complete when:
 - A projection entry whose last occurrence disappears is removed locally after an incremental pull; it does not remain as a phantom word.
 - A non-dirty local word-state edit wins over a stale projection row; a hydrated server state does not create a pending push.
 - A metadata-only document shows its character count and sorts correctly without content, and opening it does not re-push `raw_text`.
+- A paused projection restores its banner/state after reload and auto-resumes on Wi-Fi/unmetered; metered/`saveData` still requires consent.
+- The v6→v7 IndexedDB upgrade preserves all local learning data; the one-way R2 boundary is documented.
 - Dictionaries prompt with size; WASM works offline; response cache is capped.
 - Acknowledged tombstones are not re-sent.
 - Existing unit/e2e suites pass, plus the local 200k seed/load test and the two-device manual sync check.
@@ -409,14 +463,14 @@ R3 is complete when:
 - Required wordbook merge fields and timestamps live in the projection; field-level merge semantics are preserved.
 - Document metadata includes `char_count`; metadata-only documents never trigger a content push.
 - Local-only wordbook uses the same `wordbookEntries` read model, built by a worker from local occurrences.
-- Hard caps are soft/recoverable: proposed 64 MB per complete wordbook projection and 10 MB per document payload.
-- Projection refresh is transactional with source writes; the preferred mechanism is security-definer refresh functions called by statement-level triggers.
+- Hard caps are accepted: 64 MB per complete wordbook projection, 10 MB per document payload, and 25 MB response cache with LRU eviction.
+- 116k is accepted as a linear worst-case upper bound; the 25k fixture is the natural-language-scale release fixture. A genuine 116k stress fixture is an optional verification spike.
+- Conditional auto-resume is approved; paused-state restoration is a P1 release requirement.
+- Projection refresh is transactional with source writes; the accepted mechanism is security-definer refresh functions with affected-only, deterministic, set-based updates.
 - Document progress is client-derived in a worker by default, with a server progress projection as a tested fallback.
-- Response cache cap is proposed at 25 MB with LRU eviction.
 - R3 test fixtures use both the local Supabase stack and a repeatable seed script.
+- IndexedDB v7 is accepted as a one-way frontend release; R2 cannot reopen the database, and post-deploy frontend rollback means forward-fix.
 
-## Remaining decision
+## Settled decisions
 
-- **IndexedDB rollback boundary:** accept a v7 one-way frontend release (recommended; local data remains, server rollback remains possible), or require R2 rollback compatibility via a separate database/store strategy.
-
-If the v7 one-way decision is accepted, the remaining design is ready for an executable R3 plan.
+All earlier open decisions are closed. The remaining work is implementation/verification of the approved auto-resume and paused-state restoration, the optional 116k stress fixture, the local translation-provider e2e key, and the production release runbook. Implementation is complete; production release still requires explicit approval.
