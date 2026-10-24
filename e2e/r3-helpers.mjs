@@ -393,7 +393,18 @@ export async function projectionPassState(config, userId, snapshot, language) {
 export async function measureWorkerProgress(ctx, statuses = undefined) {
   const payload = statuses === undefined ? '' : `, statuses: ${JSON.stringify(statuses)}`
   return ctx.page.evaluate(`(async () => {
-    const workers = window.__r3Workers || [];
+    const deadline = performance.now() + 10_000;
+    let workers = [];
+    while (performance.now() < deadline) {
+      const documentWorkers = (window.__r3Workers || []).filter(
+        (worker) => worker.__r3Role === 'document-list' && worker.__r3Rebuilt === true,
+      );
+      // A navigation unmounts the previous DocumentList worker but leaves its
+      // probe entry in the array; the newest rebuilt instance owns the dataset.
+      workers = documentWorkers.slice(-1);
+      if (workers.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     if (workers.length === 0) return { ms: -1, progress: 0 };
     const id = 2_000_000_000;
     const started = performance.now();

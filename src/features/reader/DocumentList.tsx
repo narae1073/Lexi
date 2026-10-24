@@ -201,7 +201,9 @@ export function DocumentList() {
    * on this device has its rows here too, so there is nothing a projection
    * would add.
    */
-  const [progressWorker] = useState(() => createWordbookWorkerClient())
+  const [progressWorker] = useState(() =>
+    createWordbookWorkerClient({ role: 'document-list' }),
+  )
   useEffect(() => {
     return () => progressWorker.terminate()
   }, [progressWorker])

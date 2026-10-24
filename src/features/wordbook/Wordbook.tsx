@@ -149,7 +149,9 @@ export function Wordbook() {
    * only when the projection content changes — a status tap patches one row and
    * must not re-send 116k entries.
    */
-  const [worker] = useState(() => createWordbookWorkerClient())
+  const [worker] = useState(() =>
+    createWordbookWorkerClient({ role: 'wordbook' }),
+  )
   useEffect(() => {
     return () => worker.terminate()
   }, [worker])

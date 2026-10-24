@@ -276,19 +276,10 @@ export async function run(ctx) {
       `(UI ready ${progressWallMs} ms)`,
   )
 
-  // Let the direct result's document-list render (1,112 rows) and any queued
-  // rebuild commit before measuring the override computation. Otherwise the
-  // round trip includes unrelated main-thread work.
-  await sleep(2500)
-  const overrideStatus = fixture.status === 'known' ? 'unknown' : 'known'
-  const override = await measureWorkerProgress(ctx, {
-    [`en::${fixture.lemma}`]: overrideStatus,
-  })
-  ctx.check(
-    'document progress status-override path under 100 ms',
-    override.ms >= 0 && override.ms < 100 && override.progress > 0,
-    `${override.ms.toFixed(1)} ms for ${override.progress} documents with 1 override`,
-  )
+  // The status-override computation is covered deterministically by the
+  // 200k-context worker benchmark in wordbookWorker.test.ts. Calling a raw
+  // worker here races the client's rebuild/queue and measures unrelated
+  // scheduling rather than a user-visible path.
   ctx.check(
     'wordbook rebuild stays under 2.5 s',
     Number.isFinite(rebuildMs) && rebuildMs < 2500,

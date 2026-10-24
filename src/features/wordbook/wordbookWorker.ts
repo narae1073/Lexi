@@ -130,6 +130,14 @@ type Dataset = {
    * cost once and the request filters the cached map.
    */
   progress: Map<string, DocumentProgress> | null
+  /**
+   * `languageCode::lemma` lookup for status overrides.
+   *
+   * A status tap only needs the affected entry. Scanning every projection row
+   * on each override made the 200k fixture's round trip host-load sensitive.
+   * Built lazily once per dataset and invalidated when entries change.
+   */
+  byStatusKey: Map<string, ProgressEntry> | null
 }
 
 /**
@@ -292,7 +300,12 @@ function handleLocalRebuild(
     // The search dataset shares these rows. The index is invalidated rather than
     // re-sorted here: the next search pays that cost once, so a document edit
     // stays proportional to the document, not to the language.
-    state.datasets.set(languageCode, { entries, index: null, progress: null })
+    state.datasets.set(languageCode, {
+      entries,
+      index: null,
+      progress: null,
+      byStatusKey: null,
+    })
   }
 
   const build: LocalProjectionBuild = {
@@ -313,16 +326,27 @@ function handleLocalRebuild(
  * progress already counts the lemma at its rebuilt status, and each entry's
  * contexts name exactly the documents to move by ±1.
  */
+function buildStatusKeyIndex(
+  entries: readonly WorkerDatasetEntry[],
+): Map<string, ProgressEntry> {
+  const index = new Map<string, ProgressEntry>()
+  for (const value of entries) {
+    const entry = value as unknown as ProgressEntry & { languageCode?: string }
+    if (entry.languageCode) index.set(`${entry.languageCode}::${entry.lemma}`, entry)
+  }
+  return index
+}
+
 function applyProgressOverrides(
   merged: Map<string, DocumentProgress>,
-  entries: readonly unknown[],
+  dataset: Dataset,
   statuses: Record<string, ProgressEntry['status']>,
 ): void {
-  for (const value of entries) {
-    const entry = value as ProgressEntry & { languageCode?: string }
-    if (!entry.languageCode) continue
-    const overridden = statuses[`${entry.languageCode}::${entry.lemma}`]
-    if (overridden === undefined) continue
+  dataset.byStatusKey ??= buildStatusKeyIndex(dataset.entries)
+
+  for (const [key, overridden] of Object.entries(statuses)) {
+    const entry = dataset.byStatusKey.get(key)
+    if (!entry) continue
     const before = entry.status !== 'unmarked'
     const after = overridden !== 'unmarked'
     if (before === after) continue
@@ -365,6 +389,7 @@ export function handleWordbookRequest(
       progress: computeDocumentProgress(
         request.entries as unknown as readonly ProgressEntry[],
       ),
+      byStatusKey: buildStatusKeyIndex(request.entries),
     })
     // An account projection replaces any local-only rows for the language: after
     // a device links an account, the server copy is the authority.
@@ -416,7 +441,7 @@ export function handleWordbookRequest(
       )
       for (const [documentId, entry] of dataset.progress) merged.set(documentId, entry)
       if (statuses && Object.keys(statuses).length > 0) {
-        applyProgressOverrides(merged, dataset.entries, statuses)
+        applyProgressOverrides(merged, dataset, statuses)
       }
     }
     return { type: 'progress', progress: Object.fromEntries(filterProgress(merged, request.documents)) }
@@ -467,6 +492,8 @@ export type WordbookWorkerClientOptions = {
   worker?: WorkerLike
   /** Force the inline implementation (tests without a Worker constructor). */
   inline?: boolean
+  /** Test/e2e role marker for the worker probe; no runtime behavior. */
+  role?: string
 }
 
 function createDefaultWorker(): WorkerLike | null {
@@ -508,6 +535,12 @@ export class WordbookWorkerClient {
     }
     this.inlineState = this.worker ? null : createWordbookWorkerState()
 
+    if (this.worker && options.role) {
+      // E2E probes need to distinguish the DocumentList worker from the wordbook
+      // worker; this property is ignored by the app.
+      ;(this.worker as WorkerLike & { __r3Role?: string }).__r3Role = options.role
+    }
+
     if (this.worker) {
       this.worker.onmessage = (event) => {
         const response = event.data
@@ -527,7 +560,14 @@ export class WordbookWorkerClient {
 
   rebuild(entries: readonly WordbookEntry[], languageCode = DEFAULT_LANGUAGE): Promise<void> {
     const request: WordbookWorkerRequest = { type: 'rebuild', entries, languageCode }
-    this.rebuildBarrier = this.send(request)
+    const worker = this.worker as (WorkerLike & { __r3Rebuilt?: boolean }) | null
+    if (worker) worker.__r3Rebuilt = false
+    this.rebuildBarrier = this.send(request).then((response) => {
+      // E2E probe marker: distinguish a completed dataset from a worker whose
+      // rebuild is still queued. No runtime behavior depends on this.
+      if (worker) worker.__r3Rebuilt = true
+      return response
+    })
     return this.rebuildBarrier.then(() => undefined)
   }
 
