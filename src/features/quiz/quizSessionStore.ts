@@ -16,6 +16,8 @@ type QuizSessionState = {
   answer: WordStatus | null
   results: WordStatus[]
   peeked: boolean
+  /** True when the user finished before the planned last question. */
+  endedEarly: boolean
   selectLanguage: (languageCode: LanguageCode) => void
   selectSize: (size: number) => void
   startSession: (input: {
@@ -26,6 +28,7 @@ type QuizSessionState = {
   }) => void
   recordAnswer: (result: WordStatus) => void
   advance: () => void
+  finishEarly: () => void
   backToSetup: () => void
   markPeeked: () => void
   reset: () => void
@@ -41,6 +44,7 @@ const initialState = {
   answer: null,
   results: [],
   peeked: false,
+  endedEarly: false,
 }
 
 /**
@@ -69,6 +73,7 @@ export const useQuizSessionStore = create<QuizSessionState>((set, get) => ({
       answer: null,
       results: [],
       peeked: false,
+      endedEarly: false,
     }),
 
   recordAnswer: (result) => {
@@ -85,10 +90,15 @@ export const useQuizSessionStore = create<QuizSessionState>((set, get) => ({
     const state = get()
     if (state.phase !== 'session') return
     if (state.index + 1 >= state.words.length) {
-      set({ phase: 'summary' })
+      set({ phase: 'summary', endedEarly: false })
       return
     }
     set({ index: state.index + 1, answer: null, peeked: false })
+  },
+
+  finishEarly: () => {
+    if (get().phase !== 'session') return
+    set({ phase: 'summary', endedEarly: true })
   },
 
   backToSetup: () =>
@@ -100,6 +110,7 @@ export const useQuizSessionStore = create<QuizSessionState>((set, get) => ({
       answer: null,
       results: [],
       peeked: false,
+      endedEarly: false,
     }),
 
   markPeeked: () => set({ peeked: true }),

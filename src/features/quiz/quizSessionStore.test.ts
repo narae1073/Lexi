@@ -82,6 +82,80 @@ describe('quiz session store', () => {
     expect(useQuizSessionStore.getState().languageCode).toBe('en')
   })
 
+  it('ends early with the answers given so far', () => {
+    useQuizSessionStore.getState().startSession({
+      languageCode: 'en',
+      size: 10,
+      entries,
+      words: [word('alpha'), word('beta'), word('charlie')],
+    })
+    useQuizSessionStore.getState().recordAnswer('unsure')
+    useQuizSessionStore.getState().finishEarly()
+
+    expect(useQuizSessionStore.getState()).toMatchObject({
+      phase: 'summary',
+      endedEarly: true,
+      results: ['unsure'],
+      words: [expect.objectContaining({ lemma: 'alpha' }), expect.any(Object), expect.any(Object)],
+    })
+  })
+
+  it('excludes the unanswered current question when ending early', () => {
+    useQuizSessionStore.getState().startSession({
+      languageCode: 'en',
+      size: 10,
+      entries,
+      words: [word('alpha'), word('beta'), word('charlie')],
+    })
+    useQuizSessionStore.getState().recordAnswer('known')
+    useQuizSessionStore.getState().advance()
+    useQuizSessionStore.getState().finishEarly()
+
+    expect(useQuizSessionStore.getState()).toMatchObject({
+      phase: 'summary',
+      endedEarly: true,
+      index: 1,
+      answer: null,
+      results: ['known'],
+    })
+  })
+
+  it('ends early with no answers as an empty partial summary', () => {
+    useQuizSessionStore.getState().startSession({
+      languageCode: 'en',
+      size: 10,
+      entries,
+      words: [word('alpha'), word('beta')],
+    })
+    useQuizSessionStore.getState().finishEarly()
+
+    expect(useQuizSessionStore.getState()).toMatchObject({
+      phase: 'summary',
+      endedEarly: true,
+      results: [],
+    })
+  })
+
+  it('does not mark a normally completed session as early', () => {
+    useQuizSessionStore.getState().startSession({
+      languageCode: 'en',
+      size: 10,
+      entries,
+      words: [word('alpha')],
+    })
+    useQuizSessionStore.getState().recordAnswer('known')
+    useQuizSessionStore.getState().advance()
+
+    expect(useQuizSessionStore.getState()).toMatchObject({
+      phase: 'summary',
+      endedEarly: false,
+      results: ['known'],
+    })
+
+    useQuizSessionStore.getState().backToSetup()
+    expect(useQuizSessionStore.getState().endedEarly).toBe(false)
+  })
+
   it('resets session and setup selections when the identity changes', () => {
     useQuizSessionStore.getState().selectLanguage('en')
     useQuizSessionStore.getState().selectSize(20)

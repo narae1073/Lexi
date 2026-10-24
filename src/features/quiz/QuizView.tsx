@@ -25,6 +25,7 @@ import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
 import { useQuizSessionStore } from './quizSessionStore'
 import {
+  answeredSessionWords,
   blankWord,
   defaultSessionSize,
   nextStatus,
@@ -88,11 +89,13 @@ export function QuizView() {
     answer,
     results,
     peeked,
+    endedEarly,
     selectLanguage,
     selectSize,
     startSession,
     recordAnswer,
     advance: advanceSession,
+    finishEarly,
     backToSetup: resetToSetup,
     markPeeked,
   } = useQuizSessionStore()
@@ -232,6 +235,11 @@ export function QuizView() {
     // node that is about to unmount. Start the summary with no stale target.
     setDictionaryTarget(null)
     advanceSession()
+  }
+
+  const endQuizNow = () => {
+    setDictionaryTarget(null)
+    finishEarly()
   }
 
   const backToSetup = () => {
@@ -381,8 +389,10 @@ export function QuizView() {
   // ── 끝난 화면: 요약 ──
   if (phase === 'summary') {
     const counts = summarize(results)
+    // Ending early keeps only the questions that were actually answered.
+    const answeredWords = answeredSessionWords(words, results)
     // 단어별 변화 — 푼 순서 그대로, 강조 없이 나열한다
-    const changes = sessionChanges(words, results)
+    const changes = sessionChanges(answeredWords, results)
     const changedCount = changes.filter((change) => change.changed).length
     const statusLabel = (status: WordStatus) =>
       status === 'known' ? t('quiz.know') : status === 'unsure' ? t('quiz.unsure') : t('quiz.new')
@@ -391,7 +401,14 @@ export function QuizView() {
         <h1 data-quiz-summary className="text-lg font-semibold">
           {t('quiz.done')}
         </h1>
-        <p className="text-ink-muted mt-1 text-sm">{t('quiz.doneHint')}</p>
+        <p data-quiz-summary-hint className="text-ink-muted mt-1 text-sm">
+          {endedEarly
+            ? t('quiz.endedEarlyHint', {
+                answered: results.length,
+                total: words.length,
+              })
+            : t('quiz.doneHint')}
+        </p>
 
         <ul className="mt-6 flex flex-wrap gap-4">
           <SummaryCount label={t('quiz.summaryKnown')} status="known" count={counts.known} />
@@ -409,7 +426,7 @@ export function QuizView() {
             </div>
             <ul className="mt-3 flex flex-col gap-1.5">
               {changes.map((change, i) => {
-                const summaryWord = words[i]
+                const summaryWord = answeredWords[i]
                 return (
                   <li key={`${summaryWord?.lemma ?? change.surface}:${i}`} data-quiz-change>
                     <button
@@ -485,9 +502,19 @@ export function QuizView() {
 
   return (
     <section className="mx-auto w-full max-w-2xl px-5 py-8">
-      <p data-quiz-progress className="text-ink-muted text-xs">
-        {t('quiz.progress', { done: index + 1, total: words.length })}
-      </p>
+      <div className="flex items-center justify-between gap-3">
+        <p data-quiz-progress className="text-ink-muted text-xs">
+          {t('quiz.progress', { done: index + 1, total: words.length })}
+        </p>
+        <button
+          type="button"
+          data-quiz-end-now
+          onClick={endQuizNow}
+          className="border-line text-ink-muted hover:border-accent hover:text-ink focus-visible:outline-accent min-h-11 shrink-0 rounded-lg border px-3 py-2 text-xs transition focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          {t('quiz.endQuizNow')}
+        </button>
+      </div>
 
       {/*
         별은 상태와 무관하므로 문제를 푸는 도중 계속 보인다 — 붙이거나 뗄 수 있다.

@@ -165,6 +165,8 @@ export const en = {
     next: 'Next',
     done: 'Session complete',
     doneHint: 'You went through every word in this session.',
+    endedEarlyHint: 'You ended this session early. You answered {answered} of {total} words.',
+    endQuizNow: 'End quiz now',
     progressTitle: 'Wordbook over time',
     progressRange: 'Range',
     progressBucket: 'Bucket',

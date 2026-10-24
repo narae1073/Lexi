@@ -164,6 +164,8 @@ export const ko: Dictionary = {
     next: '다음',
     done: '퀴즈를 마쳤습니다',
     doneHint: '이번 세션의 단어를 모두 풀었습니다.',
+    endedEarlyHint: '퀴즈를 일찍 끝냈습니다. {total}개 중 {answered}개에 답했습니다.',
+    endQuizNow: '퀴즈 끝내기',
     progressTitle: '시간에 따른 단어장',
     progressRange: '범위',
     progressBucket: '간격',

@@ -272,6 +272,20 @@ export function summarize(statuses: WordStatus[]): Record<WordStatus, number> {
   return counts
 }
 
+/**
+ * 답한 문제만 남긴다.
+ *
+ * Sessions advance in order, so the recorded answers form a prefix of the
+ * selected words. Ending early must not make unanswered questions look like
+ * they were part of the completed session.
+ */
+export function answeredSessionWords(
+  words: readonly QuizWord[],
+  results: readonly WordStatus[],
+): QuizWord[] {
+  return words.slice(0, Math.min(words.length, results.length))
+}
+
 /** 끝난 화면의 한 줄 — 단어 하나의 풀기 전과 후 */
 export type SessionChange = {
   surface: string

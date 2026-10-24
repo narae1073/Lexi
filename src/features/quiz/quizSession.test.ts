@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { WordStatus } from '../../types'
 import {
   DAY_MS,
+  answeredSessionWords,
   blankWord,
   defaultSessionSize,
   drawWords,
@@ -337,6 +338,29 @@ describe('세션 요약', () => {
 
   it('아무것도 없으면 모두 0 이다', () => {
     expect(summarize([])).toEqual({ known: 0, unsure: 0, unknown: 0 })
+  })
+})
+
+describe('일찍 끝낸 세션', () => {
+  const words: QuizWord[] = [
+    { lemma: 'a', surface: 'A', status: 'unknown', sentence: '', documentTitle: '' },
+    { lemma: 'b', surface: 'b', status: 'unsure', sentence: '', documentTitle: '' },
+    { lemma: 'c', surface: 'c', status: 'unknown', sentence: '', documentTitle: '' },
+  ]
+
+  it('답한 단어만 완료 화면에 남긴다', () => {
+    expect(answeredSessionWords(words, ['unsure', 'known']).map((word) => word.lemma)).toEqual([
+      'a',
+      'b',
+    ])
+  })
+
+  it('아직 답하지 않은 단어는 완료 화면에서 뺀다', () => {
+    expect(answeredSessionWords(words, ['unsure']).map((word) => word.lemma)).toEqual(['a'])
+  })
+
+  it('답이 하나도 없으면 빈 목록이다', () => {
+    expect(answeredSessionWords(words, [])).toEqual([])
   })
 })
 
