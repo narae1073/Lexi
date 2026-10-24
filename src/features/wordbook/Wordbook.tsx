@@ -129,6 +129,13 @@ export function Wordbook() {
     1,
     Math.ceil((languagePause?.retryAfterSeconds ?? 60) / 60),
   )
+  const quotaHint = !quotaPaused
+    ? null
+    : languagePause?.quotaBucket === 'sync'
+      ? t('wordbook.quotaDailyPausedHint', { minutes: quotaMinutes })
+      : languagePause?.quotaBucket === 'page'
+        ? t('wordbook.quotaPagePausedHint')
+        : t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
   const pauseReady = useProjectionPauseReady(languagePause)
 
   /**
@@ -338,7 +345,7 @@ export function Wordbook() {
               {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
             </strong>{' '}
             {quotaPaused
-              ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+              ? quotaHint
               : statePaused
                 ? t('wordbook.statePausedHint')
                 : t('wordbook.pausedHint')}

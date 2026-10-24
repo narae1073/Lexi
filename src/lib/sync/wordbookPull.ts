@@ -197,6 +197,49 @@ function normalizePage(value: unknown): ProjectionPage {
   return { rows, hasMore: record.hasMore, nextCursor }
 }
 
+export type ProjectionReadStart = {
+  snapshot: string
+  sessionId: string
+  /** True when the server reused today's already-charged snapshot. */
+  reused: boolean
+}
+
+function normalizeReadStart(value: unknown): ProjectionReadStart {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('projection read start response was not an object')
+  }
+  const record = value as { snapshot?: unknown; sessionId?: unknown; reused?: unknown }
+  if (typeof record.snapshot !== 'string' || record.snapshot === '') {
+    throw new Error('projection read start response is missing a snapshot')
+  }
+  if (typeof record.sessionId !== 'string' || record.sessionId === '') {
+    throw new Error('projection read start response is missing a session id')
+  }
+  return {
+    snapshot: record.snapshot,
+    sessionId: record.sessionId,
+    reused: record.reused === true,
+  }
+}
+
+/**
+ * Starts a reusable projection read for the authenticated account.
+ *
+ * The server returns today's recent snapshot when one exists, plus a fresh
+ * per-client session id. Repeated cache clears therefore get independent
+ * cursors without spending another daily complete-download unit.
+ */
+export async function beginProjectionRead(
+  client: SupabaseClient<Database>,
+  forceNew = false,
+): Promise<ProjectionReadStart> {
+  const { data, error } = await client.rpc('begin_projection_read', {
+    p_force_new: forceNew,
+  })
+  if (error) throw error
+  return normalizeReadStart(data)
+}
+
 /**
  * Reads one page of a language's wordbook projection.
  *
@@ -237,14 +280,17 @@ export async function pullProjectionPageBounded(
   afterLemma: string | null,
   limit: number,
   updatedSince: string | null = null,
+  sessionId: string | null = null,
 ): Promise<ProjectionPage> {
-  const { data, error } = await client.rpc('get_wordbook_projection_page_bounded', {
+  const args = {
     p_language_code: language,
     p_after_lemma: afterLemma,
     p_snapshot: snapshot,
     p_updated_since: updatedSince,
     p_limit: projectionPageLimit(limit),
-  })
+    ...(snapshot !== null && sessionId !== null ? { p_session_id: sessionId } : {}),
+  }
+  const { data, error } = await client.rpc('get_wordbook_projection_page_bounded', args)
   if (error) {
     const quota = quotaErrorFrom(error)
     if (quota !== null) throw quota
@@ -272,6 +318,7 @@ export async function pullProjectionPage(
   afterLemma: string | null,
   limit: number,
   updatedSince: string | null = null,
+  sessionId: string | null = null,
 ): Promise<ProjectionRow[]> {
   return (
     await pullProjectionPageBounded(
@@ -282,6 +329,7 @@ export async function pullProjectionPage(
       afterLemma,
       limit,
       updatedSince,
+      sessionId,
     )
   ).rows
 }

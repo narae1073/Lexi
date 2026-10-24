@@ -242,6 +242,22 @@ describe('projection pause persistence', () => {
     expect(state.es.pause?.reason).toBe('quota')
   })
 
+  it('persists the reusable read session with the resumable snapshot', async () => {
+    await writeProjectionState(USER_ID, {
+      fr: {
+        complete: false,
+        snapshot: SNAPSHOT,
+        cursor: { languageCode: 'fr', lemma: 'chat' },
+        hydratedAt: null,
+        sessionId: '00000000-0000-4000-8000-000000000001',
+      },
+    })
+
+    const state = await readProjectionState(USER_ID)
+    expect(state.fr.sessionId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(state.fr.snapshot).toBe(SNAPSHOT)
+  })
+
   it('drops malformed pause metadata but keeps the resumable cursor', async () => {
     await idbPut(STORES.documentMeta, {
       documentId: projectionStateKey(USER_ID),

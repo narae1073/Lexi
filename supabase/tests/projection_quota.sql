@@ -6,7 +6,7 @@
 --     -v ON_ERROR_STOP=1 < supabase/tests/projection_quota.sql
 --
 -- The page RPC uses the production defaults: 60 pages per user per minute,
--- 2 complete syncs per user per UTC day, and a server cursor per
+-- 5 complete syncs per user per UTC day, and a server cursor per
 -- (user, snapshot, language). The fixture pre-seeds window counters / pass
 -- rows as the database owner, then exercises the real functions as
 -- `authenticated` with request.jwt.claim.sub set.
@@ -64,7 +64,9 @@ begin
       'get_wordbook_projection_page',
       'get_wordbook_projection_page_bounded',
       'consume_projection_quota',
+      'consume_projection_snapshot',
       'consume_projection_sync',
+      'begin_projection_read',
       'record_projection_usage',
       'prune_projection_usage'
     )
@@ -76,9 +78,10 @@ begin
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
         and p.proname in ('get_wordbook_projection_page', 'get_wordbook_projection_page_bounded')
       or not has_function_privilege('authenticated', p.oid, 'EXECUTE')
-        and p.proname = 'consume_projection_quota'
+        and p.proname in ('consume_projection_quota', 'begin_projection_read')
       or has_function_privilege('authenticated', p.oid, 'EXECUTE')
-        and p.proname in ('consume_projection_sync', 'record_projection_usage', 'prune_projection_usage')
+        and p.proname in ('consume_projection_sync', 'consume_projection_snapshot',
+          'record_projection_usage', 'prune_projection_usage')
       or has_function_privilege('anon', p.oid, 'EXECUTE')
     );
   if v_bad is not null then
@@ -91,6 +94,9 @@ begin
   end if;
   if not (select relrowsecurity from pg_class where oid = 'public.projection_sync_passes'::regclass) then
     raise exception 'projection_sync_passes does not have RLS enabled';
+  end if;
+  if not (select relrowsecurity from pg_class where oid = 'public.projection_read_sessions'::regclass) then
+    raise exception 'projection_read_sessions does not have RLS enabled';
   end if;
 
   -- The page RPC is the only way a client reads wordbook rows. A direct
@@ -106,7 +112,9 @@ begin
      or has_table_privilege('anon', 'public.projection_usage', 'SELECT')
      or has_table_privilege('authenticated', 'public.projection_sync_passes', 'SELECT')
      or has_table_privilege('authenticated', 'public.projection_sync_passes', 'INSERT')
-     or has_table_privilege('anon', 'public.projection_sync_passes', 'SELECT') then
+     or has_table_privilege('anon', 'public.projection_sync_passes', 'SELECT')
+     or has_table_privilege('authenticated', 'public.projection_read_sessions', 'SELECT')
+     or has_table_privilege('anon', 'public.projection_read_sessions', 'SELECT') then
     raise exception 'projection quota tables are directly readable or writable by a client role';
   end if;
 end $$;
@@ -120,6 +128,10 @@ where user_id in (
   :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
 );
 delete from public.projection_sync_passes
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
+delete from public.projection_read_sessions
 where user_id in (
   :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
 );
@@ -166,6 +178,7 @@ returns void
 language sql
 as $$
   delete from public.projection_sync_passes where user_id = p_user_id;
+  delete from public.projection_read_sessions where user_id = p_user_id;
   delete from public.projection_usage where user_id = p_user_id;
 $$;
 
@@ -533,7 +546,7 @@ end $$;
 select pg_temp.reset_projection(:'user_id'::uuid);
 
 -- ---------------------------------------------------------------------------
--- 4. Daily budget: two snapshots, resumes/languages are free, a third is 429
+-- 4. Daily budget: five snapshots, resumes/languages are free, a sixth is 429
 -- ---------------------------------------------------------------------------
 
 set role authenticated;
@@ -544,16 +557,22 @@ declare
   v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz;
   v_s4 timestamptz := current_setting('test.snapshot')::timestamptz + interval '1 hour';
   v_s5 timestamptz := current_setting('test.snapshot')::timestamptz + interval '2 hours';
+  v_s6 timestamptz := current_setting('test.snapshot')::timestamptz + interval '3 hours';
+  v_s7 timestamptz := current_setting('test.snapshot')::timestamptz + interval '4 hours';
+  v_s8 timestamptz := current_setting('test.snapshot')::timestamptz + interval '5 hours';
   v_detail text;
 begin
   perform 1 from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
   perform 1 from public.get_wordbook_projection_page('fr', 'beta', v_snapshot, null, 2); -- resume
   perform 1 from public.get_wordbook_projection_page('fr', null, v_s4, null, 2);        -- pass 2
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_s5, null, 2);        -- pass 3
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_s6, null, 2);        -- pass 4
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_s7, null, 2);        -- pass 5
   perform 1 from public.get_wordbook_projection_page('de', null, v_snapshot, null, 2);   -- another language, pass 1
 
   begin
-    perform 1 from public.get_wordbook_projection_page('fr', null, v_s5, null, 2);
-    raise exception 'a third complete sync in one day was allowed';
+    perform 1 from public.get_wordbook_projection_page('fr', null, v_s8, null, 2);
+    raise exception 'a sixth complete sync in one day was allowed';
   exception
     when sqlstate 'PT429' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -585,8 +604,8 @@ begin
     and started_at >= (
       date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
     );
-  if v_snapshots <> 2 then
-    raise exception 'daily pass count is %, expected 2 after one denial', v_snapshots;
+  if v_snapshots <> 5 then
+    raise exception 'daily pass count is %, expected 5 after one denial', v_snapshots;
   end if;
 
   select count(*) into v_languages
@@ -632,16 +651,22 @@ declare
   v_yesterday timestamptz := current_setting('test.snapshot')::timestamptz;
   v_today2 timestamptz := current_setting('test.snapshot')::timestamptz + interval '4 hours';
   v_today3 timestamptz := current_setting('test.snapshot')::timestamptz + interval '5 hours';
+  v_today4 timestamptz := current_setting('test.snapshot')::timestamptz + interval '6 hours';
+  v_today5 timestamptz := current_setting('test.snapshot')::timestamptz + interval '7 hours';
+  v_today6 timestamptz := current_setting('test.snapshot')::timestamptz + interval '8 hours';
   v_detail text;
 begin
   -- Resuming yesterday's snapshot is today's first complete sync.
   perform 1 from public.get_wordbook_projection_page('fr', null, v_yesterday, null, 2);
-  -- A new snapshot is today's second.
+  -- New snapshots fill the remaining four daily units.
   perform 1 from public.get_wordbook_projection_page('fr', null, v_today2, null, 2);
-  -- A third distinct snapshot is denied.
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_today3, null, 2);
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_today4, null, 2);
+  perform 1 from public.get_wordbook_projection_page('fr', null, v_today5, null, 2);
+  -- A sixth distinct snapshot is denied.
   begin
-    perform 1 from public.get_wordbook_projection_page('fr', null, v_today3, null, 2);
-    raise exception 'a third cross-day snapshot was allowed';
+    perform 1 from public.get_wordbook_projection_page('fr', null, v_today6, null, 2);
+    raise exception 'a sixth cross-day snapshot was allowed';
   exception
     when sqlstate 'PT429' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -663,8 +688,8 @@ begin
     and started_at >= (
       date_trunc('day', clock_timestamp() at time zone 'utc') at time zone 'utc'
     );
-  if v_snapshots <> 2 then
-    raise exception 'cross-day daily count is %, expected 2', v_snapshots;
+  if v_snapshots <> 5 then
+    raise exception 'cross-day daily count is %, expected 5', v_snapshots;
   end if;
 end $$;
 
@@ -724,7 +749,9 @@ select pg_temp.reset_projection(:'user_id'::uuid);
 insert into public.projection_sync_passes (user_id, snapshot, language_code, started_at)
 values
   (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '10 hours', 'fr', clock_timestamp()),
-  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '11 hours', 'fr', clock_timestamp());
+  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '11 hours', 'fr', clock_timestamp()),
+  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '12 hours', 'fr', clock_timestamp()),
+  (:'user_id'::uuid, current_setting('test.snapshot')::timestamptz + interval '13 hours', 'fr', clock_timestamp());
 
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_id', false);
@@ -732,15 +759,18 @@ set timezone = 'Asia/Seoul';
 
 do $$
 declare
-  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '12 hours';
+  v_snapshot timestamptz := current_setting('test.snapshot')::timestamptz + interval '14 hours';
+  v_over timestamptz := current_setting('test.snapshot')::timestamptz + interval '15 hours';
   v_detail text;
   v_retry int;
   v_expected numeric;
 begin
+  perform 1
+  from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
   begin
     perform 1
-    from public.get_wordbook_projection_page('fr', null, v_snapshot, null, 2);
-    raise exception 'a third daily snapshot was allowed';
+    from public.get_wordbook_projection_page('fr', null, v_over, null, 2);
+    raise exception 'a sixth daily snapshot was allowed';
   exception
     when sqlstate 'PT429' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -902,6 +932,10 @@ where user_id in (
   :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
 );
 delete from public.projection_sync_passes
+where user_id in (
+  :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
+);
+delete from public.projection_read_sessions
 where user_id in (
   :'user_id'::uuid, :'other_user_id'::uuid, :'third_user_id'::uuid, :'fourth_user_id'::uuid
 );

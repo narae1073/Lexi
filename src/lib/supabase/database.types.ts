@@ -425,7 +425,12 @@ export type Database = {
           p_snapshot: string | null
           p_updated_since: string | null
           p_limit: number | null
+          p_session_id?: string
         }
+        Returns: Json
+      }
+      begin_projection_read: {
+        Args: { p_force_new?: boolean }
         Returns: Json
       }
       get_document_payload: {

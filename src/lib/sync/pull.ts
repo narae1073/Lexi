@@ -24,6 +24,7 @@ import {
   type ProjectionStateMap,
 } from './projectionState'
 import {
+  beginProjectionRead,
   PROJECTION_PAGE_MAX,
   ProjectionPassError,
   ProjectionQuotaError,
@@ -218,6 +219,8 @@ type ProjectionPass = {
   done: boolean
   /** Rows read so far; 0 means no page of this pass has been read yet. */
   received: number
+  /** Per-client server session for a reusable full pass, or null for legacy reads. */
+  sessionId: string | null
   /** The server rejected this pass's cursor state; start over next cycle. */
   restart: boolean
   /**
@@ -326,11 +329,31 @@ async function pullProjection(
       // could be past rows that changed behind it while the pass was paused.
       cursor: full ? (previous.cursor?.lemma ?? null) : null,
       previous,
+      sessionId: previous.sessionId ?? null,
       done: false,
       received: 0,
       restart: false,
       restartSnapshot: null,
     })
+  }
+
+  /**
+   * Fresh clients ask the server for today's already-charged snapshot and a
+   * new client session. A reused snapshot is charged once per account/day,
+   * even when a cache clear or another device starts it from lemma 0.
+   */
+  if (passes.some((pass) => pass.full && pass.previous.snapshot === null)) {
+    try {
+      const start = await beginProjectionRead(db, reset)
+      for (const pass of passes) {
+        if (!pass.full || pass.previous.snapshot !== null) continue
+        pass.bound = start.snapshot
+        pass.sessionId = start.sessionId
+      }
+    } catch {
+      // The reusable RPC may not exist on an older backend during a staged
+      // rollout. Fall back to the legacy snapshot/pass path below.
+    }
   }
 
   /**
@@ -350,6 +373,7 @@ async function pullProjection(
       snapshot: pass.bound,
       cursor: null,
       hydratedAt: current.hydratedAt,
+      ...(pass.sessionId !== null ? { sessionId: pass.sessionId } : {}),
     }))
   }
 
@@ -369,7 +393,16 @@ async function pullProjection(
     let nextCursor: string | null
     try {
       const result = pass.full
-        ? await pullProjectionPageBounded(db, userId, pass.language, pass.bound, pass.cursor, limit)
+        ? await pullProjectionPageBounded(
+            db,
+            userId,
+            pass.language,
+            pass.bound,
+            pass.cursor,
+            limit,
+            null,
+            pass.sessionId,
+          )
         : await pullProjectionPageBounded(
             db,
             userId,
@@ -495,6 +528,9 @@ async function pullProjection(
         snapshot: pass.restartSnapshot,
         cursor: null,
         hydratedAt: pass.previous.hydratedAt,
+        ...(pass.restartSnapshot !== null && pass.sessionId !== null
+          ? { sessionId: pass.sessionId }
+          : {}),
         ...(paused.includes(pass.language) && pauseForPausedLanguage !== undefined
           ? { pause: pauseForPausedLanguage }
           : {}),
@@ -525,6 +561,9 @@ async function pullProjection(
               ? { languageCode: pass.language, lemma: pass.cursor }
               : null,
           hydratedAt: pass.previous.hydratedAt,
+          ...(!pass.done && pass.full && pass.sessionId !== null
+            ? { sessionId: pass.sessionId }
+            : {}),
           ...(!pass.done && paused.includes(pass.language) && pauseForPausedLanguage !== undefined
             ? { pause: pauseForPausedLanguage }
             : {}),

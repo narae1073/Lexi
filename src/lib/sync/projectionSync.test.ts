@@ -689,6 +689,40 @@ describe('projection completeness', () => {
     expect(finished.pause).toBeUndefined()
   }, 20_000)
 
+  it('starts a reusable read session and keeps it across a paused pass', async () => {
+    const server = memoryServer(2000, SNAPSHOT)
+    for (let index = 0; index < 1050; index++) {
+      server.add(
+        'wordbook_entries',
+        projectionRow({ lemma: `mot-${String(index).padStart(4, '0')}`, note: 'x'.repeat(50) }),
+      )
+    }
+
+    const first = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      projectionByteBudget: 1024,
+    })
+
+    expect(first.projectionPaused).toEqual(['fr'])
+    const paused = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(paused.sessionId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(server.rpcCalls('begin_projection_read')).toBe(1)
+
+    const second = await syncOnce({
+      userId: USER_ID,
+      languages: ['fr'],
+      db: server.client,
+      projectionByteBudget: 1024,
+    })
+    expect(second.projectionPaused).toEqual([])
+    expect(server.rpcCalls('begin_projection_read')).toBe(1)
+    const completed = projectionStateFor(await readProjectionState(USER_ID), 'fr')
+    expect(completed.complete).toBe(true)
+    expect(completed.sessionId).toBeUndefined()
+  }, 20_000)
+
   it('leaves a paused projection untouched when automatic resume is not allowed', async () => {
     const server = memoryServer(2000, SNAPSHOT)
     for (let index = 0; index < 1050; index++) {

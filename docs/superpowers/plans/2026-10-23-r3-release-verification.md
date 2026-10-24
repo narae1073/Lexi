@@ -1,6 +1,6 @@
 # R3 release verification — 2026-10-23
 
-**Status:** released on 2026-10-24. Full e2e is green (**622/622**), the **11 R3
+**Status:** released on 2026-10-24. Full e2e is green (**622/622**), the **12 R3
 migrations are applied to production**, the projection backfill is verified,
 and the frontend is deployed. Post-deploy monitoring remains.
 
@@ -51,6 +51,14 @@ also archived at
 `/home/achi/lexi-backups/lexi-prod-frontend-pre-r3-20261024T084911Z.tar.gz`
 (18 MB, sha256 `f0611148181d7f9fc007805576e9a9e1a0e45995c757b232c41b1f48c6a26ae5`).
 
+The quota follow-up was applied through the Supabase Management API because the
+CLI management channel hung. The affected production function definitions were
+saved to
+`/home/achi/lexi-backups/lexi-prod-pre-quota-reuse-20261024T115737Z-functions.json`
+(17 KB, mode 600). The pre-deploy webroot for the follow-up is
+`/home/achi/lexi-backups/lexi-prod-frontend-pre-quota-reuse-20261024T115802Z.tar.gz`
+(18 MB, sha256 `4d4b63c471bcefb689a419b2df7baea5293c96c0859b6782a20893fdfe2686d9`).
+
 ## Prerequisites and run order
 
 Run against a fresh or already-seeded local stack, **in this order**:
@@ -81,7 +89,7 @@ opt in because they test tokenization, not consent.
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -b`, exit 0 |
 | `npm run lint` | PASS | `oxlint`, exit 0; only the pre-existing Wordbook memoization warnings |
-| `npm run test` | PASS | 96 files, **1233 tests** |
+| `npm run test` | PASS | 96 files, **1235 tests** |
 | `npm run build` | PASS | PWA generated; 20 precache entries |
 | `npm run verify:rls` | PASS | local anon/forged-JWT reads and writes denied; direct `word_occurrences` DML denied; `dictionary_entries` read allowed |
 | `npm run e2e` | **622 / 622** | specs 41 = 45/45, 42 = 18/18, 28 = 7/7, 29 = 8/8; no external failures |
@@ -202,8 +210,10 @@ like it resumed but start a new pass). The spec asserts:
 snapshot, and the wordbook reaches all 1,200 rows.
 
 The SQL quota test and `test:quota-concurrency` additionally verify the 60
-pages/minute and 2 complete passes/day limits, the pass cursor rules, bucket
+pages/minute and 5 complete passes/day limits, the pass cursor rules, bucket
 allowlists, retention, and concurrent first-page serialization (`200` + `429`).
+Reusable same-UTC-day snapshots use per-client read sessions; a fresh browser
+gets a new session without a new daily charge.
 
 ## v7 upgrade
 
@@ -214,7 +224,7 @@ src/lib/sync/wordbookPull.test.ts src/lib/sync/projectionQuota.test.ts`
 `localDbV7.test.ts` includes the v6→v7 additive upgrade: every existing store
 and row survives, the new `wordbookEntries` and `documentContent` stores are
 created empty, and a blocked/other-tab upgrade completes without hanging.
-The full Vitest suite (1233 tests) passes.
+The full Vitest suite (1235 tests) passes.
 
 ## E2E flow evidence (spec 41, 45/45)
 
@@ -299,16 +309,22 @@ No assertion or threshold was weakened to hide any failure.
 - [x] v7 upgrade and local SQL/RLS/quota checks pass.
 - [x] Metrics snapshot complete with egress and page-byte evidence.
 - [x] Fixture status restored after spec 42.
-- [x] Production migration applied: 11 R3 migrations, latest
-      `20261029000002`; projection backfill **3,096/3,096** rows with zero
+- [x] Production migration applied: **12 R3 migrations**, latest
+      `20261030000000`; projection backfill **3,096/3,096** rows with zero
       missing or extra rows. Production row counts unchanged (29 documents,
       5,424 occurrences, 2,981 word states, 8 languages).
 - [x] Production RLS verified: new projection tables have RLS enabled;
       authenticated direct SELECT is denied; anon REST access to private/
       projection tables is 401; projection RPC execute is authenticated-only.
 - [x] Production frontend deployed on 2026-10-24 with `npm run deploy`;
-      webroot matches `dist`, live index serves `assets/index-Cwyk74TN.js`
+      webroot matches `dist`, live index serves `assets/index-D5yEKY4d.js`
       (HTTP 200), and CSP connects only to the production Supabase project.
+- [x] **Quota follow-up migration — PRODUCTION.**
+      `20261030000000_projection_snapshot_reuse.sql` adds the 5/day limit,
+      same-UTC-day snapshot reuse, and per-client read sessions. The new
+      session table, six-argument page overload, begin RPC, 5/day source, and
+      authenticated-only grants were verified in production; anon access was
+      denied. The matching frontend is deployed.
 - [x] Pause reason, snapshot, cursor, quota bucket, retry window, and timestamp
       persist per account/language; the paused banner restores after reload.
 - [x] Wi-Fi/unmetered resumes silently; cellular/`saveData`/slow connections

@@ -282,6 +282,10 @@ export const ko: Dictionary = {
     quotaPaused: '서버 한도로 단어장 내려받기를 잠시 멈췄습니다',
     quotaPausedHint:
       '서버가 계정마다 정한 단어장 내려받기 횟수를 넘었습니다. 약 {minutes}분 뒤 자동으로 이어집니다.',
+    quotaDailyPausedHint:
+      '오늘의 단어장 내려받기 한도에 도달했습니다. UTC 00:00(약 {minutes}분 뒤)에 초기화됩니다.',
+    quotaPagePausedHint:
+      '단어장 내려받기가 잠시 속도 제한되었습니다. 1분 안에 자동으로 이어집니다.',
     statePaused: '단어장 내려받기 상태를 다시 맞춥니다',
     statePausedHint:
       '서버가 저장된 위치에서 이어받을 수 없습니다. 처음부터 자동으로 다시 받습니다.',

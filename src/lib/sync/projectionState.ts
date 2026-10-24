@@ -55,6 +55,11 @@ export type ProjectionState = {
   snapshot: string | null
   cursor: ProjectionCursor | null
   hydratedAt: string | null
+  /**
+   * Server-issued read session for a reusable full pass. A cache clear gets a
+   * new session but can reuse the same charged snapshot.
+   */
+  sessionId?: string
   /** Present only while this language is paused; absent once it completes. */
   pause?: ProjectionPause
 }
@@ -159,9 +164,20 @@ function normalizeProjectionState(value: unknown): ProjectionState {
   const cursor = normalizeCursor(value.cursor)
   const pause = normalizePause(value.pause)
   const paused = pause === undefined ? {} : { pause }
+  const sessionId =
+    typeof value.sessionId === 'string' && value.sessionId !== ''
+      ? { sessionId: value.sessionId }
+      : {}
   // The cursor is only meaningful under the snapshot it was produced from.
   if (snapshot === null) {
-    return { complete: false, snapshot: null, cursor: null, hydratedAt: null, ...paused }
+    return {
+      complete: false,
+      snapshot: null,
+      cursor: null,
+      hydratedAt: null,
+      ...paused,
+      ...sessionId,
+    }
   }
 
   return {
@@ -170,6 +186,7 @@ function normalizeProjectionState(value: unknown): ProjectionState {
     cursor,
     hydratedAt: isTimestamp(value.hydratedAt) ? value.hydratedAt : null,
     ...paused,
+    ...sessionId,
   }
 }
 

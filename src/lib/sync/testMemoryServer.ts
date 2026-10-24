@@ -220,6 +220,16 @@ export function memoryServer(
         return { data: null, error: { message: `${name} rejected` } }
       }
       if (name === 'sync_snapshot') return { data: snapshot, error: null }
+      if (name === 'begin_projection_read') {
+        return {
+          data: {
+            snapshot,
+            sessionId: '00000000-0000-4000-8000-000000000001',
+            reused: true,
+          },
+          error: null,
+        }
+      }
       if (
         name === 'get_wordbook_projection_page' ||
         name === 'get_wordbook_projection_page_bounded'

@@ -242,6 +242,13 @@ export function DocumentList() {
   const quotaPaused = projectionPaused && firstPause?.reason === 'quota'
   const statePaused = projectionPaused && firstPause?.reason === 'state'
   const quotaMinutes = Math.max(1, Math.ceil((firstPause?.retryAfterSeconds ?? 60) / 60))
+  const quotaHint = !quotaPaused
+    ? null
+    : firstPause?.quotaBucket === 'sync'
+      ? t('wordbook.quotaDailyPausedHint', { minutes: quotaMinutes })
+      : firstPause?.quotaBucket === 'page'
+        ? t('wordbook.quotaPagePausedHint')
+        : t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
   const pauseReady = useProjectionPauseReady(firstPause)
 
   /** Reads persisted completeness; this is what keeps an R2 upgrade on local data. */
@@ -518,7 +525,7 @@ export function DocumentList() {
                 {t(quotaPaused ? 'wordbook.quotaPaused' : statePaused ? 'wordbook.statePaused' : 'wordbook.paused')}
               </strong>{' '}
               {quotaPaused
-                ? t('wordbook.quotaPausedHint', { minutes: quotaMinutes })
+                ? quotaHint
                 : statePaused
                   ? t('wordbook.statePausedHint')
                   : t('wordbook.pausedHint')}

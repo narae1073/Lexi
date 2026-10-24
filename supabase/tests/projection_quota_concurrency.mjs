@@ -8,10 +8,10 @@
  * non-superuser `postgres` role in the local stack); it drives the real
  * PostgREST endpoint with two simultaneous first-page requests.
  *
- * With one daily unit already spent:
+ * With four daily units already spent:
  *   - exactly one of two concurrent new snapshots may start;
  *   - the other must receive HTTP 429 / SQLSTATE PT429;
- *   - a third snapshot afterwards must also be denied.
+ *   - a sixth snapshot afterwards must also be denied.
  *
  * Local only: a non-loopback URL is refused. The test creates one confirmed
  * user through the local admin API and deletes it before exiting.
@@ -128,10 +128,14 @@ async function main() {
         }),
       })
 
-    // One daily unit spent before the race.
-    const seeded = await firstPage(snapshot(-10))
-    if (seeded.status !== 200) {
-      throw new Error(`seeding pass failed: HTTP ${seeded.status} ${JSON.stringify(seeded.body)}`)
+    // Four daily units spent before the race.
+    const seeded = []
+    for (const offset of [-10, -9, -8, -7]) {
+      const result = await firstPage(snapshot(offset))
+      if (result.status !== 200) {
+        throw new Error(`seeding pass failed: HTTP ${result.status} ${JSON.stringify(result.body)}`)
+      }
+      seeded.push(result.status)
     }
 
     // Two different new snapshots at the same time; only one may take the last
@@ -155,10 +159,10 @@ async function main() {
       )
     }
 
-    // Both daily units are now spent; a third new snapshot is denied.
+    // All five daily units are now spent; a sixth new snapshot is denied.
     const third = await firstPage(snapshot(-3))
     if (third.status !== 429 || third.body?.code !== 'PT429') {
-      throw new Error(`third daily start was not denied: HTTP ${third.status} ${JSON.stringify(third.body)}`)
+      throw new Error(`sixth daily start was not denied: HTTP ${third.status} ${JSON.stringify(third.body)}`)
     }
 
     console.log(
@@ -167,7 +171,7 @@ async function main() {
           kind: 'projection-quota-concurrency',
           pass: true,
           userId,
-          seededStatus: seeded.status,
+          seededStatuses: seeded,
           concurrent: [a.status, b.status],
           deniedCodes,
           thirdStatus: third.status,
