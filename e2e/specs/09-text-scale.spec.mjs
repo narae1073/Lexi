@@ -24,6 +24,40 @@ export async function run(ctx) {
   // ── 배율을 올린다 ──
   await ctx.clickSelector('a[href="/settings"]')
   await sleep(400)
+
+  /**
+   * All three settings sliders must paint a visible track. The old markup used
+   * `appearance-none` plus a 4px-tall input and no track pseudo-element, so
+   * only the thumb rendered in every theme.
+   */
+  const sliders = await ctx.page.evaluate(`(() => {
+    const inputs = [...document.querySelectorAll('input[type="range"]')];
+    const rules = [];
+    for (const sheet of [...document.styleSheets]) {
+      try {
+        for (const rule of [...sheet.cssRules]) rules.push(rule.cssText);
+      } catch {}
+    }
+    return {
+      count: inputs.length,
+      heights: inputs.map((input) => Math.round(input.getBoundingClientRect().height)),
+      trackRule: rules.find((text) => text.includes('::-webkit-slider-runnable-track')) ?? null,
+    };
+  })()`)
+  ctx.check('세 설정 슬라이더가 있다', sliders.count === 3, `${sliders.count} sliders`)
+  ctx.check(
+    '슬라이더 트랙 규칙이 테마 배경을 갖는다',
+    typeof sliders.trackRule === 'string' &&
+      /background(-color)?\s*:/.test(sliders.trackRule) &&
+      !/transparent|rgba\(0,\s*0,\s*0,\s*0\)/.test(sliders.trackRule),
+    sliders.trackRule ?? '(no track rule)',
+  )
+  ctx.check(
+    '슬라이더 입력 높이가 트랙과 썸을 담을 만큼 크다',
+    sliders.heights.length === 3 && sliders.heights.every((height) => height >= 20),
+    JSON.stringify(sliders.heights),
+  )
+
   await setScale(ctx, 130)
   await openDocument(ctx)
   const big = await readMetrics(ctx)

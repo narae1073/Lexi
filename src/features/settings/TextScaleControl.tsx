@@ -49,7 +49,7 @@ export function TextScaleControl() {
           value={value}
           aria-labelledby={labelId}
           onChange={(event) => setValue(clampTextScale(Number(event.target.value)))}
-          className="border-line accent-accent h-1 flex-1 cursor-pointer appearance-none rounded-full"
+          className="lexi-range flex-1"
         />
         <span className="text-ink-muted text-xs" aria-hidden>
           A<span className="align-super text-[0.7em]">a</span>
