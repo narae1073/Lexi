@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { LEMMA_VERSION } from '../../features/reader/surfaceLemma'
 import { useOccurrencesStore } from '../../app/stores/occurrences'
-import type { Document } from '../../types'
+import type { Document, Folder } from '../../types'
 import {
   deleteLocalDatabase,
   idbGet,
@@ -227,6 +227,85 @@ describe('metadata-only documents', () => {
     expect(row?.raw_text).toBe(TEXT)
     expect(row?.char_count).toBe(Array.from(TEXT).length)
     expect(server.rpcCalls('get_document_payload')).toBe(0)
+  })
+
+  it('moves a metadata-only document with an update and keeps its server text', async () => {
+    const server = memoryServer(0, T2)
+    seed(server)
+
+    const first = await syncOnce({
+      userId: USER,
+      languages: ['fr'],
+      db: server.client,
+    })
+    const pulled = await idbGet<Document>(STORES.documents, 'doc-1')
+    expect(pulled?.hasContent).toBe(false)
+
+    const movedAt = new Date(Date.now() + 60_000).toISOString()
+    const folder: Folder = {
+      id: 'folder-fr',
+      name: 'French',
+      parentId: null,
+      createdAt: movedAt,
+      updatedAt: movedAt,
+    }
+    await idbPut(STORES.folders, folder)
+    await idbPut(STORES.documents, {
+      ...(pulled as Document),
+      folderId: folder.id,
+      folderUpdatedAt: movedAt,
+    })
+
+    const second = await syncOnce({
+      userId: USER,
+      languages: ['fr'],
+      db: server.client,
+      since: first.watermarks,
+    })
+
+    expect(second.failures).toEqual([])
+    expect(server.rows('documents')[0]?.folder_id).toBe(folder.id)
+    // The move updates metadata only; the server's body survives untouched.
+    expect(server.rows('documents')[0]?.raw_text).toBe(TEXT)
+    expect(server.updateCalls('documents')).toBeGreaterThan(0)
+    expect(server.upsertCalls('documents')).toBe(0)
+  })
+
+  it('keeps a metadata-only update pending when the server row is gone', async () => {
+    const server = memoryServer(0, T2)
+    seed(server)
+
+    const first = await syncOnce({
+      userId: USER,
+      languages: ['fr'],
+      db: server.client,
+    })
+    const pulled = await idbGet<Document>(STORES.documents, 'doc-1')
+    server.rows('documents').splice(0)
+
+    await idbPut(STORES.documents, {
+      ...(pulled as Document),
+      title: 'Renamed after deletion',
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+
+    const second = await syncOnce({
+      userId: USER,
+      languages: ['fr'],
+      db: server.client,
+      since: first.watermarks,
+    })
+
+    expect(second.failures).toContainEqual(
+      expect.objectContaining({
+        table: 'documents',
+        key: 'doc-1',
+        message: 'document metadata update matched no server row',
+      }),
+    )
+    expect(await readDirtyKeys()).toContainEqual(
+      expect.objectContaining({ store: 'documents', key: 'doc-1' }),
+    )
   })
 })
 

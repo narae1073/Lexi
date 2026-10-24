@@ -13,6 +13,7 @@ export function memoryServer(
     wordbook_entries: [],
   }
   const upsertCalls: Record<string, number> = {}
+  const updateCalls: Record<string, number> = {}
   const orders: Record<string, string> = {}
   const rpcCalls: Record<string, number> = {}
   let snapshot = initialSnapshot
@@ -57,6 +58,7 @@ export function memoryServer(
       let greaterThan: { column: string; value: unknown } | null = null
       let countMode = false
       let deleting = false
+      let updating: Record<string, unknown> | null = null
       /** Columns of the last `select`; null means every column. */
       let selectedColumns: string[] | null = null
 
@@ -127,8 +129,28 @@ export function memoryServer(
           greaterThan = { column, value }
           return query
         },
+        update: (values: Record<string, unknown>) => {
+          updating = values
+          updateCalls[table] = (updateCalls[table] ?? 0) + 1
+          return query
+        },
         upsert: async (rows: Record<string, unknown>[]) => {
           upsertCalls[table] = (upsertCalls[table] ?? 0) + 1
+          // PostgreSQL validates the proposed insert tuple before ON CONFLICT.
+          // A metadata-only document upsert therefore still hits the NOT NULL
+          // constraint even when the row already exists.
+          if (
+            table === 'documents' &&
+            rows.some((row) => row.raw_text === undefined || row.raw_text === null)
+          ) {
+            return {
+              data: null,
+              error: {
+                message:
+                  'null value in column "raw_text" of relation "documents" violates not-null constraint',
+              },
+            }
+          }
           // A real upsert statement is atomic: one rejected row rejects the chunk.
           const reject = upsertRejects.get(table)
           if (reject && rows.some((row) => reject(row))) {
@@ -161,8 +183,6 @@ export function memoryServer(
                   row.content_updated_at = row.content_updated_at ?? snapshot
                 }
               }
-              // A metadata-only upsert carries no raw_text: the existing text and
-              // its version columns must stay exactly as they were.
             }
             if (at >= 0) tables[table][at] = { ...tables[table][at], ...row }
             else tables[table].push(row)
@@ -183,6 +203,24 @@ export function memoryServer(
           if (deleting) {
             tables[table] = tables[table].filter((row) => !matches(row))
             return resolve({ data: null, error: null })
+          }
+
+          if (updating !== null) {
+            const rows = tables[table].filter(matches)
+            const values = { ...updating }
+            if (values.server_updated_at === undefined) values.server_updated_at = snapshot
+            for (const row of rows) Object.assign(row, values)
+            const data =
+              selectedColumns === null
+                ? null
+                : rows.map((row) => {
+                    const picked: Record<string, unknown> = {}
+                    for (const column of selectedColumns ?? []) {
+                      if (column in row) picked[column] = row[column]
+                    }
+                    return picked
+                  })
+            return resolve({ data, error: null })
           }
 
           let rows = tables[table].filter(matches)
@@ -393,6 +431,7 @@ export function memoryServer(
     count: (table: string) => tables[table].length,
     rows: (table: string) => tables[table],
     upsertCalls: (table: string) => upsertCalls[table] ?? 0,
+    updateCalls: (table: string) => updateCalls[table] ?? 0,
     orderOf: (table: string) => orders[table],
     rpcCalls: (name: string) => rpcCalls[name] ?? 0,
     setSnapshot: (value: string) => {

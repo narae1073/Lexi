@@ -305,8 +305,12 @@ export async function push({
    *
    * A metadata-only row must never carry `raw_text`: an empty string would erase
    * the server's text for a document that was only renamed, moved, or trashed on
-   * a device that never opened it. The metadata batch therefore omits the
-   * column entirely and updates the row that already exists.
+   * a device that never opened it.
+   *
+   * This must be an UPDATE, not an upsert. PostgreSQL validates the proposed
+   * INSERT tuple before ON CONFLICT, so an upsert that omits the NOT NULL
+   * `raw_text` column fails even when the row already exists. One row per
+   * request also lets the push journal isolate a single rejected document.
    */
   const documentsWithContent = documents.filter((doc) => doc.hasContent !== false)
   const metadataOnlyDocuments = documents.filter((doc) => doc.hasContent === false)
@@ -332,17 +336,21 @@ export async function push({
       table: 'documents',
       rows: metadataOnlyDocuments,
       keyOf: (doc) => doc.id,
-      chunkSize: DOCUMENT_CHUNK,
-      send: (part) =>
-        db.from('documents').upsert(
-          // The generated Insert type makes raw_text mandatory (a full row). A
-          // metadata-only upsert deliberately omits it; PostgREST updates only
-          // the keys it receives, so the existing text is left untouched.
-          part.map(
-            (doc) => documentMetadataToRow(userId, doc),
-          ) as Database['public']['Tables']['documents']['Insert'][],
-          { onConflict: 'id' },
-        ),
+      chunkSize: 1,
+      send: async (part) => {
+        const doc = part[0]
+        const { data, error } = await db
+          .from('documents')
+          .update(documentMetadataToRow(userId, doc))
+          .eq('user_id', userId)
+          .eq('id', doc.id)
+          .select('id')
+        if (error) return { error }
+        if (!data || data.length === 0) {
+          return { error: { message: 'document metadata update matched no server row' } }
+        }
+        return { error: null }
+      },
     },
     dirtyFor('documents'),
     outcome,

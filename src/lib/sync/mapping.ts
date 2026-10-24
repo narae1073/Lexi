@@ -191,9 +191,10 @@ export function documentToRow(
  *
  * `raw_text` is deliberately absent. Sending an empty string would erase the
  * server's text — the one write that is never allowed to happen by accident.
- * PostgREST's upsert updates only the keys it receives, so the existing text
- * stays exactly as it was; a metadata-only row is always an update of a row
- * that already exists on the server.
+ * This payload is only sent with an UPDATE, never an upsert: PostgreSQL checks
+ * NOT NULL on the proposed INSERT tuple before resolving ON CONFLICT, so an
+ * upsert without `raw_text` would fail even for an existing row. A metadata-only
+ * row always refers to a row that already exists on the server.
  */
 export function documentMetadataToRow(
   userId: string,
