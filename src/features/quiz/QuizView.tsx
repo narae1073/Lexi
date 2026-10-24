@@ -222,6 +222,9 @@ export function QuizView() {
 
   const goNext = () => {
     if (index + 1 >= words.length) {
+      // The last question may have left a dictionary anchored to a question
+      // node that is about to unmount. Start the summary with no stale target.
+      setDictionaryTarget(null)
       setPhase('summary')
       return
     }
@@ -386,6 +389,8 @@ export function QuizView() {
     // 단어별 변화 — 푼 순서 그대로, 강조 없이 나열한다
     const changes = sessionChanges(words, results)
     const changedCount = changes.filter((change) => change.changed).length
+    const statusLabel = (status: WordStatus) =>
+      status === 'known' ? t('quiz.know') : status === 'unsure' ? t('quiz.unsure') : t('quiz.new')
     return (
       <section className="mx-auto w-full max-w-2xl px-5 py-8">
         <h1 data-quiz-summary className="text-lg font-semibold">
@@ -408,20 +413,37 @@ export function QuizView() {
               </span>
             </div>
             <ul className="mt-3 flex flex-col gap-1.5">
-              {changes.map((change, i) => (
-                <li
-                  key={`${words[i]?.lemma ?? change.surface}:${i}`}
-                  data-quiz-change
-                  className="border-line flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
-                >
-                  <span className="truncate text-sm">{change.surface}</span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <ChangePill status={change.before} />
-                    <span className="text-ink-muted text-xs">→</span>
-                    <ChangePill status={change.after} />
-                  </span>
-                </li>
-              ))}
+              {changes.map((change, i) => {
+                const summaryWord = words[i]
+                return (
+                  <li key={`${summaryWord?.lemma ?? change.surface}:${i}`} data-quiz-change>
+                    <button
+                      type="button"
+                      data-quiz-change-button
+                      aria-haspopup="dialog"
+                      aria-label={`${t('dictionary.openFor', { word: change.surface })}: ${statusLabel(change.before)} → ${statusLabel(change.after)}`}
+                      title={t('dictionary.openFor', { word: change.surface })}
+                      onClick={(event) => {
+                        if (!summaryWord) return
+                        setDictionaryTarget({
+                          lemma: summaryWord.lemma,
+                          surface: summaryWord.surface,
+                          anchor: event.currentTarget,
+                        })
+                      }}
+                      className="border-line hover:border-accent focus-visible:outline-accent group flex min-h-11 w-full cursor-pointer items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm">{change.surface}</span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <ChangePill status={change.before} />
+                        <span className="text-ink-muted text-xs">→</span>
+                        <ChangePill status={change.after} />
+                        <DictionaryIcon />
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           </section>
         )}
@@ -434,6 +456,23 @@ export function QuizView() {
         >
           {t('quiz.again')}
         </button>
+
+        {dictionaryTarget && languageCode && (
+          <Popover
+            anchor={dictionaryTarget.anchor}
+            anchorKey={`quiz-summary:${dictionaryTarget.lemma}:${dictionaryTarget.surface}`}
+            onClose={() => setDictionaryTarget(null)}
+            width={DICTIONARY_WIDTH}
+          >
+            <div data-quiz-summary-dictionary={dictionaryTarget.surface}>
+              <DictionaryPanel
+                languageCode={languageCode}
+                lemma={dictionaryTarget.lemma}
+                surface={dictionaryTarget.surface}
+              />
+            </div>
+          </Popover>
+        )}
       </section>
     )
   }
@@ -586,6 +625,26 @@ function SummaryCount({
       </span>
       <span className="text-ink-muted text-xs">{label}</span>
     </li>
+  )
+}
+
+/** 완료 화면 카드의 조용한 사전 표식 — 카드 전체가 단추라는 것을 알린다 */
+function DictionaryIcon() {
+  return (
+    <svg
+      data-quiz-dictionary-icon
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-ink-muted group-hover:text-accent h-4 w-4 shrink-0 transition-colors"
+    >
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
+      <path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20" />
+    </svg>
   )
 }
 

@@ -306,6 +306,7 @@ export const en = {
 
   dictionary: {
     button: 'Dictionary',
+    openFor: 'Open dictionary for {word}',
     loading: 'Looking up…',
     notFound: 'No entry for “{word}”.',
     failed: 'Could not reach the dictionary.',

@@ -303,6 +303,7 @@ export const ko: Dictionary = {
 
   dictionary: {
     button: '사전',
+    openFor: '‘{word}’ 사전 열기',
     loading: '찾는 중…',
     notFound: '‘{word}’ 항목을 찾지 못했습니다.',
     failed: '사전에 연결하지 못했습니다.',
