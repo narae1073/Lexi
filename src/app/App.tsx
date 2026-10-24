@@ -17,6 +17,7 @@ import { SyncIndicator } from '../features/sync/SyncIndicator'
 import { Wordbook } from '../features/wordbook/Wordbook'
 import { createLocalProjectionProducer, onLocalProjectionChange } from '../features/wordbook/localProjection'
 import { QuizView } from '../features/quiz/QuizView'
+import { useQuizSessionStore } from '../features/quiz/quizSessionStore'
 import { useAuthStore } from './stores/auth'
 import { useDocumentsStore } from './stores/documents'
 import { useFoldersStore } from './stores/folders'
@@ -90,6 +91,7 @@ export default function App() {
   const accountBlocked = useSyncStore((s) => s.accountBlocked)
   const claimNeeded = useSyncStore((s) => s.claimNeeded)
   const localOnly = useSyncStore((s) => s.localOnly)
+  const resetQuizSession = useQuizSessionStore((s) => s.reset)
   // A 의 확인이 끝난 뒤 B 가 로그인하면 효과가 상태를 되돌리기 전 한 번의 렌더가
   // 남는다. 지금 사용자에 대한 확인인지 비교해야 그 한 번에도 이전 화면이 안 보인다.
   const gateReady = isAccountGateReady(accountReady, readyForUserId, currentUserId)
@@ -118,6 +120,12 @@ export default function App() {
     void load()
     void loadFolders()
   }, [load, loadFolders, restoring, gateReady, accountBlocked])
+
+  // QuizView unmounts on tab changes, so its session lives in a module store.
+  // Clear that store when the account/local identity behind the wordbook changes.
+  useEffect(() => {
+    resetQuizSession()
+  }, [currentUserId, localOnly, resetQuizSession])
 
   /**
    * 목록의 진도 게이지를 위해, 아직 기록이 없는 문서를 유휴 시점에 계산한다.

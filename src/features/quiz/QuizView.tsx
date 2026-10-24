@@ -8,10 +8,10 @@ import { useSyncStore } from '../../app/stores/sync'
 import { useWordbookStore } from '../../app/stores/wordbook'
 import { wordKey, useWordStatesStore } from '../../app/stores/wordStates'
 import { statusPillClass } from '../../lib/color'
-import type { LanguageCode, Segment, WordStatus } from '../../types'
+import type { Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
-import { buildWordbook, type WordbookEntry } from '../wordbook/buildWordbook'
+import { buildWordbook } from '../wordbook/buildWordbook'
 import {
   preparationProgress,
   resolveWordbookPresentation,
@@ -23,6 +23,7 @@ import { QuizProgressChart } from './QuizProgressChart'
 import { QuizClozeQuestion } from './QuizClozeQuestion'
 import { QuizPrompt } from './QuizPrompt'
 import { QuizSentence } from './QuizSentence'
+import { useQuizSessionStore } from './quizSessionStore'
 import {
   blankWord,
   defaultSessionSize,
@@ -33,10 +34,7 @@ import {
   sessionChanges,
   sessionSizeOptions,
   summarize,
-  type QuizWord,
 } from './quizSession'
-
-type Phase = 'setup' | 'session' | 'summary'
 
 type WordSegment = Extract<Segment, { type: 'word' }>
 
@@ -80,8 +78,28 @@ export function QuizView() {
   const syncNow = useSyncStore((s) => s.syncNow)
   const userId = useAuthStore((s) => s.user?.id ?? null)
 
-  const [phase, setPhase] = useState<Phase>('setup')
-  const [languageCode, setLanguageCode] = useState<LanguageCode | null>(enrolled[0] ?? null)
+  const {
+    phase,
+    languageCode: storedLanguageCode,
+    size,
+    words,
+    index,
+    sessionEntries,
+    answer,
+    results,
+    peeked,
+    selectLanguage,
+    selectSize,
+    startSession,
+    recordAnswer,
+    advance: advanceSession,
+    backToSetup: resetToSetup,
+    markPeeked,
+  } = useQuizSessionStore()
+  const languageCode =
+    storedLanguageCode && enrolled.includes(storedLanguageCode)
+      ? storedLanguageCode
+      : (enrolled[0] ?? null)
   const projectionEntries = useWordbookStore(
     (s) => s.entriesByLanguage[languageCode ?? ''] ?? EMPTY_PROJECTION,
   )
@@ -97,19 +115,6 @@ export function QuizView() {
   )
   const refreshFromStore = useWordbookStore((s) => s.refreshFromStore)
   const refreshReadiness = useWordbookStore((s) => s.refreshProjectionReadiness)
-  /** 고른 개수. 아직 안 골랐으면 가장 큰 선택지로 본다 */
-  const [size, setSize] = useState<number | null>(null)
-
-  const [words, setWords] = useState<QuizWord[]>([])
-  const [index, setIndex] = useState(0)
-  /** 세션을 시작할 때 떠 둔 단어장 — 답할 때마다 다시 만들지 않는다 */
-  const [sessionEntries, setSessionEntries] = useState<WordbookEntry[]>([])
-  /** 지금 단어에 낸 답 (아직 없으면 null) */
-  const [answer, setAnswer] = useState<WordStatus | null>(null)
-  /** 낸 답들 — 끝난 화면의 요약이 이걸 센다 */
-  const [results, setResults] = useState<WordStatus[]>([])
-  /** 사전을 먼저 본 단어인가 — 보면 '앎' 이 잠긴다 */
-  const [peeked, setPeeked] = useState(false)
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
   /** 지금 단어의 메모 — 답한 뒤 뜻과 함께 다시 본다 */
@@ -204,13 +209,12 @@ export function QuizView() {
   const start = () => {
     if (!languageCode || chosenSize === null) return
     // 이 시점의 단어장을 세션 내내 쓴다 — 답할 때마다 다시 만들지 않는다
-    setSessionEntries(entries)
-    setWords(selectSession(pool, reviews, chosenSize))
-    setIndex(0)
-    setAnswer(null)
-    setResults([])
-    setPeeked(false)
-    setPhase('session')
+    startSession({
+      languageCode,
+      size: chosenSize,
+      entries,
+      words: selectSession(pool, reviews, chosenSize),
+    })
   }
 
   const answerWord = (pressed: WordStatus) => {
@@ -220,34 +224,18 @@ export function QuizView() {
     const result = nextStatus(word.status, pressed)
     // 누른 단추를 센다 (저장되는 상태가 아니다) — 모름에서 앎을 눌러도 앎을 세야 한다
     pressStatus(languageCode, word.lemma, result, pressed, word.surface)
-    setAnswer(result)
-    setResults((prev) => {
-      const next = [...prev]
-      next[index] = result
-      return next
-    })
+    recordAnswer(result)
   }
 
   const goNext = () => {
-    if (index + 1 >= words.length) {
-      // The last question may have left a dictionary anchored to a question
-      // node that is about to unmount. Start the summary with no stale target.
-      setDictionaryTarget(null)
-      setPhase('summary')
-      return
-    }
-    setIndex(index + 1)
-    setAnswer(null)
-    setPeeked(false)
+    // The last question may have left a dictionary anchored to a question
+    // node that is about to unmount. Start the summary with no stale target.
     setDictionaryTarget(null)
+    advanceSession()
   }
 
   const backToSetup = () => {
-    setPhase('setup')
-    setWords([])
-    setResults([])
-    setAnswer(null)
-    setPeeked(false)
+    resetToSetup()
     setDictionaryTarget(null)
   }
 
@@ -282,10 +270,7 @@ export function QuizView() {
               type="button"
               data-quiz-language={code}
               aria-pressed={code === languageCode}
-              onClick={() => {
-                setLanguageCode(code)
-                setSize(null)
-              }}
+              onClick={() => selectLanguage(code)}
               className={`rounded-xl border px-4 py-2 text-sm transition ${
                 code === languageCode
                   ? 'border-accent bg-accent text-accent-ink'
@@ -368,7 +353,7 @@ export function QuizView() {
                     type="button"
                     data-quiz-size={option}
                     aria-pressed={option === chosenSize}
-                    onClick={() => setSize(option)}
+                    onClick={() => selectSize(option)}
                     className={`rounded-lg border px-4 py-2 text-sm transition ${
                       option === chosenSize
                         ? 'border-accent text-ink'
@@ -547,7 +532,7 @@ export function QuizView() {
             type="button"
             data-quiz-dictionary
             onClick={(event) => {
-              if (answer === null) setPeeked(true)
+              if (answer === null) markPeeked()
               setDictionaryTarget({
                 lemma: word.lemma,
                 surface: word.surface,
