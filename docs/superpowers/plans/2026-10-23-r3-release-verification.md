@@ -1,9 +1,8 @@
 # R3 release verification — 2026-10-23
 
-**Status:** implementation and local verification complete; full e2e is green
-(**622/622**) and the local translation-provider key is configured. **Not
-released.** No production migration, deployment, or production data change was
-performed.
+**Status:** released on 2026-10-24. Full e2e is green (**622/622**), the **11 R3
+migrations are applied to production**, the projection backfill is verified,
+and the frontend is deployed. Post-deploy monitoring remains.
 
 ## Settled release decisions — 2026-10-24
 
@@ -36,10 +35,21 @@ performed.
 - Verified tree: the local working tree after the conditional auto-resume and
   paused-state restoration implementation (commit handled separately)
 
-The only Supabase target used below was the local stack at
+The local verification below used the local stack at
 `http://127.0.0.1:54321` (project `translator`). `.env.local` is git-ignored and
-points the build and RLS verifier at loopback. The seed/load/metrics scripts
-and the R3 e2e helper refuse non-loopback Supabase URLs.
+was restored to production after the e2e run. The seed/load/metrics scripts and
+the R3 e2e helper refuse non-loopback Supabase URLs.
+
+The production migration below targeted the linked project
+`gwsrowpbcqwtpciknayl` only after explicit approval. The production public
+schema and data were dumped first to
+`/home/achi/lexi-backups/lexi-prod-pre-r3-20261024T081800Z-public-{schema,data}.sql`
+(mode 600, directory 700). PITR is disabled and no CLI-visible physical backup
+existed, so this manual dump is the documented safety copy; it covers the
+`public` schema/data, not auth or storage. The previous frontend webroot was
+also archived at
+`/home/achi/lexi-backups/lexi-prod-frontend-pre-r3-20261024T084911Z.tar.gz`
+(18 MB, sha256 `f0611148181d7f9fc007805576e9a9e1a0e45995c757b232c41b1f48c6a26ae5`).
 
 ## Prerequisites and run order
 
@@ -289,6 +299,16 @@ No assertion or threshold was weakened to hide any failure.
 - [x] v7 upgrade and local SQL/RLS/quota checks pass.
 - [x] Metrics snapshot complete with egress and page-byte evidence.
 - [x] Fixture status restored after spec 42.
+- [x] Production migration applied: 11 R3 migrations, latest
+      `20261029000002`; projection backfill **3,096/3,096** rows with zero
+      missing or extra rows. Production row counts unchanged (29 documents,
+      5,424 occurrences, 2,981 word states, 8 languages).
+- [x] Production RLS verified: new projection tables have RLS enabled;
+      authenticated direct SELECT is denied; anon REST access to private/
+      projection tables is 401; projection RPC execute is authenticated-only.
+- [x] Production frontend deployed on 2026-10-24 with `npm run deploy`;
+      webroot matches `dist`, live index serves `assets/index-Cwyk74TN.js`
+      (HTTP 200), and CSP connects only to the production Supabase project.
 - [x] Pause reason, snapshot, cursor, quota bucket, retry window, and timestamp
       persist per account/language; the paused banner restores after reload.
 - [x] Wi-Fi/unmetered resumes silently; cellular/`saveData`/slow connections
@@ -299,9 +319,10 @@ No assertion or threshold was weakened to hide any failure.
       document/word-state sync.
 - [x] No duplicate projection pass or daily unit on resume; the same snapshot
       and cursor are reused.
-- [ ] **Production migration — NOT PERFORMED.**
-- [ ] **Production deployment — NOT PERFORMED.**
-- [ ] **Production data change — NOT PERFORMED.**
+- [x] **Production migration — PERFORMED on 2026-10-24.**
+- [x] **Production projection backfill — PERFORMED (3,096 rows).**
+- [x] **Production frontend deployment — PERFORMED on 2026-10-24.**
 
-Release requires explicit user approval before any `supabase db push`, migration,
-or frontend deployment. This document records verification only.
+Post-deploy monitoring remains. Users with an old service worker should
+hard-refresh twice. The v7 one-way boundary still applies: post-deploy frontend
+rollback is a forward-fix, not a code rollback.
