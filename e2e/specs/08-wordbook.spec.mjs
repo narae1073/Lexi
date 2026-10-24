@@ -140,8 +140,25 @@ export async function run(ctx) {
     btn.click();
     return true;
   })(${JSON.stringify(starred)})`)
-  ctx.check('별을 떼면 ★ 탭에서 빠진다', unstarred === true, String(starred))
+  ctx.check('별 떼기를 누르면 확인이 열린다', unstarred === true, String(starred))
+  await ctx.waitFor(
+    `!![...document.querySelectorAll('[role="dialog"]')].find(d => /Remove from favorites/.test(d.innerText))`,
+    'favorite removal confirmation',
+  )
+  const confirmed = await ctx.page.evaluate(`(() => {
+    const d = [...document.querySelectorAll('[role="dialog"]')].find(x =>
+      /Remove from favorites/.test(x.innerText));
+    const b = d && [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Remove');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  ctx.check('확인해야 즐겨찾기에서 빠진다', confirmed === true)
   await sleep(400)
+  const stillStarred = await ctx.page.evaluate(`((lemma) =>
+    [...document.querySelectorAll('[data-wordbook-lemma]')].some(x => x.innerText === lemma)
+  )(${JSON.stringify(starred)})`)
+  ctx.check('확인 뒤 ★ 탭에서 사라진다', stillStarred === false, String(starred))
   // 원래 탭으로 돌려놓는다 — 아래 단계가 미표시 목록을 본다
   await ctx.page.evaluate(`(() => {
     const tab = [...document.querySelectorAll('div.border-b button')].find(b => /^Not marked/.test(b.innerText.trim()));

@@ -9,6 +9,7 @@ import {
 import { wordKey, useWordStatesStore } from '../../app/stores/wordStates'
 import type { LanguageCode } from '../../types'
 import { StarPalette } from '../reader/StarPalette'
+import { useFavoriteConfirmation } from '../reader/useFavoriteConfirmation'
 import type { QuizWord } from './quizSession'
 
 /**
@@ -33,9 +34,10 @@ export function QuizPrompt({
   const favorite = useWordStatesStore((s) => s.byKey[key]?.favorite ?? false)
   const starColor = useWordStatesStore((s) => s.byKey[key]?.starColor ?? STAR_COLOR_DEFAULT)
   const starAngle = useWordStatesStore((s) => s.byKey[key]?.starAngle ?? 0)
-  const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
   const setStarColor = useWordStatesStore((s) => s.setStarColor)
   const starSize = clampStarSize(useSettingsStore((s) => s.favoriteStarSize))
+  const { requestToggle: requestFavoriteToggle, dialog: favoriteDialog } =
+    useFavoriteConfirmation()
 
   const [paletteOpen, setPaletteOpen] = useState(false)
 
@@ -75,8 +77,11 @@ export function QuizPrompt({
               aria-label={favorite ? t('favorite.remove') : t('favorite.add')}
               title={favorite ? t('favorite.remove') : t('favorite.add')}
               onClick={() => {
-                toggleFavorite(languageCode, word.lemma, word.surface)
                 setPaletteOpen(false)
+                requestFavoriteToggle(
+                  { languageCode, lemma: word.lemma, surface: word.surface },
+                  favorite,
+                )
               }}
               style={
                 favorite
@@ -107,6 +112,7 @@ export function QuizPrompt({
           />
         </div>
       )}
+      {favoriteDialog}
     </div>
   )
 }

@@ -129,6 +129,28 @@ export async function run(ctx) {
     `${answered[0]} requested, got ${JSON.stringify(firstDictionary)}`,
   )
 
+  const summaryControls = await ctx.page.evaluate(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return {
+      star: !!d?.querySelector('[data-word-popover-favorite]'),
+      statuses: d?.querySelectorAll('[data-word-popover-statuses] button').length ?? 0,
+      note: !!d?.querySelector('[data-word-note]'),
+      dictionary: !!d?.querySelector('[data-word-popover-dictionary]'),
+      summary: d?.querySelector('[data-quiz-summary-word-popover]')?.getAttribute(
+        'data-quiz-summary-word-popover',
+      ) ?? null,
+    };
+  })()`)
+  ctx.check(
+    '완료 화면 팝오버에 별·세 상태·메모·사전이 모두 있고 사전이 먼저 열린다',
+    summaryControls.star &&
+      summaryControls.statuses === 3 &&
+      summaryControls.note &&
+      summaryControls.dictionary &&
+      summaryControls.summary === answered[0],
+    JSON.stringify(summaryControls),
+  )
+
   const themes = await ctx.page.evaluate(`(() => {
     const themes = ${JSON.stringify(THEMES)};
     const icon = document.querySelector('[data-quiz-dictionary-icon]');

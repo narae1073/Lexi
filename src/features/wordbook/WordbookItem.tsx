@@ -9,6 +9,7 @@ import {
   type WordStatus,
 } from '../../types'
 import { ExampleSentence } from '../reader/ExampleSentence'
+import { useFavoriteConfirmation } from '../reader/useFavoriteConfirmation'
 import { WordPopover } from '../reader/WordPopover'
 import type { WordbookEntry } from './buildWordbook'
 
@@ -33,7 +34,8 @@ export function WordbookItem({
 }) {
   const t = useTranslation()
   const setStatus = useWordStatesStore((s) => s.setStatus)
-  const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
+  const { requestToggle: requestFavoriteToggle, dialog: favoriteDialog } =
+    useFavoriteConfirmation()
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
   const titleSegment: WordSegment = {
@@ -104,7 +106,12 @@ export function WordbookItem({
         */}
         <button
           type="button"
-          onClick={() => toggleFavorite(languageCode, entry.lemma, entry.lemma)}
+          onClick={() =>
+            requestFavoriteToggle(
+              { languageCode, lemma: entry.lemma, surface: entry.lemma },
+              entry.favorite,
+            )
+          }
           aria-pressed={entry.favorite}
           aria-label={entry.favorite ? t('favorite.remove') : t('favorite.add')}
           title={entry.favorite ? t('favorite.remove') : t('favorite.add')}
@@ -161,6 +168,7 @@ export function WordbookItem({
           onClose={() => setDictionaryTarget(null)}
         />
       )}
+      {favoriteDialog}
     </li>
   )
 }

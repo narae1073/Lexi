@@ -358,6 +358,9 @@ export const ko: Dictionary = {
   favorite: {
     add: '즐겨찾기에 추가',
     remove: '즐겨찾기에서 제거',
+    confirmRemoveTitle: '즐겨찾기에서 제거할까요?',
+    confirmRemoveBody: '“{word}” 단어를 즐겨찾기에서 제거할까요? 언제든 다시 추가할 수 있습니다.',
+    confirmRemove: '제거',
     pickColor: '별 색 고르기',
     colors: {
       white: '흰색',

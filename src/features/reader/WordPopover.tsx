@@ -4,6 +4,7 @@ import { useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { StarPalette } from './StarPalette'
+import { useFavoriteConfirmation } from './useFavoriteConfirmation'
 import { WordNote } from './WordNote'
 import { STATUS_GLYPH, WORD_STATUSES, type LanguageCode, type Segment, type WordStatus } from '../../types'
 import { Popover } from './Popover'
@@ -22,6 +23,7 @@ export function WordPopover({
   anchor,
   onTranslateSentence,
   startWithDictionary = false,
+  dataAttributes,
   onClose,
 }: {
   segment: Extract<Segment, { type: 'word' }>
@@ -38,6 +40,8 @@ export function WordPopover({
    * 사전이 열린 상태로 보여준다. 문서에서는 기존처럼 닫힌 상태로 시작한다.
    */
   startWithDictionary?: boolean
+  /** Optional data-* hooks for callers that need a stable popover identity. */
+  dataAttributes?: Record<string, string>
   onClose: () => void
 }) {
   const t = useTranslation()
@@ -46,8 +50,8 @@ export function WordPopover({
   const starColor = useWordStatesStore((s) => s.byKey[`${languageCode}::${lemma}`]?.starColor)
   const setStatus = useWordStatesStore((s) => s.setStatus)
   const clearStatus = useWordStatesStore((s) => s.clearStatus)
-  const toggleFavorite = useWordStatesStore((s) => s.toggleFavorite)
   const setStarColor = useWordStatesStore((s) => s.setStarColor)
+  const { requestToggle, confirming, dialog } = useFavoriteConfirmation()
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
   const [showPalette, setShowPalette] = useState(false)
 
@@ -55,10 +59,14 @@ export function WordPopover({
     <Popover
       anchor={anchor}
       anchorKey={`${segment.start}:${showDictionary}`}
-      onClose={onClose}
+      // The confirmation is portalled outside this popover. Keep the word
+      // popover open while it is showing so Cancel returns to the same word.
+      onClose={() => {
+        if (!confirming) onClose()
+      }}
       width={WORD_POPOVER_WIDTH}
     >
-      <div className="flex items-center gap-1 pb-1">
+      <div className="flex items-center gap-1 pb-1" {...dataAttributes}>
         <p className="min-w-0 flex-1 truncate text-sm font-semibold" title={segment.text}>
           {segment.text}
         </p>
@@ -69,7 +77,11 @@ export function WordPopover({
         */}
         <button
           type="button"
-          onClick={() => toggleFavorite(languageCode, lemma, segment.text)}
+          data-word-popover-favorite
+          onClick={() => {
+            setShowPalette(false)
+            requestToggle({ languageCode, lemma, surface: segment.text }, favorite)
+          }}
           aria-pressed={favorite}
           aria-label={favorite ? t('favorite.remove') : t('favorite.add')}
           title={favorite ? t('favorite.remove') : t('favorite.add')}
@@ -110,7 +122,12 @@ export function WordPopover({
         />
       )}
 
-      <div className="grid grid-cols-3 gap-1" role="group" aria-label={t('status.group')}>
+      <div
+        className="grid grid-cols-3 gap-1"
+        role="group"
+        aria-label={t('status.group')}
+        data-word-popover-statuses
+      >
         {WORD_STATUSES.map((status: WordStatus) => {
           const active = current === status
           return (
@@ -147,7 +164,7 @@ export function WordPopover({
       />
 
       {showDictionary ? (
-        <div className="mt-1 border-line border-t pt-1.5">
+        <div data-word-popover-dictionary className="mt-1 border-line border-t pt-1.5">
           <DictionaryPanel
             languageCode={languageCode}
             lemma={lemma}
@@ -182,6 +199,7 @@ export function WordPopover({
           )}
         </div>
       )}
+      {dialog}
     </Popover>
   )
 }

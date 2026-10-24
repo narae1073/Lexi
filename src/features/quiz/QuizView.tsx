@@ -11,6 +11,7 @@ import { statusPillClass } from '../../lib/color'
 import type { Segment, WordStatus } from '../../types'
 import { DictionaryPanel } from '../dictionary/DictionaryPanel'
 import { Popover } from '../reader/Popover'
+import { WordPopover } from '../reader/WordPopover'
 import { buildWordbook } from '../wordbook/buildWordbook'
 import {
   preparationProgress,
@@ -470,20 +471,26 @@ export function QuizView() {
         </button>
 
         {dictionaryTarget && languageCode && (
-          <Popover
+          <WordPopover
+            key={`${dictionaryTarget.lemma}:${dictionaryTarget.surface}`}
+            segment={{
+              type: 'word',
+              start: 0,
+              end: dictionaryTarget.surface.length,
+              text: dictionaryTarget.surface,
+              lemma: dictionaryTarget.lemma,
+              sentenceIndex: 0,
+            }}
+            lemma={dictionaryTarget.lemma}
+            languageCode={languageCode}
             anchor={dictionaryTarget.anchor}
-            anchorKey={`quiz-summary:${dictionaryTarget.lemma}:${dictionaryTarget.surface}`}
+            startWithDictionary
+            dataAttributes={{
+              'data-quiz-summary-dictionary': dictionaryTarget.surface,
+              'data-quiz-summary-word-popover': dictionaryTarget.surface,
+            }}
             onClose={() => setDictionaryTarget(null)}
-            width={DICTIONARY_WIDTH}
-          >
-            <div data-quiz-summary-dictionary={dictionaryTarget.surface}>
-              <DictionaryPanel
-                languageCode={languageCode}
-                lemma={dictionaryTarget.lemma}
-                surface={dictionaryTarget.surface}
-              />
-            </div>
-          </Popover>
+          />
         )}
       </section>
     )

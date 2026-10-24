@@ -94,11 +94,24 @@ export async function run(ctx) {
   const colorAfter = await starState()
   ctx.check('빨강을 고르면 별이 빨개진다', colorAfter?.color === 'rgb(239, 68, 68)', JSON.stringify(colorAfter))
 
-  // 다시 누르면 꺼진다
+  // 다시 누르면 확인을 거쳐 꺼진다
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-favorite]').click(); return true })()`)
+  await ctx.waitFor(
+    `!![...document.querySelectorAll('[role="dialog"]')].find(d => /Remove from favorites/.test(d.innerText))`,
+    'favorite removal confirmation',
+  )
+  const confirmed = await ctx.page.evaluate(`(() => {
+    const d = [...document.querySelectorAll('[role="dialog"]')].find(x =>
+      /Remove from favorites/.test(x.innerText));
+    const b = d && [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Remove');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`)
+  ctx.check('별을 뗄 때 확인을 받는다', confirmed === true)
   await sleep(300)
   const starOff = await starState()
-  ctx.check('별을 다시 누르면 꺼진다 ☆',
+  ctx.check('확인하면 별이 꺼진다 ☆',
     starOff?.text === '☆' && starOff.pressed === 'false', JSON.stringify(starOff))
 
   const answers = await ctx.page.evaluate(
