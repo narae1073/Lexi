@@ -3,7 +3,11 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 import { createTranslator, DEFAULT_APP_LANGUAGE, type AppLanguage, type Translator } from '../../i18n'
-import { getLanguageFlag, type SupportedLanguageCode } from '../../lib/languages'
+import {
+  getLanguageFlag,
+  SUPPORTED_LANGUAGE_CODES,
+  type SupportedLanguageCode,
+} from '../../lib/languages'
 import { DEFAULT_THEME, getTheme, isThemeId, type ThemeId } from '../../features/settings/themes'
 import {
   DEFAULT_DOCUMENT_SORT,
@@ -93,6 +97,11 @@ type SettingsState = {
    * 처음 여는 자리는 ★ — 읽던 탭을 기억하는 것과 처음 기본값은 별개다.
    */
   wordbookGroup: WordbookGroup
+  /**
+   * 마지막으로 고른 단어장 언어. 상단 탭을 오가도 같은 언어로 돌아오기
+   * 위한 기기 취향이며, 배운 언어 목록과 동기화되지는 않는다.
+   */
+  wordbookLanguage: SupportedLanguageCode | null
   /** 문서 목록 정렬 기준 */
   documentSort: DocumentSort
   /** 정렬 방향 — 기준마다 따로 들고 있다 */
@@ -116,6 +125,7 @@ type SettingsState = {
   setTextScale: (value: number) => void
   setWordbookPageSize: (value: number) => void
   setWordbookGroup: (value: WordbookGroup) => void
+  setWordbookLanguage: (value: SupportedLanguageCode | null) => void
   setDocumentSort: (value: DocumentSort) => void
   setDocumentSortDir: (sort: DocumentSort, value: SortDirection) => void
   toggleDocumentSortDir: (sort: DocumentSort) => void
@@ -147,6 +157,7 @@ export const useSettingsStore = create<SettingsState>()(
       textScale: TEXT_SCALE_DEFAULT,
       wordbookPageSize: DEFAULT_PAGE_SIZE,
       wordbookGroup: 'favorite',
+      wordbookLanguage: null,
       documentSort: DEFAULT_DOCUMENT_SORT,
       documentSortDir: { ...DEFAULT_SORT_DIRECTION },
       documentLanguageFilter: null,
@@ -160,6 +171,11 @@ export const useSettingsStore = create<SettingsState>()(
       // 매번 고를 필요는 없지만, 지정한 뒤에 다음번에도 남아 있어야 한다
       setWordbookPageSize: (value) => set({ wordbookPageSize: pageSizeOrDefault(value) }),
       setWordbookGroup: (value) => set({ wordbookGroup: wordbookGroupOrDefault(value) }),
+      setWordbookLanguage: (value) =>
+        set({
+          wordbookLanguage:
+            value !== null && SUPPORTED_LANGUAGE_CODES.includes(value) ? value : null,
+        }),
       setDocumentSort: (value) => set({ documentSort: documentSortOrDefault(value) }),
       setDocumentSortDir: (sort, value) => {
         const safe = documentSortOrDefault(sort)

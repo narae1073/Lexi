@@ -42,6 +42,7 @@ import { PageSizeSelect } from './PageSizeSelect'
 import { Pagination } from './Pagination'
 import { useProjectionPauseReady } from './useProjectionPause'
 import { WordbookItem } from './WordbookItem'
+import { wordbookLanguageOrDefault } from './wordbookLanguage'
 
 const EMPTY: WordOccurrence[] = []
 const EMPTY_ENTRIES: ProjectionWordbookEntry[] = []
@@ -60,11 +61,21 @@ export function Wordbook() {
   const allDocuments = useDocumentsStore((s) => s.documents)
 
   const requested = params.get('lang')
-  const initial: LanguageCode | null = enrolled.includes(requested as LanguageCode)
-    ? (requested as LanguageCode)
-    : (enrolled[0] ?? null)
+  const storedLanguage = useSettingsStore((s) => s.wordbookLanguage)
+  const setStoredLanguage = useSettingsStore((s) => s.setWordbookLanguage)
+  const initial = wordbookLanguageOrDefault(requested, storedLanguage, enrolled)
 
   const [languageCode, setLanguageCode] = useState<LanguageCode | null>(initial)
+
+  /**
+   * Keep the device-local preference in sync with both the initial URL choice
+   * and every later button switch. Without this, returning through the top-level
+   * nav link (which has no ?lang) would always select the first enrolled
+   * language again.
+   */
+  useEffect(() => {
+    if (languageCode) setStoredLanguage(languageCode)
+  }, [languageCode, setStoredLanguage])
 
   /**
    * 이 언어의 문서만 고른다 — 다른 언어 문서를 고르면 빈 목록만 나온다.
@@ -419,9 +430,11 @@ export function Wordbook() {
             <button
               key={code}
               type="button"
+              data-wordbook-lang={code}
               onClick={() => {
                 if (code !== languageCode) pendingGroupForLanguage.current = code
                 setLanguageCode(code)
+                setStoredLanguage(code)
                 resetPage()
                 // 별 색 필터는 이전 언어의 선택이다 — 새 언어에 그대로 걸지 않는다
                 setStarColors([])
