@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { randomStarAngle, randomStarColor, STAR_COLORS } from './favoriteStar'
+import {
+  randomStarAngle,
+  randomStarColor,
+  STAR_COLORS,
+  starSwatchName,
+} from './favoriteStar'
 
 describe('randomStarAngle', () => {
   /** 렌더할 때마다 뽑으면 별이 덜덜 떨린다 — 뽑는のは 붙일 때·바꿀 때뿐이다 */
@@ -25,6 +30,18 @@ describe('randomStarAngle', () => {
   it('여러 번 뽑으면 다르게 나온다 — 같은 단어도 매번 다른 별이다', () => {
     const tilts = new Set(Array.from({ length: 30 }, () => randomStarAngle()))
     expect(tilts.size).toBeGreaterThan(1)
+  })
+})
+
+describe('starSwatchName', () => {
+  it('names palette colors case-insensitively', () => {
+    expect(starSwatchName('#EF4444')).toBe('red')
+    expect(starSwatchName('#ef4444')).toBe('red')
+    expect(starSwatchName('#ffffff')).toBe('white')
+  })
+
+  it('returns null for a color outside the palette', () => {
+    expect(starSwatchName('#123456')).toBeNull()
   })
 })
 

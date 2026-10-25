@@ -333,6 +333,7 @@ export const useWordbookStore = create<WordbookState>((set, get) => ({
           status: state.status ?? 'unmarked',
           favorite: state.favorite,
           starColor: state.starColor,
+          starAngle: state.starAngle,
           note: state.note,
           lastSeenAt: state.lastSeenAt,
           knownPresses: state.knownPresses,

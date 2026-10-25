@@ -255,6 +255,7 @@ function overlayState(
   const status = state ? normalizeStatus(state.status) : normalizeStatus(entry.status)
   const favorite = state ? state.favorite : entry.isFavorite
   const starColor = state ? state.starColor : entry.starColor
+  const starAngle = state ? state.starAngle : entry.starAngle
   const lastSeenAt = state ? state.lastSeenAt : (entry.lastSeenAt ?? '')
   const knownPresses = state ? state.knownPresses : entry.knownPresses
   const note = state ? state.note : (entry.note ?? undefined)
@@ -266,6 +267,7 @@ function overlayState(
     status,
     favorite,
     starColor,
+    starAngle,
     sentence: chosen?.sentence ?? '',
     documentId: source?.documentId ?? '',
     documentTitle: source ? (titles.get(source.documentId) ?? '') : '',

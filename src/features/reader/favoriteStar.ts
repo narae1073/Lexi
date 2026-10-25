@@ -24,6 +24,12 @@ export type StarSwatchName = (typeof STAR_SWATCHES)[number]['name']
 /** 스티커다운 색만 — 너무 옅거나 어두우면 별이 묻힌다 */
 export const STAR_COLORS: readonly string[] = STAR_SWATCHES.map((swatch) => swatch.hex)
 
+/** The palette name for a stored hex, used in accessible labels. */
+export function starSwatchName(hex: string): StarSwatchName | null {
+  const normalized = hex.toLowerCase()
+  return STAR_SWATCHES.find((swatch) => swatch.hex === normalized)?.name ?? null
+}
+
 /** -25도에서 25도 사이 */
 export function randomStarAngle(): number {
   return Math.floor(Math.random() * 51) - 25

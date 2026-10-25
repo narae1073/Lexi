@@ -36,6 +36,8 @@ export type WordbookEntry = {
   favorite: boolean
   /** 별 스티커의 색 — ★ 탭에서 색으로 좁히는 데 쓴다 */
   starColor?: string
+  /** 별 스티커의 기울기 — 저장된 값을 그대로 그린다 */
+  starAngle?: number
   /** 학습할 때 도움이 되는 문맥 예문 (가장 최근 문서의 것) */
   sentence: string
   documentId: string
@@ -114,6 +116,7 @@ export function buildWordbook({
         status,
         favorite: state?.favorite ?? false,
         starColor: state?.starColor,
+        starAngle: state?.starAngle,
         sentence: occurrence.sentence,
         documentId: occurrence.documentId,
         documentTitle: occurrence.documentTitle,
@@ -157,6 +160,7 @@ export function buildWordbook({
     entry.status = state?.status ?? 'unmarked'
     entry.favorite = state?.favorite ?? false
     entry.starColor = state?.starColor
+    entry.starAngle = state?.starAngle
     entry.lastSeenAt = state?.lastSeenAt ?? ''
     entry.knownPresses = state?.knownPresses ?? 0
     entry.note = state?.note

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { useTranslation } from '../../app/stores/settings'
+import { STAR_COLOR_DEFAULT, useTranslation } from '../../app/stores/settings'
 import { useWordStatesStore } from '../../app/stores/wordStates'
 import {
   WORD_STATUSES,
@@ -9,6 +9,7 @@ import {
   type WordStatus,
 } from '../../types'
 import { ExampleSentence } from '../reader/ExampleSentence'
+import { starSwatchName } from '../reader/favoriteStar'
 import { useFavoriteConfirmation } from '../reader/useFavoriteConfirmation'
 import { WordPopover } from '../reader/WordPopover'
 import type { WordbookEntry } from './buildWordbook'
@@ -37,6 +38,14 @@ export function WordbookItem({
   const { requestToggle: requestFavoriteToggle, confirmation: favoriteConfirmation } =
     useFavoriteConfirmation()
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
+
+  const starColor = entry.starColor ?? STAR_COLOR_DEFAULT
+  const starAngle = entry.starAngle ?? 0
+  const swatchName = starSwatchName(starColor)
+  const colorLabel = swatchName ? t(`favorite.colors.${swatchName}`) : null
+  const favoriteLabel = entry.favorite
+    ? `${t('favorite.remove')}${colorLabel ? ` · ${colorLabel}` : ''}`
+    : t('favorite.add')
 
   const titleSegment: WordSegment = {
     type: 'word',
@@ -106,6 +115,9 @@ export function WordbookItem({
         */}
         <button
           type="button"
+          data-wordbook-favorite
+          data-wordbook-favorite-color={entry.favorite ? starColor : undefined}
+          data-wordbook-favorite-angle={entry.favorite ? starAngle : undefined}
           onClick={(event) =>
             requestFavoriteToggle(
               {
@@ -118,15 +130,36 @@ export function WordbookItem({
             )
           }
           aria-pressed={entry.favorite}
-          aria-label={entry.favorite ? t('favorite.remove') : t('favorite.add')}
-          title={entry.favorite ? t('favorite.remove') : t('favorite.add')}
-          className={`rounded border px-2 py-0.5 text-[11px] transition ${
+          aria-label={favoriteLabel}
+          title={favoriteLabel}
+          className={`focus-visible:outline-accent flex h-8 w-8 shrink-0 items-center justify-center rounded border transition focus-visible:outline-2 focus-visible:outline-offset-2 ${
             entry.favorite
-              ? 'border-accent text-accent'
+              ? 'border-accent text-ink'
               : 'text-ink-muted border-line hover:border-accent'
           }`}
         >
-          {entry.favorite ? '★' : '☆'}
+          {/*
+            The fill is the stored favorite color, but the theme-colored stroke
+            keeps white/yellow stars visible on light backgrounds and black
+            stars visible on dark ones. Filled vs outline carries the binary
+            favorite state without relying on color perception.
+          */}
+          <svg
+            aria-hidden
+            viewBox="0 0 24 24"
+            className="h-4 w-4"
+            fill={entry.favorite ? starColor : 'none'}
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+            style={
+              entry.favorite
+                ? { transform: `rotate(${starAngle}deg)`, transformOrigin: 'center' }
+                : undefined
+            }
+          >
+            <path d="M12 2.8l2.83 5.73 6.32.92-4.58 4.46 1.08 6.3L12 17.24l-5.65 2.97 1.08-6.3-4.58-4.46 6.32-.92L12 2.8z" />
+          </svg>
         </button>
         <div className="flex gap-1" role="group" aria-label={t('status.group')}>
           {WORD_STATUSES.map((status: WordStatus) => {

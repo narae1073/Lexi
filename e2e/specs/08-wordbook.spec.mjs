@@ -115,13 +115,35 @@ export async function run(ctx) {
   const starred = await ctx.page.evaluate(`(() => {
     const li = document.querySelector('li [data-wordbook-lemma]')?.closest('li');
     const lemma = li?.querySelector('[data-wordbook-lemma]')?.innerText ?? '';
-    const btn = li && [...li.querySelectorAll('button')].find(b => b.innerText === '☆' || b.innerText === '★');
+    const btn = li?.querySelector('[data-wordbook-favorite]');
     if (!btn) return null;
     btn.click();
     return lemma;
   })()`)
   ctx.check('목록에서 별을 붙일 수 있다', Boolean(starred), String(starred))
   await sleep(400)
+  const starVisual = await ctx.page.evaluate(`((lemma) => {
+    const li = [...document.querySelectorAll('li')].find(x =>
+      x.querySelector('[data-wordbook-lemma]')?.innerText === lemma);
+    const btn = li?.querySelector('[data-wordbook-favorite]');
+    const svg = btn?.querySelector('svg');
+    return {
+      color: btn?.getAttribute('data-wordbook-favorite-color') ?? null,
+      angle: btn?.getAttribute('data-wordbook-favorite-angle') ?? null,
+      fill: svg?.getAttribute('fill') ?? null,
+      label: btn?.getAttribute('aria-label') ?? '',
+      pressed: btn?.getAttribute('aria-pressed') ?? null,
+    };
+  })(${JSON.stringify(starred)})`)
+  ctx.check(
+    '별이 저장된 색으로 채워지고 저장된 기울기로 그려진다',
+    starVisual.color !== null &&
+      starVisual.fill === starVisual.color &&
+      starVisual.angle !== null &&
+      starVisual.pressed === 'true' &&
+      starVisual.label.includes('·'),
+    JSON.stringify(starVisual),
+  )
   await ctx.page.evaluate(`(() => {
     const tab = [...document.querySelectorAll('div.border-b button')].find(b => b.innerText.includes('★'));
     if (tab) tab.click();
@@ -135,7 +157,7 @@ export async function run(ctx) {
   const unstarred = await ctx.page.evaluate(`((lemma) => {
     const li = [...document.querySelectorAll('li')].find(x =>
       x.querySelector('[data-wordbook-lemma]')?.innerText === lemma);
-    const btn = li && [...li.querySelectorAll('button')].find(b => b.innerText === '★');
+    const btn = li?.querySelector('[data-wordbook-favorite]');
     if (!btn) return false;
     btn.click();
     return true;

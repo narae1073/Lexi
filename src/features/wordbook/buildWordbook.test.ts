@@ -112,6 +112,18 @@ describe('buildWordbook', () => {
     expect(colors.get('dog')).toBe('#3b82f6')
   })
 
+  it('별 기울기도 항목에 실어 보낸다', () => {
+    const byKey = {
+      'en::cat': { ...state('cat', 'known'), favorite: true, starAngle: 18 },
+    }
+    const [entry] = buildWordbook({
+      languageCode: 'en',
+      occurrences: [occurrence({ lemma: 'cat' })],
+      byKey,
+    })
+    expect(entry.starAngle).toBe(18)
+  })
+
   describe('filterByStarColors', () => {
     /** 별 기능 이전의 기록 — 색이 없다 */
     const entry = (lemma: string, starColor?: string): WordbookEntry => {

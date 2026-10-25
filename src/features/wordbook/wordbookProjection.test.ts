@@ -239,6 +239,15 @@ describe('projection wordbook rows', () => {
     expect(entry.contexts).toEqual([{ sentence: 'A ghost.', documentTitle: '', documentId: 'gone' }])
   })
 
+  it('keeps the star angle from the projection', () => {
+    const entry = projectionEntriesToWordbook(
+      [record({ lemma: 'tilt', isFavorite: true, starAngle: 17 })],
+      { documents },
+    )[0]
+
+    expect(entry.starAngle).toBe(17)
+  })
+
   it('keeps every state and count field from the projection', () => {
     const entry = projectionEntriesToWordbook(
       [
