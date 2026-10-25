@@ -97,12 +97,11 @@ export async function run(ctx) {
   // 다시 누르면 확인을 거쳐 꺼진다
   await ctx.page.evaluate(`(() => { document.querySelector('[data-quiz-favorite]').click(); return true })()`)
   await ctx.waitFor(
-    `!![...document.querySelectorAll('[role="dialog"]')].find(d => /Remove from favorites/.test(d.innerText))`,
+    `!!document.querySelector('[data-favorite-confirm]')`,
     'favorite removal confirmation',
   )
   const confirmed = await ctx.page.evaluate(`(() => {
-    const d = [...document.querySelectorAll('[role="dialog"]')].find(x =>
-      /Remove from favorites/.test(x.innerText));
+    const d = document.querySelector('[data-favorite-confirm]');
     const b = d && [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Remove');
     if (!b) return false;
     b.click();

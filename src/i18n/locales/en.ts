@@ -362,8 +362,7 @@ export const en = {
     add: 'Add to favorites',
     remove: 'Remove from favorites',
     confirmRemoveTitle: 'Remove from favorites?',
-    confirmRemoveBody:
-      'Remove “{word}” from your favorites? You can add it again anytime.',
+    confirmRemoveBody: '“{word}” will be removed from favorites.',
     confirmRemove: 'Remove',
     pickColor: 'Pick a star color',
     colors: {

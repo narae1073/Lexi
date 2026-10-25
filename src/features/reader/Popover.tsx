@@ -22,12 +22,15 @@ export function Popover({
   onClose,
   children,
   width = FALLBACK_SIZE.width,
+  ariaLabel,
 }: {
   anchor: HTMLElement | null
   anchorKey: string | number
   onClose: () => void
   children: ReactNode
   width?: number
+  /** Optional accessible name for non-modal dialogs such as confirmations. */
+  ariaLabel?: string
 }) {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<PopoverSize | null>(null)
@@ -100,6 +103,7 @@ export function Popover({
     <div
       ref={popoverRef}
       role="dialog"
+      aria-label={ariaLabel}
       style={{
         position: 'fixed',
         left: position?.left ?? 0,

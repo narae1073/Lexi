@@ -51,7 +51,7 @@ export function WordPopover({
   const setStatus = useWordStatesStore((s) => s.setStatus)
   const clearStatus = useWordStatesStore((s) => s.clearStatus)
   const setStarColor = useWordStatesStore((s) => s.setStarColor)
-  const { requestToggle, confirming, dialog } = useFavoriteConfirmation()
+  const { requestToggle, confirming, confirmation } = useFavoriteConfirmation()
   const [showDictionary, setShowDictionary] = useState(startWithDictionary)
   const [showPalette, setShowPalette] = useState(false)
 
@@ -78,9 +78,17 @@ export function WordPopover({
         <button
           type="button"
           data-word-popover-favorite
-          onClick={() => {
+          onClick={(event) => {
             setShowPalette(false)
-            requestToggle({ languageCode, lemma, surface: segment.text }, favorite)
+            requestToggle(
+              {
+                languageCode,
+                lemma,
+                surface: segment.text,
+                anchor: event.currentTarget,
+              },
+              favorite,
+            )
           }}
           aria-pressed={favorite}
           aria-label={favorite ? t('favorite.remove') : t('favorite.add')}
@@ -199,7 +207,7 @@ export function WordPopover({
           )}
         </div>
       )}
-      {dialog}
+      {confirmation}
     </Popover>
   )
 }

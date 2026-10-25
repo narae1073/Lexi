@@ -142,12 +142,11 @@ export async function run(ctx) {
   })(${JSON.stringify(starred)})`)
   ctx.check('별 떼기를 누르면 확인이 열린다', unstarred === true, String(starred))
   await ctx.waitFor(
-    `!![...document.querySelectorAll('[role="dialog"]')].find(d => /Remove from favorites/.test(d.innerText))`,
+    `!!document.querySelector('[data-favorite-confirm]')`,
     'favorite removal confirmation',
   )
   const confirmed = await ctx.page.evaluate(`(() => {
-    const d = [...document.querySelectorAll('[role="dialog"]')].find(x =>
-      /Remove from favorites/.test(x.innerText));
+    const d = document.querySelector('[data-favorite-confirm]');
     const b = d && [...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Remove');
     if (!b) return false;
     b.click();

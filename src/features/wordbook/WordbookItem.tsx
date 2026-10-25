@@ -34,7 +34,7 @@ export function WordbookItem({
 }) {
   const t = useTranslation()
   const setStatus = useWordStatesStore((s) => s.setStatus)
-  const { requestToggle: requestFavoriteToggle, dialog: favoriteDialog } =
+  const { requestToggle: requestFavoriteToggle, confirmation: favoriteConfirmation } =
     useFavoriteConfirmation()
   const [dictionaryTarget, setDictionaryTarget] = useState<DictionaryTarget | null>(null)
 
@@ -106,9 +106,14 @@ export function WordbookItem({
         */}
         <button
           type="button"
-          onClick={() =>
+          onClick={(event) =>
             requestFavoriteToggle(
-              { languageCode, lemma: entry.lemma, surface: entry.lemma },
+              {
+                languageCode,
+                lemma: entry.lemma,
+                surface: entry.lemma,
+                anchor: event.currentTarget,
+              },
               entry.favorite,
             )
           }
@@ -168,7 +173,7 @@ export function WordbookItem({
           onClose={() => setDictionaryTarget(null)}
         />
       )}
-      {favoriteDialog}
+      {favoriteConfirmation}
     </li>
   )
 }

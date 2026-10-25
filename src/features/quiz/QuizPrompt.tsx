@@ -36,7 +36,7 @@ export function QuizPrompt({
   const starAngle = useWordStatesStore((s) => s.byKey[key]?.starAngle ?? 0)
   const setStarColor = useWordStatesStore((s) => s.setStarColor)
   const starSize = clampStarSize(useSettingsStore((s) => s.favoriteStarSize))
-  const { requestToggle: requestFavoriteToggle, dialog: favoriteDialog } =
+  const { requestToggle: requestFavoriteToggle, confirmation: favoriteConfirmation } =
     useFavoriteConfirmation()
 
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -76,10 +76,15 @@ export function QuizPrompt({
               aria-pressed={favorite}
               aria-label={favorite ? t('favorite.remove') : t('favorite.add')}
               title={favorite ? t('favorite.remove') : t('favorite.add')}
-              onClick={() => {
+              onClick={(event) => {
                 setPaletteOpen(false)
                 requestFavoriteToggle(
-                  { languageCode, lemma: word.lemma, surface: word.surface },
+                  {
+                    languageCode,
+                    lemma: word.lemma,
+                    surface: word.surface,
+                    anchor: event.currentTarget,
+                  },
                   favorite,
                 )
               }}
@@ -112,7 +117,7 @@ export function QuizPrompt({
           />
         </div>
       )}
-      {favoriteDialog}
+      {favoriteConfirmation}
     </div>
   )
 }
